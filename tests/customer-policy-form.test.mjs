@@ -517,7 +517,7 @@ test('validatePolicyEntryForm requires beneficiary relation when saving a policy
     applicantRelation: '本人',
     insured: '王後曦',
     insuredRelation: '子女',
-    beneficiary: '法定',
+    beneficiary: '张三',
     beneficiaryRelation: '待确认',
     date: '2024-08-16',
     paymentPeriod: '趸交',
@@ -529,6 +529,20 @@ test('validatePolicyEntryForm requires beneficiary relation when saving a policy
 
   assert.ok(validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
   assert.ok(!validatePolicyEntryForm({ ...form, beneficiaryRelation: '配偶' }).includes('受益人与顶梁柱的关系'));
+  assert.ok(!validatePolicyEntryForm({ ...form, beneficiary: '法定' }).includes('受益人与顶梁柱的关系'));
+});
+
+test('sharePolicyPersonInfo copies a matching participant relation to a named beneficiary', async () => {
+  const { sharePolicyPersonInfo } = await loadCustomerPolicyFormModule();
+
+  assert.equal(sharePolicyPersonInfo({
+    applicant: '张三',
+    applicantRelationLabel: '本人',
+    insured: '李四',
+    insuredRelationLabel: '配偶',
+    beneficiary: '李四',
+    beneficiaryRelation: '',
+  }).beneficiaryRelation, '配偶');
 });
 
 test('manual participant relation is not overwritten by a bound member awaiting confirmation', async () => {

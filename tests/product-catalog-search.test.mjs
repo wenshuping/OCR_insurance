@@ -64,3 +64,21 @@ test('shared product catalog keeps internal candidates in admin and approved can
     db.close();
   }
 });
+
+test('exact product phrase is not crowded out by many generic catalog matches', () => {
+  const db = makeDb();
+  try {
+    const insert = db.prepare('INSERT INTO knowledge_records (company, product_name, payload) VALUES (?, ?, ?)');
+    for (let index = 0; index < 1_050; index += 1) {
+      insert.run('中信保诚人寿', `A${String(index).padStart(4, '0')}长期医疗保险`, JSON.stringify({ sourceKind: 'insurer_official' }));
+    }
+    const target = '新华人寿保险股份有限公司康健长佑长期医疗保险（费率可调）';
+    insert.run('新华保险', target, JSON.stringify({ sourceKind: 'insurer_official' }));
+
+    const results = searchProductCatalog({ db, query: '康健长佑长期医疗保险', limit: 5, visibility: 'public' });
+
+    assert.equal(results[0].productName, target);
+  } finally {
+    db.close();
+  }
+});

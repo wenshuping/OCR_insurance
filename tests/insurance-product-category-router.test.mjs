@@ -241,7 +241,20 @@ test('routeInsuranceProductCategory detects scalar compound-growth formulas', ()
     },
   });
 
-  assert.equal(result.productCategory, 'incremental_whole_life');
-  assert.equal(result.categoryLabel, '增额终身寿险');
+  assert.equal(result.productCategory, 'ordinary_whole_life');
+  assert.equal(result.categoryLabel, '终身寿险');
   assert.ok(result.featureTags.includes('compound_growth'));
+});
+
+test('routeInsuranceProductCategory does not treat compound loan interest as increasing coverage', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '新华人寿保险股份有限公司康健无忧两全保险',
+    sourceSections: {
+      mainResponsibilityText: '贷款利息根据贷款利率按年复利计算。本合同承担满期生存保险金和身故保险金。',
+    },
+  });
+
+  assert.equal(result.productCategory, 'endowment');
+  assert.equal(result.categoryLabel, '两全保险');
+  assert.equal(result.featureTags.includes('compound_growth'), false);
 });

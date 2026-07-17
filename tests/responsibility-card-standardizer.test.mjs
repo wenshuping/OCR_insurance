@@ -576,6 +576,105 @@ test('buildResponsibilityCardsForPolicy derives responsibility cards from unnumb
   assert.equal(cards.some((card) => card.title === '教育/养老金/两全等返还'), false);
 });
 
+test('buildResponsibilityCardsForPolicy keeps Ping An Fu maturity title instead of payout sentence fragment', () => {
+  const productName = '平安福满分两全保险';
+  const sourceUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1285&versionNo=1285-1&attachmentType=1';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '中国平安',
+      name: productName,
+    },
+    knowledgeRecords: [{
+      company: '中国平安',
+      productName,
+      title: `${productName}产品条款`,
+      url: sourceUrl,
+      official: true,
+      sourceType: 'pdf',
+      materialType: 'terms',
+      pageText: [
+        '保险责任 在本主险合同保险期间内，我们承担如下保险责任：',
+        '满期生存保险金 被保险人于保险期满时仍生存，我们按本主险合同及平安附加福满分提前给付重大疾病保险合同所交保险费之和给付满期生存保险金，本主险合同终止。',
+        '上述“所交保险费”按照期满当时的基本保险金额确定的年交保险费和交费年度数计算。',
+        '身故保险金 被保险人身故，我们按身故时本主险合同的基本保险金额给付身故保险金，本主险合同终止。',
+      ].join(' '),
+    }],
+    coverageIndicators: [{
+      company: '中国平安',
+      productName,
+      coverageType: '规则参数',
+      liability: '赔付方式',
+      valueText: '给付型',
+      sourceUrl,
+      sourceExcerpt: '保险责任包括满期生存保险金和身故保险金。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['满期生存保险金', '身故保险金']);
+  assert.equal(cards.some((card) => card.title.includes('给付重大疾病保险合同')), false);
+  assert.equal(cards.find((card) => card.title === '满期生存保险金')?.cashflowTreatment, 'scheduled_cashflow');
+  assert.equal(cards.find((card) => card.title === '身故保险金')?.cashflowTreatment, 'claim_contingent');
+});
+
+test('buildResponsibilityCardsForPolicy keeps Xinhua high-end medical benefits and filters calculation clauses', () => {
+  const productName = '新华人寿保险股份有限公司寰宇尊悦高端医疗保险';
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/20240126/7f7c91b6-4017-443a-9603-ae29c853e1df.pdf';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: { company: '新华保险', name: productName },
+    knowledgeRecords: [{
+      company: '新华保险',
+      productName,
+      title: productName,
+      url: sourceUrl,
+      official: true,
+      sourceType: 'pdf',
+      materialType: 'terms',
+      pageText: [
+        '第十条 保险责任 在本合同保险期间内，本合同的保险责任根据投保时约定的保障计划类别确定：计划一承担第2款至第10款，计划二承担第2款至第9款，计划三承担第2款至第8款。',
+        '1.等待期 除另有约定外，自本合同生效之日起30日为一般住院医疗费用保险金等待期。',
+        '2.一般住院医疗费用保险金 被保险人因意外伤害原因或于本项保险责任等待期后因疾病原因，在本公司认可医院接受住院治疗的，本公司按保险金计算方法，计算并给付一般住院医疗费用保险金。',
+        '3.延伸医疗费用保险金 被保险人因意外伤害原因或于本项保险责任等待期后因疾病原因，在本公司认可医院住院接受特定治疗的，本公司计算并给付延伸医疗费用保险金。',
+        '4.恶性肿瘤院外特定医疗费用保险金 被保险人于本项保险责任等待期后确诊初次发生恶性肿瘤，因治疗需要实际发生医疗费用，本公司给付恶性肿瘤院外特定医疗费用保险金。',
+        '5.特定门急诊医疗费用保险金 被保险人因意外伤害原因或于本项保险责任等待期后因疾病原因接受特定门急诊治疗的，本公司给付特定门急诊医疗费用保险金。',
+        '6.保障区域外紧急医疗费用保险金 被保险人在本合同保险期间内离开约定保障区域后发生紧急医疗费用的，本公司给付保障区域外紧急医疗费用保险金。',
+        '7.全球紧急救援费用保险金 被保险人因意外伤害原因或突发急性病处于生命危急状态，本公司通过合作救援机构提供救援服务实际发生费用的，本公司给付全球紧急救援费用保险金。',
+        '8.无理赔住院津贴保险金 如被保险人在本公司认可医院接受住院治疗，但未就本次住院的任何费用申请理赔且未抵扣年度免赔额，本公司给付无理赔住院津贴保险金。',
+        '9.普通门急诊医疗费用保险金 被保险人因意外伤害原因或于本项保险责任等待期后因疾病原因接受门急诊治疗的，本公司给付普通门急诊医疗费用保险金。',
+        '10.牙科医疗费用保险金 被保险人于本项保险责任等待期后接受牙科治疗的，本公司给付牙科医疗费用保险金。',
+        '11.保险金计算方法 对被保险人每次实际发生的属于本合同保险责任范围内的医疗必需且合理的各项医疗费用，本公司按公式计算保险金。',
+        '12.在本合同保险期间内，本公司承担给付各项保险金责任需符合最高给付限额、最高给付天数规定。',
+        '13.在本合同保险期间内，本公司累计给付的各项保险金之和以本合同保险金额为限。',
+        '14.被保险人在保险期间内住院且当保险期间届满时仍未出院，本公司继续按第2、3款对住院医疗费用承担给付保险金责任至本次住院结束。',
+      ].join(' '),
+    }],
+    coverageIndicators: [{
+      company: '新华保险',
+      productName,
+      coverageType: '医疗保障',
+      liability: '给付天数上限',
+      value: 60,
+      valueText: '60',
+      unit: '日',
+      basis: '条款天数限制',
+      sourceUrl,
+      sourceExcerpt: '本合同保险期间内，本公司因住院康复治疗累计给付住院医疗费用的天数以60日为限。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), [
+    '一般住院医疗费用保险金',
+    '延伸医疗费用保险金',
+    '恶性肿瘤院外特定医疗费用保险金',
+    '特定门急诊医疗费用保险金',
+    '保障区域外紧急医疗费用保险金',
+    '全球紧急救援费用保险金',
+    '无理赔住院津贴保险金',
+    '普通门急诊医疗费用保险金',
+    '牙科医疗费用保险金',
+  ]);
+  assert.equal(cards.some((card) => /保险金计算方法|医疗费用保险金$/u.test(card.title) && card.title.length <= 8), false);
+});
+
 test('buildResponsibilityCardsForPolicy handles Xinhua Meiman Ankang spaced titles and scheduled survival benefits', () => {
   const productName = '美满安康两全保险(A款）（分红型）';
   const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/meimanankang.pdf';

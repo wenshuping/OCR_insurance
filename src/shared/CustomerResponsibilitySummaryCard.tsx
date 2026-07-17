@@ -35,6 +35,7 @@ export function CustomerResponsibilitySummaryCard({
       enabled: block?.enabled !== false,
       content: cleanText(block?.content),
       order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
+      sourceRefs: cleanStrings(block?.sourceRefs),
     }))
     .filter((block) => block.enabled && (block.title || block.content))
     .sort((left, right) => left.order - right.order);
@@ -52,6 +53,14 @@ export function CustomerResponsibilitySummaryCard({
   const notices = cleanStrings(summary.notices);
   const requiredPolicyFields = cleanStrings(summary.requiredPolicyFields);
   const sourceUrls = cleanStrings(summary.sourceUrls);
+  const materialSources = (Array.isArray(summary.materialSources) ? summary.materialSources : [])
+    .map((source) => ({
+      evidenceId: cleanText(source?.evidenceId),
+      fileName: cleanText(source?.fileName),
+      pageStart: Number(source?.pageStart || 0),
+      pageEnd: Number(source?.pageEnd || source?.pageStart || 0),
+    }))
+    .filter((source) => source.evidenceId || source.fileName);
 
   return (
     <section className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -76,6 +85,13 @@ export function CustomerResponsibilitySummaryCard({
             <section key={block.blockKey || block.title} className="rounded-[16px] bg-slate-50 px-3 py-3 ring-1 ring-slate-100">
               {block.title ? <h4 className="text-xs font-black text-slate-950">{block.title}</h4> : null}
               {block.content ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{block.content}</p> : null}
+              {block.sourceRefs.length ? (
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {block.sourceRefs.map((sourceRef) => (
+                    <span key={sourceRef} className="rounded-full bg-blue-50 px-2 py-1 text-[11px] font-black text-blue-700 ring-1 ring-blue-100">{sourceRef}</span>
+                  ))}
+                </div>
+              ) : null}
             </section>
           ))}
         </div>
@@ -165,6 +181,23 @@ export function CustomerResponsibilitySummaryCard({
                 <span className="min-w-0 truncate">{hostFromUrl(url)}</span>
                 <ExternalLink size={13} className="shrink-0" />
               </a>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {materialSources.length ? (
+        <div className="mt-4 border-t border-slate-100 pt-3">
+          <div className="mb-2 flex items-center gap-2 text-xs font-black text-slate-500">
+            <FileText size={15} />
+            <span>上传资料来源</span>
+          </div>
+          <div className="space-y-2">
+            {materialSources.map((source) => (
+              <p key={`${source.evidenceId}-${source.fileName}`} className="rounded-xl bg-blue-50 px-3 py-2 text-xs font-bold text-blue-700 ring-1 ring-blue-100">
+                {source.evidenceId} · {source.fileName}
+                {source.pageStart ? ` · 第${source.pageStart}${source.pageEnd !== source.pageStart ? `-${source.pageEnd}` : ''}页` : ''}
+              </p>
             ))}
           </div>
         </div>

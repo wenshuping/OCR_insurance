@@ -1,0 +1,667 @@
+import {
+  catalogProductIdentity,
+  catalogProductScore,
+  searchExactProductCatalog,
+  searchProductCatalog,
+} from './product-catalog-search.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+
+const MATCH_TYPES = new Set([
+  'confirmed_candidate',
+  'exact_official_name',
+  'filing_name',
+  'approved_alias',
+  'company_scoped_normalized',
+  'unique_high_confidence',
+]);
+const MATCH_TYPE_PRIORITY = new Map([
+  ['exact_official_name', 0],
+  ['filing_name', 1],
+  ['approved_alias', 2],
+  ['company_scoped_normalized', 3],
+  ['unique_high_confidence', 4],
+]);
+const HEURISTIC_CONFIDENCE_CEILING = 0.89;
+const DOMINANT_CONFIRMATION_MIN_CONFIDENCE = 0.7;
+const DOMINANT_CONFIRMATION_MIN_GAP = 0.25;
+const MAX_IDENTITY_TEXT_LENGTH = 200;
+const MAX_FILING_NAMES = 20;
+const SCAN_DENYLIST = new Set([
+  '保险', '产品', '险种', '寿险', '重疾险', '医疗险', '年金险', '意外险', '两全', '两全保险',
+]);
+
+function clean(value) {
+  return String(value || '').trim();
+}
+
+function boundedString(value, maxLength = MAX_IDENTITY_TEXT_LENGTH) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : '';
+}
+
+function comparable(value) {
+  return clean(value).normalize('NFKC').replace(/[\s《》（）()【】\[\]·,，。:：;；、-]/gu, '').toLowerCase();
+}
+
+function companyIdentity(value) {
+  const withoutOrganization = comparable(value)
+    .replace(/(?:股份有限公司|有限责任公司|有限公司|股份公司|公司)$/gu, '');
+  return withoutOrganization.endsWith('再保险')
+    ? withoutOrganization
+    : withoutOrganization.replace(/保险$/gu, '');
+}
+
+function tableColumns(db, table) {
+  try {
+    return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((row) => clean(row.name)));
+  } catch {
+    return new Set();
+  }
+}
+
+function parsePayload(value) {
+  try {
+    const parsed = JSON.parse(clean(value) || '{}');
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function productRowsByStatus(db, tenantId, status) {
+  const columns = tableColumns(db, 'insurance_products');
+  if (!columns.has('tenant_id') || !columns.has('company')
+    || !columns.has('official_name') || !columns.has('status')) return [];
+  const canonicalId = columns.has('canonical_product_id') ? 'canonical_product_id' : "''";
+  const productCode = columns.has('product_code') ? 'product_code' : "''";
+  const payload = columns.has('payload') ? 'payload' : "'{}'";
+  return db.prepare(`
+    SELECT ${canonicalId} AS canonical_product_id, company, official_name,
+      ${productCode} AS product_code, ${payload} AS payload
+    FROM insurance_products
+    WHERE tenant_id = ? AND LOWER(TRIM(COALESCE(status, ''))) = ?
+    ORDER BY company, official_name
+  `).all(tenantId, status).map((row) => ({
+    canonicalProductId: clean(row.canonical_product_id),
+    company: clean(row.company),
+    officialName: clean(row.official_name),
+    productCode: boundedString(row.product_code),
+    payload: parsePayload(row.payload),
+  })).filter((row) => row.company && row.officialName);
+}
+
+function publicProductRows(db, tenantId) {
+  return productRowsByStatus(db, tenantId, 'active');
+}
+
+function readySummaryProductRows(db) {
+  const columns = tableColumns(db, 'product_customer_responsibility_summaries');
+  if (!columns.has('company') || !columns.has('product_name') || !columns.has('status')) return [];
+  const updatedAt = columns.has('updated_at') ? 'updated_at DESC,' : '';
+  const rows = db.prepare(`
+    SELECT company, product_name
+    FROM product_customer_responsibility_summaries
+    WHERE status = 'ready'
+    ORDER BY ${updatedAt} company, product_name
+  `).all();
+  const products = new Map();
+  for (const row of rows) {
+    const company = clean(row.company);
+    const officialName = clean(row.product_name);
+    const identity = catalogProductIdentity(officialName);
+    if (!company || !identity) continue;
+    const key = `${company}\u0000${identity}`;
+    const current = products.get(key);
+    if (current && current.officialName.length <= officialName.length) continue;
+    products.set(key, {
+      canonicalProductId: canonicalProductIdFromOfficialProduct({ company, productName: officialName }),
+      company,
+      officialName,
+      productCode: '',
+      payload: {},
+    });
+  }
+  return [...products.values()].filter((product) => product.canonicalProductId);
+}
+
+function publicResolvableProducts(db, tenantId) {
+  const products = new Map();
+  for (const product of [...publicProductRows(db, tenantId), ...readySummaryProductRows(db)]) {
+    const key = productIdentityKey(product);
+    if (!products.has(key)) products.set(key, product);
+  }
+  return [...products.values()];
+}
+
+function companyAliases(profile) {
+  return [
+    profile?.company,
+    profile?.companyName,
+    profile?.name,
+    ...(Array.isArray(profile?.aliases) ? profile.aliases : []),
+    ...(Array.isArray(profile?.companyAliases) ? profile.companyAliases : []),
+  ].map(clean).filter(Boolean);
+}
+
+function resolveCompany(insurerText, companies, officialDomainProfiles) {
+  if (!insurerText) return '';
+  const target = comparable(insurerText);
+  const exact = companies.filter((company) => comparable(company) === target);
+  if (exact.length === 1) return exact[0];
+  const normalized = companies.filter((company) => companyIdentity(company) === companyIdentity(insurerText));
+  if (normalized.length === 1) return normalized[0];
+
+  const matched = [];
+  for (const profile of officialDomainProfiles) {
+    if (!companyAliases(profile).some((alias) => (
+      comparable(alias) === target || companyIdentity(alias) === companyIdentity(insurerText)
+    ))) continue;
+    const profileCompanies = companyAliases(profile)
+      .flatMap((alias) => companies.filter((company) => (
+        comparable(company) === comparable(alias) || companyIdentity(company) === companyIdentity(alias)
+      )));
+    matched.push(...profileCompanies);
+  }
+  const unique = [...new Set(matched)];
+  return unique.length === 1 ? unique[0] : null;
+}
+
+function approvedAliases(product) {
+  if (clean(product.payload?.aliasReviewStatus) !== 'approved') return [];
+  return (Array.isArray(product.payload?.aliases) ? product.payload.aliases : []).map(clean).filter(Boolean);
+}
+
+function filingNames(product) {
+  // These names are trusted only from the payload of an authoritative, active
+  // insurance_products row selected by publicProductRows().
+  const names = [];
+  const filingName = boundedString(product.payload?.filingName);
+  if (filingName) names.push(filingName);
+  const many = product.payload?.filingNames;
+  if (Array.isArray(many) && many.length <= MAX_FILING_NAMES
+    && many.every((value) => typeof value === 'string')) {
+    names.push(...many.map((value) => boundedString(value)).filter(Boolean));
+  }
+  return names;
+}
+
+function identifierComparable(value) {
+  const bounded = boundedString(value);
+  return bounded ? bounded.normalize('NFKC').toLowerCase() : '';
+}
+
+function filingEvidence(product) {
+  return [
+    ...filingNames(product).map((value) => ({ value, kind: 'name' })),
+    { value: product.productCode, kind: 'identifier' },
+    { value: boundedString(product.payload?.clauseCode), kind: 'identifier' },
+  ].filter((item) => item.value);
+}
+
+function exactFilingCandidates(products, productText, company) {
+  const target = comparable(productText);
+  const identifierTarget = identifierComparable(productText);
+  const candidates = [];
+  const seen = new Set();
+  for (const product of products) {
+    if (company && product.company !== company) continue;
+    if (!filingEvidence(product).some(({ value, kind }) => (
+      kind === 'name' ? comparable(value) === target : identifierComparable(value) === identifierTarget
+    ))) continue;
+    const key = [product.canonicalProductId, product.company, product.officialName].join('\u0000');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    candidates.push({
+      canonicalProductId: product.canonicalProductId,
+      company: product.company,
+      officialName: product.officialName,
+      matchType: product.canonicalProductId ? 'filing_name' : 'unique_high_confidence',
+      confidence: product.canonicalProductId ? 1 : HEURISTIC_CONFIDENCE_CEILING,
+    });
+  }
+  return candidates;
+}
+
+function exactOfficialCandidates(products, productText, company) {
+  const target = comparable(productText);
+  const targetIdentity = catalogProductIdentity(productText);
+  return products.filter((product) => (
+    (!company || product.company === company)
+    && (comparable(product.officialName) === target
+      || (targetIdentity && catalogProductIdentity(product.officialName) === targetIdentity)
+      || approvedAliases(product).some((alias) => comparable(alias) === target))
+  )).map((product) => matchCandidate(product, productText));
+}
+
+function termOccurrences(question, term) {
+  const occurrences = [];
+  let start = question.indexOf(term);
+  while (start !== -1) {
+    occurrences.push({ start, end: start + term.length });
+    start = question.indexOf(term, start + 1);
+  }
+  return occurrences;
+}
+
+function scannableTerm(value, { approved = false } = {}) {
+  const normalized = comparable(value);
+  if (!normalized || SCAN_DENYLIST.has(normalized)) return '';
+  return [...normalized].length >= (approved ? 2 : 4) ? normalized : '';
+}
+
+function distinctiveProductName(value) {
+  const withoutCompany = clean(value).normalize('NFKC')
+    .replace(/^[\p{Script=Han}]{2,24}?保险(?:股份)?有限公司/gu, '')
+    .replace(/[（(][^）)\n]{1,24}[）)]/gu, '')
+    .replace(/(?:终身寿险|定期寿险|两全保险|医疗保险|重大疾病保险|疾病保险|年金保险|意外伤害保险|护理保险)$/gu, '');
+  return scannableTerm(withoutCompany);
+}
+
+function canonicalProductForCatalogRow(row, products) {
+  const identity = catalogProductIdentity(row.productName);
+  const matches = products.filter((product) => product.company === row.company
+    && catalogProductIdentity(product.officialName) === identity);
+  const canonicalIds = new Set(matches.map((product) => product.canonicalProductId).filter(Boolean));
+  return {
+    product: matches.find((product) => product.canonicalProductId) || matches[0] || null,
+    identityConflict: canonicalIds.size > 1,
+  };
+}
+
+function publicCatalogFallbackProduct(db, tenantId, row) {
+  const columns = tableColumns(db, 'insurance_products');
+  if (columns.has('tenant_id') && columns.has('company')
+    && columns.has('official_name') && columns.has('status')) {
+    const belongsToAnotherTenant = db.prepare(`
+      SELECT company, official_name
+      FROM insurance_products
+      WHERE tenant_id != ? AND LOWER(TRIM(COALESCE(status, ''))) IN ('active', 'draft')
+    `).all(tenantId).some((product) => (
+      clean(product.company) === clean(row.company)
+      && catalogProductIdentity(product.official_name) === catalogProductIdentity(row.productName)
+    ));
+    if (belongsToAnotherTenant) return null;
+  }
+  const canonicalProductId = canonicalProductIdFromOfficialProduct({
+    company: row.company,
+    productName: row.productName,
+  });
+  return canonicalProductId ? {
+    canonicalProductId,
+    company: clean(row.company),
+    officialName: clean(row.productName),
+    payload: {},
+  } : null;
+}
+
+function matchCandidate({
+  company,
+  officialName,
+  canonicalProductId = '',
+  payload = {},
+  score = 0,
+  identityConflict = false,
+}, productText) {
+  const target = comparable(productText);
+  const official = comparable(officialName);
+  const targetIdentity = catalogProductIdentity(productText);
+  const officialIdentity = catalogProductIdentity(officialName);
+  let matchType = 'unique_high_confidence';
+  let confidence = Math.max(0, Math.min(HEURISTIC_CONFIDENCE_CEILING, Number(score || 0) / 1000));
+
+  if (official === target) {
+    matchType = 'exact_official_name';
+    confidence = 1;
+  } else if (approvedAliases({ payload }).some((alias) => comparable(alias) === target)) {
+    matchType = 'approved_alias';
+    confidence = 1;
+  } else if (targetIdentity && officialIdentity && officialIdentity === targetIdentity) {
+    matchType = 'company_scoped_normalized';
+    confidence = 1;
+  }
+
+  if (identityConflict) {
+    canonicalProductId = '';
+    matchType = 'unique_high_confidence';
+    confidence = HEURISTIC_CONFIDENCE_CEILING;
+  }
+
+  return {
+    canonicalProductId: clean(canonicalProductId),
+    company: clean(company),
+    officialName: clean(officialName),
+    matchType,
+    confidence,
+  };
+}
+
+function boundedActiveProduct(activeProduct) {
+  if (!activeProduct || typeof activeProduct !== 'object' || Array.isArray(activeProduct)) return null;
+  const officialName = clean(activeProduct.officialName);
+  const company = clean(activeProduct.company);
+  const canonicalProductId = clean(activeProduct.canonicalProductId);
+  if (!officialName || !company || !canonicalProductId) return null;
+  const matchType = MATCH_TYPES.has(activeProduct.matchType)
+    ? activeProduct.matchType
+    : 'exact_official_name';
+  const confidence = Number(activeProduct.confidence);
+  return {
+    canonicalProductId,
+    company,
+    officialName,
+    matchType,
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 1,
+  };
+}
+
+function confirmedCandidateIdentity(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const company = boundedString(value.company);
+  const officialName = boundedString(value.officialName);
+  return company && officialName ? { company, officialName } : null;
+}
+
+function productIdentityKey(value) {
+  return `${clean(value?.company)}\u0000${catalogProductIdentity(value?.officialName)}`;
+}
+
+function emptyResult(status) {
+  return { status, entity: null, candidates: [] };
+}
+
+function mentionText(mentions, type) {
+  const mention = (Array.isArray(mentions) ? mentions : []).find((item) => item?.type === type);
+  return clean(mention?.rawText);
+}
+
+function insurerCompaniesInQuestion({ normalizedQuestion, companies, officialDomainProfiles }) {
+  const resolved = new Set();
+  const terms = [
+    ...companies,
+    ...officialDomainProfiles.flatMap((profile) => companyAliases(profile)),
+  ];
+  for (const value of new Set(terms)) {
+    const normalized = comparable(value);
+    if ([...normalized].length < 2 || SCAN_DENYLIST.has(normalized)) continue;
+    if (!normalizedQuestion.includes(normalized)) continue;
+    const company = resolveCompany(value, companies, officialDomainProfiles);
+    if (company) resolved.add(company);
+  }
+  return resolved;
+}
+
+export function createAgentProductEntityResolver({ db, tenantId, officialDomainProfiles = [] } = {}) {
+  if (!db) throw new TypeError('db is required');
+  const scopedTenantId = boundedString(tenantId, 100);
+  if (!scopedTenantId) throw new TypeError('tenantId is required');
+  const profiles = Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [];
+
+  return {
+    resolveAllFromText({ question, insurerMentions = [] } = {}) {
+      const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
+      if (!normalizedQuestion) return { entities: [], overflow: false };
+      const products = publicResolvableProducts(db, scopedTenantId);
+      const companies = [...new Set(products.map((row) => row.company))];
+      const mentionedCompanies = insurerCompaniesInQuestion({
+        normalizedQuestion,
+        companies,
+        officialDomainProfiles: profiles,
+      });
+      for (const mention of (Array.isArray(insurerMentions) ? insurerMentions : [])) {
+        if (mention?.type !== 'insurer') continue;
+        const insurerText = clean(mention.rawText);
+        if (!insurerText || insurerText.length > 200) {
+          return { entities: [], overflow: false, invalid: true, status: 'invalid_insurer' };
+        }
+        const company = resolveCompany(insurerText, companies, profiles);
+        if (!company) return { entities: [], overflow: false, invalid: true, status: 'invalid_insurer' };
+        mentionedCompanies.add(company);
+      }
+
+      const matches = [];
+      for (const product of products) {
+        const officialIdentity = catalogProductIdentity(product.officialName);
+        const hasSpecificOfficialIdentity = Boolean(scannableTerm(officialIdentity));
+        const terms = [
+          ...(hasSpecificOfficialIdentity ? [
+            { value: product.officialName, matchType: 'exact_official_name' },
+            { value: officialIdentity, matchType: 'company_scoped_normalized' },
+            { value: distinctiveProductName(product.officialName), matchType: 'company_scoped_normalized' },
+          ] : []),
+          ...filingNames(product).map((value) => ({ value, matchType: 'filing_name' })),
+          ...approvedAliases(product).map((value) => ({ value, matchType: 'approved_alias', approved: true })),
+        ];
+        const canonicalProductId = clean(product.canonicalProductId);
+        if (!canonicalProductId) continue;
+        for (const term of terms) {
+          const normalized = scannableTerm(term.value, { approved: term.approved });
+          if (!normalized) continue;
+          for (const span of termOccurrences(normalizedQuestion, normalized)) {
+            matches.push({
+              ...span,
+              termLength: normalized.length,
+              normalizedTerm: normalized,
+              entity: {
+                canonicalProductId,
+                company: product.company,
+                officialName: product.officialName,
+                matchType: term.matchType,
+                confidence: 1,
+              },
+            });
+          }
+        }
+      }
+
+      const occurrenceCompanies = new Map();
+      for (const match of matches) {
+        const key = `${match.start}:${match.end}:${match.normalizedTerm}`;
+        if (!occurrenceCompanies.has(key)) occurrenceCompanies.set(key, new Set());
+        occurrenceCompanies.get(key).add(match.entity.company);
+      }
+      const scopedMatches = matches.filter((match) => {
+        if (mentionedCompanies.size !== 1) return true;
+        const key = `${match.start}:${match.end}:${match.normalizedTerm}`;
+        if (occurrenceCompanies.get(key).size < 2) return true;
+        return mentionedCompanies.has(match.entity.company);
+      });
+
+      const retained = [];
+      for (const match of scopedMatches.sort((left, right) => (
+        right.termLength - left.termLength || left.start - right.start || left.end - right.end
+      ))) {
+        const containedByLonger = retained.some((candidate) => (
+          candidate.entity.canonicalProductId !== match.entity.canonicalProductId
+          && candidate.termLength > match.termLength
+          && candidate.start <= match.start
+          && candidate.end >= match.end
+        ));
+        if (!containedByLonger) retained.push(match);
+      }
+
+      const entities = [];
+      const seen = new Set();
+      for (const match of retained.sort((left, right) => (
+        left.start - right.start || right.termLength - left.termLength
+      ))) {
+        if (seen.has(match.entity.canonicalProductId)) continue;
+        seen.add(match.entity.canonicalProductId);
+        entities.push(match.entity);
+        if (entities.length > 8) return { entities: entities.slice(0, 8), overflow: true };
+      }
+      return { entities, overflow: false };
+    },
+
+    resolve({ mentions = [], activeProduct = null, confirmedCandidate = null } = {}) {
+      const productText = mentionText(mentions, 'product');
+      const insurerText = mentionText(mentions, 'insurer');
+      const confirmedIdentity = confirmedCandidateIdentity(confirmedCandidate);
+      if (!productText) {
+        const entity = boundedActiveProduct(activeProduct);
+        if (!entity) return emptyResult('missing');
+        const products = publicResolvableProducts(db, scopedTenantId);
+        const current = products.find((product) => (
+          product.canonicalProductId === entity.canonicalProductId
+        ));
+        if (!current) return emptyResult('not_found');
+        if (insurerText) {
+          const companies = [...new Set(products.map((row) => row.company))];
+          const mentionedCompany = resolveCompany(insurerText, companies, profiles);
+          const activeCompany = resolveCompany(current.company, companies, profiles);
+          if (!mentionedCompany || !activeCompany || mentionedCompany !== activeCompany) {
+            return emptyResult('not_found');
+          }
+        }
+        return { status: 'resolved', entity: { ...entity,
+          canonicalProductId: current.canonicalProductId,
+          company: current.company,
+          officialName: current.officialName,
+        }, candidates: [] };
+      }
+
+      const products = publicResolvableProducts(db, scopedTenantId);
+      const draftProducts = productRowsByStatus(db, scopedTenantId, 'draft');
+      const companies = [...new Set([...products, ...draftProducts].map((row) => row.company))];
+      const company = resolveCompany(insurerText, companies, profiles);
+      if (insurerText && company === null) return emptyResult('not_found');
+
+      const exactFiling = exactFilingCandidates(products, productText, company);
+      if (exactFiling.length === 1 && exactFiling[0].confidence === 1) {
+        return { status: 'resolved', entity: exactFiling[0], candidates: [] };
+      }
+      if (exactFiling.length) {
+        return { status: 'ambiguous', entity: null, candidates: exactFiling.slice(0, 10) };
+      }
+      const exactOfficial = exactOfficialCandidates(products, productText, company);
+      if (exactOfficial.length === 1 && exactOfficial[0].confidence === 1) {
+        return { status: 'resolved', entity: exactOfficial[0], candidates: [] };
+      }
+      const confirmationOnlyKeys = new Set();
+      const candidateFromCatalog = (row) => {
+        let canonicalMatch = canonicalProductForCatalogRow(row, products);
+        let confirmationOnly = false;
+        if (!canonicalMatch.product && !canonicalMatch.identityConflict) {
+          canonicalMatch = canonicalProductForCatalogRow(row, draftProducts);
+          confirmationOnly = Boolean(canonicalMatch.product || canonicalMatch.identityConflict);
+        }
+        if (!canonicalMatch.product && !canonicalMatch.identityConflict) {
+          const fallbackProduct = publicCatalogFallbackProduct(db, scopedTenantId, row);
+          if (fallbackProduct) {
+            canonicalMatch = { product: fallbackProduct, identityConflict: false };
+            confirmationOnly = true;
+          }
+        }
+        const canonical = canonicalMatch.product;
+        if (!canonical?.canonicalProductId && !canonicalMatch.identityConflict) return null;
+        const candidate = matchCandidate({
+          company: canonical?.company || row.company,
+          officialName: canonical?.officialName || row.productName,
+          canonicalProductId: canonical?.canonicalProductId,
+          payload: canonical?.payload,
+          score: row.score,
+          identityConflict: canonicalMatch.identityConflict,
+        }, productText);
+        if (confirmationOnly) confirmationOnlyKeys.add(productIdentityKey(candidate));
+        return confirmationOnly ? {
+          ...candidate,
+          matchType: 'unique_high_confidence',
+          confidence: Math.min(HEURISTIC_CONFIDENCE_CEILING, candidate.confidence),
+        } : candidate;
+      };
+      const exactCatalogCandidates = searchExactProductCatalog({
+        db,
+        company: company || '',
+        query: productText,
+        limit: 10,
+        visibility: 'public',
+      }).map(candidateFromCatalog).filter(Boolean);
+      const exactConfirmed = confirmedIdentity && exactCatalogCandidates.find((candidate) => (
+        candidate.canonicalProductId
+        && confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && clean(candidate.company) === confirmedIdentity.company
+        && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
+      ));
+      if (exactConfirmed) {
+        return {
+          status: 'resolved',
+          entity: { ...exactConfirmed, matchType: 'confirmed_candidate', confidence: 1 },
+          candidates: [],
+        };
+      }
+      if (exactCatalogCandidates.length === 1) {
+        return { status: 'ambiguous', entity: null, candidates: exactCatalogCandidates };
+      }
+      const recalled = searchProductCatalog({
+        db,
+        company: company || '',
+        query: productText,
+        limit: 50,
+        visibility: 'public',
+      });
+      const candidates = recalled.map(candidateFromCatalog).filter(Boolean);
+
+      for (const product of products) {
+        if (company && product.company !== company) continue;
+        if (!approvedAliases(product).some((alias) => comparable(alias) === comparable(productText))) continue;
+        if (candidates.some((candidate) => candidate.company === product.company
+          && catalogProductIdentity(candidate.officialName) === catalogProductIdentity(product.officialName))) continue;
+        const canonicalMatch = canonicalProductForCatalogRow({
+          company: product.company,
+          productName: product.officialName,
+        }, products);
+        candidates.push(matchCandidate({
+          ...(canonicalMatch.product || product),
+          identityConflict: canonicalMatch.identityConflict,
+        }, productText));
+      }
+
+      const ranked = candidates
+        .filter((candidate) => candidate.confidence > 0)
+        .map((candidate, index) => ({ candidate, index }))
+        .sort((left, right) => (
+          (MATCH_TYPE_PRIORITY.get(left.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
+            - (MATCH_TYPE_PRIORITY.get(right.candidate.matchType) ?? Number.MAX_SAFE_INTEGER)
+          || catalogProductScore(productText, catalogProductIdentity(right.candidate.officialName))
+            - catalogProductScore(productText, catalogProductIdentity(left.candidate.officialName))
+          || right.candidate.confidence - left.candidate.confidence
+          || left.index - right.index
+        ))
+        .slice(0, 10);
+      if (!ranked.length) return emptyResult('not_found');
+      const rankedCandidates = ranked.map((item) => item.candidate);
+      const confirmed = confirmedIdentity && rankedCandidates.find((candidate) => (
+        candidate.canonicalProductId
+        && confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && clean(candidate.company) === confirmedIdentity.company
+        && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
+      ));
+      if (confirmed) {
+        return {
+          status: 'resolved',
+          entity: { ...confirmed, matchType: 'confirmed_candidate', confidence: 1 },
+          candidates: [],
+        };
+      }
+      const first = rankedCandidates[0];
+      const second = rankedCandidates[1];
+      if (first.confidence >= 0.9 && (!second || first.confidence - second.confidence >= 0.15)) {
+        return { status: 'resolved', entity: first, candidates: [] };
+      }
+      const exactConfirmationCandidates = rankedCandidates.filter((candidate) => (
+        confirmationOnlyKeys.has(productIdentityKey(candidate))
+        && catalogProductIdentity(productText) === catalogProductIdentity(candidate.officialName)
+      ));
+      if (exactConfirmationCandidates.length === 1 && exactConfirmationCandidates[0] === first) {
+        return { status: 'ambiguous', entity: null, candidates: [first] };
+      }
+      const dominantConfirmationCandidate = confirmationOnlyKeys.has(productIdentityKey(first))
+        && first.confidence >= DOMINANT_CONFIRMATION_MIN_CONFIDENCE
+        && (!second || first.confidence - second.confidence >= DOMINANT_CONFIRMATION_MIN_GAP);
+      if (dominantConfirmationCandidate) {
+        return { status: 'ambiguous', entity: null, candidates: [first] };
+      }
+      return { status: 'ambiguous', entity: null, candidates: rankedCandidates };
+    },
+  };
+}

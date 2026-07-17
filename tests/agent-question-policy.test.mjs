@@ -5,8 +5,18 @@ import {
   AGENT_QUESTION_POLICIES,
   AGENT_QUESTION_POLICY_TOOLS,
   chooseAgentQuestionPolicy,
+  normalizeAgentRuntimeSettings,
+  validateAgentRuntimeSettings,
   validateAgentQuestionPolicy,
 } from '../server/agent-question-policy.service.mjs';
+
+test('runtime settings keep safe defaults and reject unsafe ranges', () => {
+  assert.deepEqual(normalizeAgentRuntimeSettings(), { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
+  assert.equal(validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 }), true);
+  assert.throws(() => validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 0, productContextTtlMinutes: 30 }), /1 and 40/iu);
+  assert.throws(() => validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 1_441 }), /1 and 1440/iu);
+  assert.throws(() => validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30, memoryNamespace: 'shared' }), /unsupported/iu);
+});
 
 test('coverage report routes to the insurance expert', () => {
   const policy = chooseAgentQuestionPolicy({ intent: ' Coverage-Report ' });
@@ -16,6 +26,12 @@ test('coverage report routes to the insurance expert', () => {
 test('sales report routes to the sales champion', () => {
   const policy = chooseAgentQuestionPolicy({ intent: 'sales report' });
   assert.equal(policy.handler, 'sales_champion');
+});
+
+test('family list routes to the safe system count handler', () => {
+  const policy = chooseAgentQuestionPolicy({ intent: 'family_list' });
+  assert.equal(policy.handler, 'system');
+  assert.equal(policy.tool, 'list_families');
 });
 
 test('unknown read is executable and unknown write is rejected', () => {
@@ -39,6 +55,16 @@ test('validation rejects tools outside the whitelist', () => {
     /tool/i,
   );
   assert.equal(AGENT_QUESTION_POLICY_TOOLS.includes('shell'), false);
+});
+
+test('validation rejects tools assigned to the wrong workflow handler', () => {
+  assert.throws(
+    () => validateAgentQuestionPolicy({
+      ...AGENT_QUESTION_POLICIES.find((policy) => policy.key === 'insurance_product_knowledge'),
+      tool: 'sales_report',
+    }),
+    /tool is not allowed for handler/i,
+  );
 });
 
 test('validation rejects write operations without confirmation', () => {

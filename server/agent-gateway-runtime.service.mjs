@@ -76,7 +76,7 @@ export function createAgentSecureLinkFactory({ publicAppUrl } = {}) {
   return ({ purpose } = {}) => origin && paths[purpose] ? `${origin}${paths[purpose]}` : '';
 }
 
-export function createProductionAgentGatewayOptions({ env = process.env, loadState, clock = Date.now } = {}) {
+export function createProductionAgentGatewayOptions({ env = process.env, loadState, loadIdentityState = loadState, clock = Date.now } = {}) {
   const publicAppUrl = String(env.POLICY_OCR_PUBLIC_APP_URL || env.PUBLIC_APP_URL || '').trim();
   let allowedOrigin = '';
   try {
@@ -87,7 +87,7 @@ export function createProductionAgentGatewayOptions({ env = process.env, loadSta
   }
   return {
     verifyAgentServiceRequest: createAgentServiceRequestVerifier({ secret: env.AGENT_GATEWAY_HMAC_SECRET, clock }),
-    resolveDingTalkIdentity: createDingTalkMobileIdentityResolver({ loadState }),
+    resolveDingTalkIdentity: createDingTalkMobileIdentityResolver({ loadState: loadIdentityState }),
     agentSecureUploadLinkFactory: createAgentSecureLinkFactory({ publicAppUrl }),
     agentSecureLinkAllowedOrigins: allowedOrigin ? [allowedOrigin] : [],
   };

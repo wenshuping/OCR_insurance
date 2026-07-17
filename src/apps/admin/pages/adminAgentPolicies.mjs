@@ -4,7 +4,7 @@ const ALLOWED = Object.freeze({
   operation: ['read', 'write'],
   confirmation: ['not_required', 'required'],
   outputMode: ['direct', 'structured', 'preview'],
-  tool: [null, 'family_summary', 'coverage_report', 'sales_report', 'product_knowledge_search', 'create_upload_link', 'propose_memory', 'preview_transfer'],
+  tool: [null, 'list_families', 'family_summary', 'coverage_report', 'sales_report', 'product_knowledge_search', 'create_upload_link', 'propose_memory', 'preview_transfer'],
 });
 
 const FALLBACKS = Object.freeze({

@@ -81,7 +81,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
   {
     group: '系统',
     items: [
-      { key: 'agentPolicies', label: 'Agent 策略管理', description: '管理受限路由策略、预览决策和版本', icon: ShieldCheck },
+      { key: 'agentPolicies', label: '智能体策略管理', description: '管理受限路由策略、预览决策和版本', icon: ShieldCheck },
       { key: 'ocrRouting', label: 'OCR 模型路由', description: '按业务场景选择 OCR 模型', icon: ScanText },
       { key: 'membership', label: '会员设置', description: '配置会员购买和免费额度', icon: Settings },
     ],

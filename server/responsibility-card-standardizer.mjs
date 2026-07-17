@@ -135,6 +135,7 @@ function isSentenceFragmentTitle(value = '') {
   if (/^(?:主合同保险费已由本公司其他合同豁免|在给付本附加合同各项保险金|本公司给付的保险金|累计给付的|本保险累计给付的|本附加合同的.+豁免保险费和.+豁免保险费)/u.test(target)) return true;
   if (/^(?:本附加合同|本合同|上述)?(?:上述)?[一二三四五六七八九十\d]+项(?:保险金|补偿金)/u.test(target)) return true;
   if (/^(?:本附加合同|本合同|本主险合同)的.+(?:保险金|豁免保险费)$/u.test(target)) return true;
+  if (/^给付.+给付.+(?:保险金|补偿金|年金|津贴|豁免保险费)$/u.test(target)) return true;
   if (/国寿附加.*豁免保险费/u.test(target)) return true;
   if (/疾病定义|严重慢性缩窄性心包炎/u.test(target) && target.length > 18) return true;
   if (/人民币.*保险单年度.*保险费/u.test(target)) return true;
@@ -154,7 +155,7 @@ function isDisplayOnlyMetricTitle(value = '') {
   const target = compact(value);
   if (/险$/u.test(target)) return false;
   if (/(?:保险金|年金|津贴|豁免|赔偿|补偿|伤残|身故|全残|责任|调整)$/u.test(target)) return false;
-  return /给付倍数|增额|利率|限额/u.test(target);
+  return /给付倍数|给付天数|天数上限|增额|利率|限额/u.test(target);
 }
 
 function isWaiverText(value = '') {
@@ -649,7 +650,8 @@ function isNonResponsibilityAdministrativeClause(value = '') {
   const target = compact(value);
   if (!target) return false;
   const head = target.replace(/^[.．、\s]+/u, '').slice(0, 220);
-  if (/^(?:索赔申请|保险金申请|理赔申请|申请保险金|保险金的申请|身故保险金的申请|残废保险金的申请|残疾保险金的申请|给付表|释义|定义|权益转让|受益人|保险金受益人|身故保险金受益人|住所或通讯地址|合同的转让|投保人地址|诉讼时效|补偿原则)/u.test(head)) return true;
+  if (/^(?:索赔申请|保险金申请|理赔申请|申请保险金|保险金的申请|保险金计算方法|身故保险金的申请|残废保险金的申请|残疾保险金的申请|给付表|释义|定义|权益转让|受益人|保险金受益人|身故保险金受益人|住所或通讯地址|合同的转让|投保人地址|诉讼时效|补偿原则)/u.test(head)) return true;
+  if (/^被保险人在保险期间内住院且当保险期间届满时仍未出院/u.test(head)) return true;
   if (/申请(?:书|人)|索赔申请|户籍证明|身份证件|死亡证明|验尸证明|宣告死亡|证明和资料|请求权|受益人(?:的)?指定|受益人变更|法定继承人|给付表/u.test(head)) return true;
   if (/身故保险金受益人|权益转让|变更受益人/u.test(head) && !/(?:若|如|在).{0,80}(?:身故|全残|残疾|烧伤).{0,80}(?:给付|赔付)/u.test(head)) return true;
   return false;
@@ -819,6 +821,7 @@ function titledResponsibilitiesFromKnowledge(record = {}, policy = {}) {
         && /(?:豁免保险费|保险金|保险责任|年金|生存金|教育金|养老金|满期金|祝寿金|长寿金|关爱金|津贴|豁免|金)$/u.test(marker.title)
         && !isWeakLiabilityName(marker.title)
         && !isInvalidResponsibilityTitle(marker.title)
+        && !isSentenceFragmentTitle(marker.title)
         && !(compact(marker.title) === '生存金' && /包括以下(?:两项|三项)/u.test(compact(normalized.slice(Math.max(0, marker.titleStart - 40), marker.titleStart))))
       );
     });
@@ -1610,11 +1613,12 @@ export function buildResponsibilityCardsForPolicy({
 
   normalizedIndicators.forEach((indicator) => {
     const responsibility = normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
-    if (responsibility) matchedResponsibilities.add(responsibility);
-    if (!shouldCreateIndicatorCard(indicator, {
+    const shouldCreateCard = shouldCreateIndicatorCard(indicator, {
       responsibility,
       hasKnowledgeResponsibilities: derivedKnowledgeResponsibilities.length > 0,
-    })) return;
+    });
+    if (responsibility && shouldCreateCard) matchedResponsibilities.add(responsibility);
+    if (!shouldCreateCard) return;
     const title = firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
     const key = cardKeyFor({ policy, indicator, responsibility, title });
     const existing = cardsByKey.get(key);

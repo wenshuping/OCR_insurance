@@ -103,8 +103,7 @@ function addTag(tags, tag, enabled = true) {
 function hasCompoundGrowth(content) {
   return includes(content, /(?:基本保险金额|基本保额)\s*[×xX*]\s*[（(]\s*1\s*[+＋]\s*\d+(?:\.\d+)?\s*%\s*[）)]\s*(?:\^|的第?)?\s*(?:[（(]?\s*n\s*[-－]\s*1\s*[）)]?|n-1)?/u)
     || includes(content, /(?:基本保险金额|基本保额)\s*[×xX*]\s*1\.\d+\s*(?:\^|的第?)\s*(?:[（(]?\s*n\s*[-－]\s*1\s*[）)]?|n-1)/u)
-    || includes(content, /有效保险金额/u)
-    || includes(content, /(?:年复利|复利递增|按年复利|年度复利|每年按.{0,8}(?:递增|增长))/u);
+    || includes(content, /有效保险金额/u);
 }
 
 function categoryLabelFor(category, participating) {
@@ -142,7 +141,7 @@ function routeCategory(content, identity, participating, compoundGrowth) {
     || includes(content, /终身寿险|终身寿|增额终身|定期寿险|定期人寿|普通寿险/u);
   const wholeLifeSignal = includes(content, /终身寿|终身保险|身故保险金|全残保险金/u);
 
-  if (incrementalIdentity || (compoundGrowth && lifeProductSignal)) return 'incremental_whole_life';
+  if (incrementalIdentity) return 'incremental_whole_life';
   if (investmentLinkedIdentity) return 'investment_linked';
   if (universalIdentity) return 'universal_life';
   if (longTermCareIdentity) return 'long_term_care';
@@ -162,7 +161,7 @@ function routeCategory(content, identity, participating, compoundGrowth) {
   if (includes(content, /(?:两全|满期保险金|满期生存保险金)/u)) return 'endowment';
   if (includes(content, /(?:医疗保险金|住院|门诊|免赔额|报销|医疗费用)/u)
     && !includes(content, /意外医疗/u)) return 'medical';
-  if (compoundGrowth || includes(content, /增额终身寿|增额寿|保额递增/u)) return 'incremental_whole_life';
+  if (includes(content, /增额终身寿|增额寿|保额递增/u)) return 'incremental_whole_life';
   if (includes(content, /(?:定期寿险|定期人寿|保险期间.{0,20}(?:年|岁).*身故|身故.{0,20}保险期间.{0,20}(?:年|岁))/u)) return 'term_life';
   if (includes(content, /(?:意外伤害保险|意外身故|意外伤残|意外医疗|交通意外)/u) && !lifeProductSignal) return 'accident';
   if (participating && includes(identity, /寿险|人寿保险/u)) return 'participating_life';

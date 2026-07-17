@@ -191,6 +191,14 @@ export type CustomerResponsibilitySummaryBlock = {
   editable: boolean;
   order: number;
   content: string;
+  sourceRefs?: string[];
+};
+
+export type CustomerResponsibilityMaterialSource = {
+  evidenceId: string;
+  fileName: string;
+  pageStart?: number;
+  pageEnd?: number;
 };
 
 export type CustomerResponsibilitySummary = {
@@ -203,6 +211,7 @@ export type CustomerResponsibilitySummary = {
   sourceUrls: string[];
   officialResponsibilityText?: string;
   contentBlocks?: CustomerResponsibilitySummaryBlock[];
+  materialSources?: CustomerResponsibilityMaterialSource[];
 };
 
 export type CustomerResponsibilitySummaryResponse =

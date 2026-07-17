@@ -482,8 +482,9 @@ export function validatePolicyEntryForm(
   if (requireParticipantRelations && !hasConfirmedRelation(applicantRelation)) errors.push('投保人与顶梁柱的关系');
   if (!hasRequiredText(data.insured)) errors.push('被保险人姓名');
   if (requireParticipantRelations && !hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
-  if (!hasRequiredText(data.beneficiary)) errors.push('受益人');
-  if (!hasConfirmedRelation(data.beneficiaryRelation)) errors.push('受益人与顶梁柱的关系');
+  const beneficiary = normalizeBeneficiaryValue(data.beneficiary);
+  if (!hasRequiredText(beneficiary)) errors.push('受益人');
+  if (beneficiary !== '法定' && !hasConfirmedRelation(data.beneficiaryRelation)) errors.push('受益人与顶梁柱的关系');
   if (!hasRequiredText(data.date)) errors.push('投保时间');
   if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');
   if (!hasRequiredText(data.coveragePeriod)) errors.push('保障期间');

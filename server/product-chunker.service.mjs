@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 
+import { classifyChunkTopics } from './product-knowledge-topics.mjs';
+
 function text(value) {
   return String(value ?? '').replace(/\r\n?/gu, '\n').trim();
 }
@@ -9,6 +11,30 @@ function stableId(...parts) {
   return `kch_${hash}`;
 }
 
+function documentMetadata(document, product) {
+  const metadata = document?.payload && typeof document.payload === 'object' ? document.payload : {};
+  const materialUsages = (Array.isArray(metadata.materialUsages) ? metadata.materialUsages : [metadata.materialUsage])
+    .map(text).filter(Boolean);
+  const productNames = (Array.isArray(metadata.productNames) ? metadata.productNames : [metadata.productName, product?.productName])
+    .map(text).filter(Boolean);
+  return {
+    title: text(metadata.title) || text(document.fileName),
+    fileName: text(document.fileName),
+    materialType: text(metadata.materialType),
+    documentType: text(document.documentType),
+    materialUsages: [...new Set(materialUsages)],
+    company: text(metadata.company) || text(product?.company),
+    productNames: [...new Set(productNames)],
+    versionLabel: text(metadata.versionLabel) || text(product?.versionLabel),
+    focusTags: [...new Set((Array.isArray(metadata.focusTags) ? metadata.focusTags : []).map(text).filter(Boolean))],
+    specialInstructions: text(metadata.specialInstructions),
+    contributorName: text(metadata.contributorName),
+    contributorRole: text(metadata.contributorRole),
+    sourceAuthority: text(document.sourceAuthority),
+    sourceUrl: text(metadata.sourceUrl),
+  };
+}
+
 export function estimateTokenCount(value) {
   const content = text(value);
   const cjkCount = (content.match(/[\u3400-\u9fff]/gu) || []).length;
@@ -16,22 +42,20 @@ export function estimateTokenCount(value) {
   return cjkCount + latinTokens.length;
 }
 
-function contextPrefix({ document, product, page, headingPath }) {
-  const metadata = document?.payload && typeof document.payload === 'object' ? document.payload : {};
-  const focusTags = Array.isArray(metadata.focusTags) ? metadata.focusTags.map(text).filter(Boolean) : [];
-  const productNames = Array.isArray(metadata.productNames) ? metadata.productNames.map(text).filter(Boolean) : [];
+function contextPrefix({ document, product, page, headingPath, topics = [] }) {
+  const metadata = documentMetadata(document, product);
   return [
     product?.company ? `保险公司：${text(product.company)}` : '',
     product?.productName ? `产品：${text(product.productName)}` : '',
-    productNames.length > 1 ? `本资料涉及产品：${productNames.join('、')}` : '',
     product?.versionLabel ? `产品版本：${text(product.versionLabel)}` : '',
-    metadata.contributorName ? `知识贡献者：${text(metadata.contributorRole) || '未标注角色'} · ${text(metadata.contributorName)}` : '',
-    `资料：${text(document.fileName)}`,
-    `资料类型：${text(document.documentType) || 'unknown'}`,
-    metadata.materialType ? `人工标注类型：${text(metadata.materialType)}` : '',
-    Array.isArray(metadata.materialUsages) && metadata.materialUsages.length ? `资料用途：${metadata.materialUsages.map(text).filter(Boolean).join('、')}` : metadata.materialUsage ? `资料用途：${text(metadata.materialUsage)}` : '',
-    focusTags.length ? `重点关注标签：${focusTags.join('、')}` : '',
-    metadata.specialInstructions ? `人工检索说明（非事实证据）：${text(metadata.specialInstructions)}` : '',
+    metadata.title ? `资料标题：${metadata.title}` : '',
+    `资料文件：${metadata.fileName}`,
+    metadata.contributorName ? `知识贡献者：${metadata.contributorRole || '未标注角色'} · ${metadata.contributorName}` : '',
+    `资料类型：${metadata.materialType || metadata.documentType || 'unknown'}`,
+    metadata.materialUsages.length ? `资料用途：${metadata.materialUsages.join('、')}` : '',
+    metadata.focusTags.length ? `重点关注标签：${metadata.focusTags.join('、')}` : '',
+    metadata.specialInstructions ? `资料备注（非原文证据）：${metadata.specialInstructions}` : '',
+    topics.length ? `切片主题：${topics.map((topic) => topic.label).join('、')}` : '',
     headingPath.length ? `章节：${headingPath.join(' / ')}` : '',
     `页码：${text(page.sourceLabel) || page.pageNo}`,
     '审核状态：待审核',
@@ -152,7 +176,7 @@ function detectHeading(line, declaredHeadings = []) {
   return { title: content, level, confidence, reasons };
 }
 
-function documentSections(pages = []) {
+function documentSections(pages = [], options = {}) {
   const sections = [];
   const headingStack = [];
   let current = null;
@@ -162,6 +186,10 @@ function documentSections(pages = []) {
   };
 
   for (const page of Array.isArray(pages) ? pages : []) {
+    if (!options.keepCrossPageSections) {
+      closeCurrent();
+      headingStack.length = 0;
+    }
     if (Array.isArray(page?.tables) && page.tables.length) continue;
     const pageNo = Number(page?.pageNo) || 1;
     const declaredHeadings = (Array.isArray(page?.headings) ? page.headings : []).map(text).filter(Boolean);
@@ -205,6 +233,10 @@ function documentSections(pages = []) {
 
 function chunkRecord({ id, document, product, page, pageEnd = null, headingPath, chunkType, content, parentChunkId = '', payload = {} }) {
   const normalizedContent = text(content);
+  const topicContent = chunkType === 'table'
+    ? [text(page?.rawText), normalizedContent].filter(Boolean).join('\n')
+    : normalizedContent;
+  const topics = classifyChunkTopics({ headingPath, content: topicContent, chunkType });
   return {
     id,
     documentId: text(document.id),
@@ -216,13 +248,19 @@ function chunkRecord({ id, document, product, page, pageEnd = null, headingPath,
     pageStart: Number(page.pageNo),
     pageEnd: Number(pageEnd || page.pageNo),
     content: normalizedContent,
-    contextualPrefix: contextPrefix({ document, product, page, headingPath }),
+    contextualPrefix: contextPrefix({ document, product, page, headingPath, topics }),
     tokenCount: estimateTokenCount(normalizedContent),
     contentHash: crypto.createHash('sha256').update(normalizedContent).digest('hex'),
     sourceAuthority: text(document.sourceAuthority) || 'company_material',
     reviewStatus: 'pending',
     indexStatus: 'ready',
-    payload: { sourceLabel: text(page.sourceLabel) || `第 ${page.pageNo} 页`, ...payload },
+    payload: {
+      sourceLabel: text(page.sourceLabel) || `第 ${page.pageNo} 页`,
+      documentMetadata: documentMetadata(document, product),
+      businessTopics: topics.map((topic) => topic.code),
+      businessTopicLabels: topics.map((topic) => topic.label),
+      ...payload,
+    },
   };
 }
 
@@ -269,7 +307,7 @@ export function chunkProductDocument(input = {}) {
 
   const maxTokens = document.documentType === 'terms' ? 800 : 500;
   const childChunks = [];
-  documentSections(pages).forEach((section, sectionIndex) => {
+  documentSections(pages, { keepCrossPageSections: document.documentType === 'terms' }).forEach((section, sectionIndex) => {
     const sourcePage = pages.find((page) => Number(page?.pageNo) === section.pageStart) || { pageNo: section.pageStart };
     const parts = packUnits(sentenceUnits(section.units.map((unit) => unit.text).join('\n')), maxTokens);
     parts.forEach((part, partIndex) => childChunks.push(chunkRecord({

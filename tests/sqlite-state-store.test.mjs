@@ -52,6 +52,52 @@ function baseKnowledgeState() {
   };
 }
 
+test('sqlite store loads only authorized family rows for Agent queries', async (t) => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const seedStatePath = path.join(dir, 'state.json');
+  await writeJson(seedStatePath, {
+    users: [{ id: 7, mobile: '13800138000', status: 'active' }],
+    officialDomainProfiles: [{ id: 'profile-1', company: '测试保险', officialDomains: ['example.test'] }],
+    familyProfiles: [
+      { id: 71, ownerUserId: 7, familyName: '授权家庭', status: 'active' },
+      { id: 72, ownerUserId: 8, familyName: '其他家庭', status: 'active' },
+    ],
+    familyMembers: [{ id: 711, familyId: 71, name: '成员', status: 'active' }],
+    policies: [
+      { id: 712, userId: 7, familyId: 71, company: '测试保险', name: '测试保单', status: 'active' },
+      { id: 713, userId: 8, familyId: 71, company: '其他保险', name: '越权保单', status: 'active' },
+    ],
+    familyReports: [
+      { id: 714, familyId: 71, ownerUserId: 7, status: 'active', generatedAt: '2026-07-14T01:00:00.000Z' },
+      { id: 715, familyId: 71, ownerUserId: 8, status: 'active', generatedAt: '2026-07-14T02:00:00.000Z' },
+      { id: 716, familyId: 71, ownerUserId: null, ownerGuestId: '', status: 'active', generatedAt: '2026-07-14T03:00:00.000Z' },
+      { id: 717, familyId: 71, ownerUserId: null, ownerGuestId: 'guest-other', status: 'active', generatedAt: '2026-07-14T04:00:00.000Z' },
+    ],
+    familySalesReviews: [
+      { id: 718, familyId: 71, ownerUserId: 7, status: 'active', generatedAt: '2026-07-14T01:00:00.000Z' },
+      { id: 719, familyId: 71, ownerUserId: 8, status: 'active', generatedAt: '2026-07-14T02:00:00.000Z' },
+      { id: 720, familyId: 71, ownerUserId: null, ownerGuestId: '', status: 'active', generatedAt: '2026-07-14T03:00:00.000Z' },
+      { id: 721, familyId: 71, ownerUserId: null, ownerGuestId: 'guest-other', status: 'active', generatedAt: '2026-07-14T04:00:00.000Z' },
+    ],
+  });
+  const store = await createSqliteStateStore({ dbPath, seedStatePath });
+  t.after(() => store.close());
+  await store.load();
+  const identityState = await store.loadAgentIdentityState();
+  assert.deepEqual(identityState.users.map((row) => row.id), [7]);
+  assert.deepEqual(identityState.agentChannelIdentities, []);
+  assert.deepEqual((await store.loadOfficialDomainProfiles()).map((row) => row.id), ['profile-1']);
+  assert.deepEqual((await store.listAuthorizedFamilyProfiles({ internalUserId: 7 })).map((row) => row.id), [71]);
+  const loaded = await store.loadAuthorizedFamilyState({ familyId: 71, internalUserId: 7 });
+  assert.equal(loaded.family.id, 71);
+  assert.equal(loaded.state.familyMembers.length, 1);
+  assert.deepEqual(loaded.state.policies.map((row) => row.id), [712]);
+  assert.deepEqual(loaded.state.familyReports.map((row) => row.id), [714, 716]);
+  assert.deepEqual(loaded.state.familySalesReviews.map((row) => row.id), [718, 720]);
+  assert.equal(await store.loadAuthorizedFamilyState({ familyId: 72, internalUserId: 7 }), null);
+});
+
 test('sqlite state store imports JSON once and keeps database as the source of truth', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
@@ -1926,6 +1972,7 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   const first = await store.createAgentQuestionPolicyDraft({
     version: 1,
     policies: [{ key: 'chat', decision: 'execute' }],
+    runtimeSettings: { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 },
     actor: 'admin:1',
     createdAt: '2026-07-12T01:00:00.000Z',
   });
@@ -1944,6 +1991,7 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   assert.equal(published.status, 'published');
   assert.equal(published.actor, 'admin:2');
   assert.deepEqual(published.policies, [{ key: 'chat', decision: 'propose' }]);
+  assert.deepEqual(published.runtimeSettings, { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
   assert.equal(store.db.prepare("SELECT count(*) AS count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
   assert.equal(store.db.prepare('SELECT status FROM agent_question_policy_versions WHERE id = ?').get(first.id).status, 'archived');
   assert.equal((await store.publishAgentQuestionPolicyVersion({ id: second.id, actor: 'admin:2' })).status, 'published');
@@ -1954,15 +2002,20 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   store.close();
 });
 
-test('sqlite state store allocates draft versions and rolls back atomically', async () => {
+test('sqlite state store allocates draft versions and rolls back policies with runtime settings atomically', async () => {
   const dir = await makeTempDir();
   const store = await createSqliteStateStore({ dbPath: path.join(dir, 'policy-ocr.sqlite') });
-  const drafts = await Promise.all(Array.from({ length: 4 }, () => store.createAgentQuestionPolicyDraft({ policies: [{ key: 'chat' }], actor: 'admin' })));
+  const drafts = await Promise.all(Array.from({ length: 4 }, (_, index) => store.createAgentQuestionPolicyDraft({
+    policies: [{ key: 'chat' }],
+    runtimeSettings: index === 0 ? { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 } : undefined,
+    actor: 'admin',
+  })));
   assert.deepEqual(drafts.map((row) => row.version).sort((a, b) => a - b), [1, 2, 3, 4]);
   await store.publishAgentQuestionPolicyVersion({ id: drafts[0].id, actor: 'admin' });
   const rolled = await store.rollbackAgentQuestionPolicyVersion({ sourceId: drafts[0].id, actor: 'admin' });
   assert.equal(rolled.status, 'published');
   assert.equal(rolled.version, 5);
+  assert.deepEqual(rolled.runtimeSettings, { fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 });
   assert.equal(store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
   assert.equal(store.db.prepare("SELECT count(*) count FROM agent_question_policy_versions WHERE version = 5 AND status = 'draft'").get().count, 0);
   store.close();

@@ -35,6 +35,14 @@ export function assessProductDocumentQuality(input = {}) {
     ? check('page_traceability', 'blocked', '部分页面缺少有效页码', { affectedCount: invalidPages.length })
     : check('page_traceability', 'passed', '页面均可追溯'));
 
+  const incompletePages = pages.filter((page) => page?.layout?.extraction?.incomplete === true);
+  checks.push(incompletePages.length
+    ? check('page_extraction_incomplete', 'blocked', '部分页面的列表或比较内容未完整识别，需要视觉识别或人工复核', {
+        pageNumbers: incompletePages.map((page) => Number(page.pageNo)).filter(Boolean),
+        affectedCount: incompletePages.length,
+      })
+    : check('page_extraction_complete', 'passed', '未发现明显缺失的页面结构内容'));
+
   const suspiciousRatio = suspiciousCharacterRatio(body);
   checks.push(suspiciousRatio > 0.02
     ? check('text_integrity', 'blocked', '正文包含过多乱码或控制字符', { ratio: suspiciousRatio })
@@ -65,6 +73,64 @@ export function assessProductDocumentQuality(input = {}) {
     checks,
     blockingReasons,
     warnings,
-    qualityRuleVersion: 'product-document-quality-v1',
+    qualityRuleVersion: 'product-document-quality-v2',
+  };
+}
+
+export function assessProductPublishReadiness(input = {}) {
+  const document = input.document || {};
+  const links = Array.isArray(input.links) ? input.links : [];
+  const readyChunks = (Array.isArray(input.chunks) ? input.chunks : [])
+    .filter((chunk) => text(chunk?.chunkType) !== 'parent' && text(chunk?.indexStatus) === 'ready');
+  const boundLinks = links.filter((link) => text(link?.canonicalProductId));
+  const publishableChunks = readyChunks.filter((chunk) => text(chunk?.canonicalProductId));
+  const checks = [];
+
+  checks.push(publishableChunks.length
+    ? check('product_binding', 'passed', '资料已关联产品')
+    : check('product_binding_missing', 'blocked', '没有已绑定产品的可用切片，不能发布'));
+
+  const unboundChunks = readyChunks.filter((chunk) => !text(chunk?.canonicalProductId));
+  if (unboundChunks.length) {
+    checks.push(check('chunk_product_binding_missing', 'warning', '未绑定产品的切片将在本次发布时继续隔离', {
+      affectedCount: unboundChunks.length,
+    }));
+  }
+
+  const ambiguousChunks = publishableChunks.filter((chunk) => {
+    if (chunk?.payload?.manualBinding?.action === 'bind') return false;
+    const pageStart = Number(chunk?.pageStart || 0);
+    const pageEnd = Number(chunk?.pageEnd || pageStart);
+    const applicable = boundLinks.filter((link) => (
+      pageEnd >= Number(link?.pageStart || 0)
+      && pageStart <= Number(link?.pageEnd || link?.pageStart || 0)
+    ));
+    return applicable.length !== 1
+      || text(applicable[0]?.canonicalProductId) !== text(chunk?.canonicalProductId);
+  });
+  if (ambiguousChunks.length) {
+    checks.push(check('product_boundary_ambiguous', 'blocked', '部分切片无法唯一对应一个产品范围', {
+      affectedCount: ambiguousChunks.length,
+    }));
+  }
+
+  const explicitVersionId = text(document?.payload?.productVersionId);
+  const missingVersionChunks = explicitVersionId
+    ? readyChunks.filter((chunk) => text(chunk?.productVersionId) !== explicitVersionId)
+    : [];
+  if (missingVersionChunks.length) {
+    checks.push(check('product_version_binding_missing', 'blocked', '部分切片未绑定已选择的产品版本', {
+      affectedCount: missingVersionChunks.length,
+    }));
+  }
+
+  const blockingReasons = checks.filter((item) => item.status === 'blocked');
+  return {
+    decision: blockingReasons.length ? 'blocked' : 'pass',
+    checks,
+    blockingReasons,
+    publishableChunkCount: publishableChunks.length,
+    isolatedChunkCount: unboundChunks.length,
+    qualityRuleVersion: 'product-publish-readiness-v1',
   };
 }

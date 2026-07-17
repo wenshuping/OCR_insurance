@@ -4,6 +4,7 @@ import {
   validateSalesTurnProposal,
 } from '../server/sales-champion-turn.contract.mjs';
 import {
+  SALES_CHAMPION_SKILL_CONTRACT,
   selectSalesChampionSkills,
 } from '../server/sales-champion-skill-registry.mjs';
 import {
@@ -79,6 +80,8 @@ test('skill registry selects a primary skill, supporting skills, and mandatory f
   ]);
   assert.equal(selection.decision, 'execute');
   assert.equal(selection.confidence, 0.91);
+  assert.equal(selection.executionContract, SALES_CHAMPION_SKILL_CONTRACT);
+  assert.match(selection.executionContract.outputContract, /完整客户语义包/u);
 });
 
 test('skill registry rejects a capability whose stage and concern prerequisites do not match', () => {
@@ -93,6 +96,19 @@ test('skill registry rejects a capability whose stage and concern prerequisites 
   assert.deepEqual(selection.rejected, [
     { key: 'tradeoff_disclosure', reason: 'stage_or_concern_mismatch' },
   ]);
+});
+
+test('skill registry falls back to generic sales champion skill when no specific capability matches', () => {
+  const selection = selectSalesChampionSkills(validProposal({
+    stage: { value: 'proposal', confidence: 0.9 },
+    concerns: [{ type: 'unknown', priority: 'primary', confidence: 0.86 }],
+    signals: { explicitRefusal: false, stopContact: false, factSensitive: false },
+    proposedCapabilities: ['appointment_scope'],
+  }));
+
+  assert.equal(selection.primary.key, 'general_sales_clarification');
+  assert.equal(selection.decision, 'clarify');
+  assert.match(selection.executionContract.outputContract, /不得把客户自然语言降级为关键词话术/u);
 });
 
 test('readiness gate stops on refusal before selecting promotional skills', () => {

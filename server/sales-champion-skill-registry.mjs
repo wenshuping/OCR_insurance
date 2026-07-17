@@ -15,6 +15,19 @@ const DEFINITIONS = Object.freeze({
   general_sales_clarification: Object.freeze({ version: 1, stages: ['contact', 'appointment', 'discovery', 'proposal', 'objection', 'decision', 'post_sale'], concerns: [] }),
 });
 
+export const SALES_CHAMPION_SKILL_CONTRACT = Object.freeze({
+  requiredContext: Object.freeze([
+    'originalQuestion',
+    'recentConversation',
+    'customerStatements',
+    'stage',
+    'concerns',
+    'authorizedFamilyContext',
+    'insuranceExpertEvidence',
+  ]),
+  outputContract: '所有 sales_champion Skills 必须基于完整客户语义包输出：客户已表达事实 + 销售阶段/异议解读 + 可执行沟通建议/话术 + 需要保险专家核验的事实点 + 不确定边界。不得把客户自然语言降级为关键词话术，不得编造保险责任、现金价值、理赔、核保或产品比较事实。',
+});
+
 function capabilityMatches(definition, proposal) {
   const stageMatches = definition.stages.includes(proposal.stage.value);
   const concernTypes = new Set(proposal.concerns.map((concern) => concern.type));
@@ -47,6 +60,7 @@ export function selectSalesChampionSkills(proposal) {
   return {
     primary: skillRef(primaryKey),
     supporting: supportingKeys.map(skillRef),
+    executionContract: SALES_CHAMPION_SKILL_CONTRACT,
     rejected,
     decision: primaryKey === 'general_sales_clarification' ? 'clarify' : 'execute',
     reasonCodes: proposal.signals.factSensitive ? ['official_facts_required'] : [],

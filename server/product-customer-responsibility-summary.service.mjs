@@ -23,7 +23,7 @@ import {
   responsibilityGenerationGovernanceDigest,
 } from './responsibility-generation-governance.service.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v24-planner-blocks';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v25-planner-routing';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -32,6 +32,11 @@ const DEFAULT_TIMEOUT_MS = 45_000;
 const DEEPSEEK_LOG_PREVIEW_LIMIT = 3000;
 const OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT = 6500;
 const PROMPT_RESPONSIBILITY_EXCERPT_LIMIT = 6500;
+const ROUTABLE_PRODUCT_CATEGORIES = new Set([
+  'incremental_whole_life', 'ordinary_whole_life', 'term_life', 'annuity', 'endowment',
+  'critical_illness', 'medical', 'accident', 'long_term_care', 'universal_life',
+  'investment_linked', 'participating_life', 'other',
+]);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -104,6 +109,14 @@ function customerSummaryModelCandidates({ routedModelName = '', resolvedModelNam
     return uniqueStrings([DEFAULT_MODEL, resolved, PRO_MODEL]);
   }
   return uniqueStrings([routed || resolved, resolved]);
+}
+
+function routingFromPlanner(localRouting, plannerResult) {
+  const planner = plannerResult?.plannerUsed ? plannerResult.planner : null;
+  const productCategory = text(planner?.productCategory);
+  const categoryLabel = text(planner?.categoryLabel);
+  if (!ROUTABLE_PRODUCT_CATEGORIES.has(productCategory) || !categoryLabel) return localRouting;
+  return { ...localRouting, productCategory, categoryLabel };
 }
 
 function sourceRefIdsFromValue(value) {
@@ -764,6 +777,143 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
   }
 }
 
+function approvedMaterialChunks(evidencePackage = {}) {
+  return normalizeArray(evidencePackage?.evidenceChunks)
+    .filter((chunk) => (
+      text(chunk?.content)
+      && text(chunk?.reviewStatus) === 'published'
+      && ['company_material', 'approved_company_material', 'expert_training'].includes(text(chunk?.sourceAuthority))
+    ))
+    .slice(0, 12)
+    .map((chunk, index) => ({
+      evidenceId: text(chunk?.evidenceId) || `M${index + 1}`,
+      fileName: text(chunk?.citation?.fileName) || '已审核上传资料',
+      pageStart: Number(chunk?.pageStart || chunk?.citation?.pageStart || 0),
+      pageEnd: Number(chunk?.pageEnd || chunk?.citation?.pageEnd || chunk?.pageStart || 0),
+      sourceAuthority: text(chunk?.sourceAuthority),
+      contextualPrefix: text(chunk?.contextualPrefix),
+      content: text(chunk?.content).slice(0, 4_000),
+    }));
+}
+
+function buildMaterialEnrichmentPrompt({ product, summary, evidence }) {
+  return [
+    '你是一名保险产品资料融合助手。请根据已审核上传资料，为现有保险责任助手结果生成补充内容。',
+    '上传资料内容不固定。先理解切片实际主题，再决定是否生成产品优势、服务、适用场景、投保说明、理赔说明、案例、版本差异、可选责任或其他合适区块；不要套用固定标题。',
+    '只输出合法 JSON，不要 Markdown 或解释性前后缀。',
+    '',
+    'JSON Schema：',
+    '{"contentBlocks":[{"title":"","content":"","sourceRefs":["M1"]}],"additionalResponsibilities":[{"title":"","plainText":"","triggerCondition":"","howItPays":"","calculationStatus":"claim_contingent|scheduled_cashflow|needs_table|waiver_only|not_calculable","requiredPolicyFields":[],"sourceRefs":["M1"]}],"notices":[""]}',
+    '',
+    '规则：',
+    '- 只能使用 MATERIAL_EVIDENCE 中明确出现的事实，不得使用模型记忆补充。',
+    '- contentBlocks 的标题和数量由切片内容决定；没有新增信息时返回空数组。',
+    '- 相似切片合并总结，不要重复现有摘要已经完整表达的内容。',
+    '- 上传资料明确写出新的保险责任时，可以放入 additionalResponsibilities；不得仅凭宣传语推断保险责任。',
+    '- 不得改写或删除 BASE_SUMMARY 中已有责任。上传资料与正式条款冲突时，不采用冲突结论，并在 notices 中提示以正式条款为准。',
+    '- 每个区块和新增责任必须填写真实 sourceRefs，只能引用 MATERIAL_EVIDENCE 中的 evidenceId。',
+    '- content 不要包含内部字段名，不要声称已经核验未提供的正式条款。',
+    '',
+    JSON.stringify({
+      product,
+      baseSummary: {
+        headline: text(summary?.headline),
+        contentBlocks: normalizeArray(summary?.contentBlocks).map((block) => ({
+          title: text(block?.title),
+          content: text(block?.content),
+        })),
+        responsibilities: normalizeArray(summary?.mainResponsibilities).map((item) => ({
+          title: text(item?.title),
+          plainText: text(item?.plainText),
+          howItPays: text(item?.howItPays),
+        })),
+      },
+      materialEvidence: evidence,
+    }),
+  ].join('\n');
+}
+
+export async function enrichCustomerResponsibilitySummaryWithMaterials({
+  summary = {},
+  evidencePackage = {},
+  generateWithDeepSeek = callDeepSeekForCustomerResponsibilitySummary,
+  modelName = resolveDeepSeekConfig().model,
+  logger = console,
+} = {}) {
+  const evidence = approvedMaterialChunks(evidencePackage);
+  if (!evidence.length || typeof generateWithDeepSeek !== 'function') return summary;
+  const product = {
+    company: text(summary?.company),
+    productName: text(summary?.productName),
+  };
+  let generated;
+  try {
+    generated = await generateWithDeepSeek({
+      prompt: buildMaterialEnrichmentPrompt({ product, summary, evidence }),
+      company: product.company,
+      productName: product.productName,
+      modelNameOverride: modelName,
+    });
+  } catch (error) {
+    logger?.warn?.('[customer-responsibility-summary] uploaded material enrichment failed', {
+      company: product.company,
+      productName: product.productName,
+      code: text(error?.code),
+      message: text(error?.message),
+    });
+    return summary;
+  }
+  const allowedSourceRefs = new Set(evidence.map((item) => item.evidenceId));
+  const sourceRefs = (value) => sourceRefIdsFromValue(value).filter((item) => allowedSourceRefs.has(item));
+  const baseBlocks = normalizeArray(summary?.contentBlocks);
+  const dynamicBlocks = normalizeArray(generated?.contentBlocks)
+    .map((block, index) => ({
+      blockKey: `uploadedMaterial${index + 1}`,
+      title: text(block?.title),
+      enabled: true,
+      editable: true,
+      order: baseBlocks.length + index + 1,
+      content: text(block?.content),
+      sourceRefs: sourceRefs(block?.sourceRefs),
+    }))
+    .filter((block) => block.title && block.content && block.sourceRefs.length);
+  const existingResponsibilityTitles = new Set(normalizeArray(summary?.mainResponsibilities).map((item) => text(item?.title)));
+  const additionalResponsibilities = normalizeArray(generated?.additionalResponsibilities)
+    .map((item) => ({
+      title: text(item?.title),
+      plainText: text(item?.plainText),
+      triggerCondition: text(item?.triggerCondition),
+      howItPays: text(item?.howItPays),
+      calculationStatus: text(item?.calculationStatus) || 'not_calculable',
+      requiredPolicyFields: uniqueStrings(item?.requiredPolicyFields),
+      sourceRefs: sourceRefs(item?.sourceRefs),
+    }))
+    .filter((item) => item.title && (item.plainText || item.howItPays) && item.sourceRefs.length && !existingResponsibilityTitles.has(item.title));
+  const notices = uniqueStrings([
+    ...normalizeArray(summary?.notices),
+    ...normalizeArray(generated?.notices).map(text),
+  ]);
+  if (!dynamicBlocks.length && !additionalResponsibilities.length && notices.length === normalizeArray(summary?.notices).length) {
+    return summary;
+  }
+  return {
+    ...summary,
+    contentBlocks: [...baseBlocks, ...dynamicBlocks],
+    mainResponsibilities: [...normalizeArray(summary?.mainResponsibilities), ...additionalResponsibilities],
+    notices,
+    requiredPolicyFields: uniqueStrings([
+      ...normalizeArray(summary?.requiredPolicyFields),
+      ...additionalResponsibilities.flatMap((item) => item.requiredPolicyFields),
+    ]),
+    materialSources: evidence.map((item) => ({
+      evidenceId: item.evidenceId,
+      fileName: item.fileName,
+      pageStart: item.pageStart,
+      pageEnd: item.pageEnd,
+    })),
+  };
+}
+
 function safeCustomerSummary(row = {}) {
   const summary = row.summaryJson || row.summary_json || row;
   const payload = plainObject(row.payload);
@@ -823,6 +973,7 @@ function safeCustomerSummary(row = {}) {
           editable: block?.editable !== false,
           order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
           content: text(block?.content),
+          sourceRefs: sourceRefIdsFromValue(block?.sourceRefs),
         };
       })
       .filter((block) => block.blockKey || block.title || block.content),
@@ -1091,9 +1242,23 @@ function normalizeCustomerSummaryContentBlocks(rawBlocks, summary = {}, source =
       editable: raw.editable !== false,
       order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : definition.order,
       content: text(raw.content),
+      sourceRefs: sourceRefIdsFromValue(raw.sourceRefs),
     };
   });
-  return normalizeCompositeDisplayBlocks(blocks, summary, context.routing || {});
+  const fixedKeys = new Set(CUSTOMER_SUMMARY_BLOCK_DEFINITIONS.map((definition) => definition.blockKey));
+  const dynamicBlocks = sourceBlocks
+    .filter((block) => block && typeof block === 'object' && !fixedKeys.has(text(block.blockKey)))
+    .map((block, index) => ({
+      blockKey: text(block.blockKey) || `uploadedMaterial${index + 1}`,
+      title: text(block.title),
+      enabled: block.enabled !== false,
+      editable: block.editable !== false,
+      order: Number.isFinite(Number(block.order)) ? Number(block.order) : blocks.length + index + 1,
+      content: text(block.content),
+      sourceRefs: sourceRefIdsFromValue(block.sourceRefs),
+    }))
+    .filter((block) => block.title || block.content);
+  return normalizeCompositeDisplayBlocks([...blocks, ...dynamicBlocks], summary, context.routing || {});
 }
 
 function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, productName, sourceUrls = [], routing = {}, sourceSections = {} } = {}) {
@@ -1440,7 +1605,7 @@ export async function generateProductCustomerResponsibilitySummary({
       message: '这个产品的保险责任资料需要进一步核验，请稍后再试。',
     };
   }
-  const routing = routeInsuranceProductCategory({
+  const localRouting = routeInsuranceProductCategory({
     productName,
     records: sourceRecords,
     indicators,
@@ -1462,13 +1627,14 @@ export async function generateProductCustomerResponsibilitySummary({
     mode: plannerMode,
     model: process.env.RESPONSIBILITY_PLANNER_MODEL || 'deepseek-v4-flash',
     product: { company, productName },
-    routing,
+    routing: localRouting,
     sourceSections,
     cards: normalizeArray(cards).map(cardPromptItem),
     indicators: normalizeArray(indicators).map(indicatorPromptItem),
     generateWithDeepSeek: resolvedGeneratePlannerWithDeepSeek,
     logger,
   });
+  const routing = routingFromPlanner(localRouting, plannerResult);
   const routedModelName = routing.modelTier === 'pro' ? PRO_MODEL : resolvedModelName;
   const prompt = buildStructuredResponsibilityPrompt({
     product: { company, productName },
