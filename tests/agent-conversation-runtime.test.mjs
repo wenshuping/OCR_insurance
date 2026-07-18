@@ -755,6 +755,40 @@ test('Agent Loop permits a zero-tool ordinary greeting without Direct fallback',
   assert.equal(context.rows.size, 1);
 });
 
+test('Agent Loop cannot treat an explicit rejection of pending product candidates as chat', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:reject-products', {
+    conversationId: 'reject-products-ref', version: 1, hermesSessionId: '', agentLoopSessionId: '', history: [],
+    product: null,
+    productCandidates: {
+      products: [
+        { label: '新华保险《候选产品一》', company: '新华保险', officialName: '候选产品一' },
+        { label: '新华保险《候选产品二》', company: '新华保险', officialName: '候选产品二' },
+        { ref: 'search_online', label: '以上都不是，联网查询' },
+      ],
+      question: '新华保险的康健华尊保什么',
+      updatedAt: 1_720_000_000_000,
+    },
+    question: null,
+  });
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn() {
+      return { sessionId: 'candidate-rejection-chat', finalReply: '好的，请换个产品名称。' };
+    } },
+    toolCapabilityService: { inspect() { return { callCount: 0, toolResults: [] }; } },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'reject-products', 'reject-products-1', '3'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.interaction.text, '语义服务暂不可用，请稍后重试。');
+});
+
 test('Agent Loop drops stale active product context when a new product clue is answered without a tool', async () => {
   const context = createMemoryContext();
   context.rows.set('default:dingtalk:ding-a:7:stale-product', {
@@ -1357,6 +1391,161 @@ test('Agent Loop returns an authoritative tool result without waiting for final 
     officialName: '寰宇尊悦高端医疗保险',
     canonicalProductId: 'product_10460b52297874bb',
   }]);
+});
+
+test('Agent Loop preserves the original product question after selecting online search', async () => {
+  const context = createMemoryContext();
+  const originalQuestion = '公开产品保险责任';
+  context.rows.set('default:dingtalk:ding-a:7:online-product-choice', {
+    conversationId: 'online-product-choice-ref', version: 1,
+    hermesSessionId: '', agentLoopSessionId: '', history: [], product: null,
+    productCandidates: {
+      products: [
+        {
+          ref: 'product_1', label: '中国人寿《国寿金彩明天两全保险（A款）（分红型）》',
+          canonicalProductId: 'rejected-a', company: '中国人寿',
+          officialName: '国寿金彩明天两全保险（A款）（分红型）',
+        },
+        {
+          ref: 'product_2', label: '中国人寿《国寿金彩明天两全保险（B款）（分红型）》',
+          canonicalProductId: 'rejected-b', company: '中国人寿',
+          officialName: '国寿金彩明天两全保险（B款）（分红型）',
+        },
+        { ref: 'search_online', label: '以上都不是，联网查询' },
+      ],
+      question: originalQuestion,
+      updatedAt: 1_720_000_000_000,
+    },
+    question: null,
+  });
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_insurance_expert',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '联网找到以下可能的正式产品，请选择一项。',
+        candidates: [{ ref: 'product_1', label: '联合承保机构《公开产品正式名称》' }],
+      },
+    },
+  }] };
+  const onlineAuthorizations = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { runTurn({ signal }) {
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { code: 'HERMES_ABORTED' }));
+      }, { once: true }));
+    } },
+    toolCapabilityService: {
+      authorizeOnlineProductSearch(token, rejectedCandidates) {
+        onlineAuthorizations.push({ token, rejectedCandidates });
+      },
+      inspect() { return claims; },
+      async waitForResult() { return claims; },
+    },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'online-product-choice', 'online-product-choice-2', '3'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(result.decision, 'clarify');
+  assert.deepEqual(onlineAuthorizations, [{
+    token: 'opaque-capability',
+    rejectedCandidates: [
+      {
+        canonicalProductId: 'rejected-a', company: '中国人寿',
+        officialName: '国寿金彩明天两全保险（A款）（分红型）',
+      },
+      {
+        canonicalProductId: 'rejected-b', company: '中国人寿',
+        officialName: '国寿金彩明天两全保险（B款）（分红型）',
+      },
+    ],
+  }]);
+  const stored = context.rows.get('default:dingtalk:ding-a:7:online-product-choice');
+  assert.equal(stored.productCandidates.question, originalQuestion);
+  assert.equal(stored.factBlock.goal.question, originalQuestion);
+});
+
+test('Agent Loop does not authorize online search when a full query replaces a pending action', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:replace-online-action', {
+    conversationId: 'replace-online-action-ref', version: 1,
+    hermesSessionId: '', agentLoopSessionId: '', history: [], product: null,
+    productCandidates: {
+      products: [{ ref: 'search_online', label: '以上都不是，联网查询' }],
+      question: '1', updatedAt: 1_720_000_000_000,
+    },
+    question: null,
+  });
+  const onlineAuthorizations = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn() {
+      return { sessionId: 'full-query-session', finalReply: '模型不应直接回答。' };
+    } },
+    toolCapabilityService: {
+      authorizeOnlineProductSearch(token) { onlineAuthorizations.push(token); },
+      inspect() { return { callCount: 0, toolResults: [] }; },
+    },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'replace-online-action', 'replace-online-action-2', '公开产品保险责任'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.deepEqual(onlineAuthorizations, []);
+  assert.equal(result.decision, 'deny');
+});
+
+test('Agent Loop clears the pending online action after an online miss', async () => {
+  const context = createMemoryContext();
+  context.rows.set('default:dingtalk:ding-a:7:online-product-miss', {
+    conversationId: 'online-product-miss-ref', version: 1,
+    hermesSessionId: '', agentLoopSessionId: '', history: [], product: null,
+    productCandidates: {
+      products: [{ ref: 'search_online', label: '以上都不是，联网查询' }],
+      question: '公开产品保险责任',
+      updatedAt: 1_720_000_000_000,
+    },
+    question: null,
+  });
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_insurance_expert',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '联网查询后仍未找到可确认的正式产品。', candidates: [],
+      },
+    },
+  }] };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { runTurn({ signal }) {
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+        reject(Object.assign(new Error('aborted'), { code: 'HERMES_ABORTED' }));
+      }, { once: true }));
+    } },
+    toolCapabilityService: {
+      inspect() { return claims; },
+      async waitForResult() { return claims; },
+    },
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  await runtime.processMessage({
+    ...envelope('ding-a', 'online-product-miss', 'online-product-miss-2', '1'),
+    toolCapability: 'opaque-capability',
+  });
+
+  const stored = context.rows.get('default:dingtalk:ding-a:7:online-product-miss');
+  assert.equal(stored.productCandidates, null);
+  assert.equal(stored.factBlock.pendingClarification ?? null, null);
 });
 
 test('a confirmed sales product is parsed as insurance evidence and then resumes the original sales task', async () => {

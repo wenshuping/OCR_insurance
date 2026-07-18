@@ -294,10 +294,12 @@
       "server/agent-context-fact-block.service.mjs",
       "server/agent-conversation-runtime.service.mjs",
       "server/agent-conversation-context.service.mjs",
+      "server/dingtalk-agent-gateway.service.mjs",
       "server/hermes-conversation-client.service.mjs",
       "server/hermes-agent-loop-client.service.mjs",
       "server/hermes-domain-mcp-server.mjs",
       "server/routes/agent.routes.mjs",
+      "server/routes/responsibilities.routes.mjs",
       "server/app.mjs",
       "server/sqlite-state-store.mjs",
       "tests/agent-semantic-contract.test.mjs",
@@ -331,9 +333,12 @@
       "tests/agent-semantic-legacy-question-router.test.mjs",
       "tests/agent-conversation-runtime.test.mjs",
       "tests/agent-conversation-context.test.mjs",
+      "tests/dingtalk-agent-gateway.test.mjs",
       "tests/hermes-agent-loop-client.test.mjs",
       "tests/hermes-domain-mcp-server.test.mjs",
       "tests/agent-question-routes.test.mjs",
+      "tests/policy-responsibility-query.test.mjs",
+      "tests/policy-ocr-flow.test.mjs",
       "tests/sqlite-state-store.test.mjs"
     ],
     "commands": [
@@ -367,9 +372,12 @@
       "node --test tests/agent-semantic-legacy-question-router.test.mjs",
       "node --test tests/agent-conversation-runtime.test.mjs",
       "node --test tests/agent-conversation-context.test.mjs",
+      "node --test tests/dingtalk-agent-gateway.test.mjs",
       "node --test tests/hermes-agent-loop-client.test.mjs",
       "node --test tests/hermes-domain-mcp-server.test.mjs",
       "node --test tests/agent-question-routes.test.mjs",
+      "node --test tests/policy-responsibility-query.test.mjs",
+      "node --test tests/policy-ocr-flow.test.mjs",
       "node --test tests/sqlite-state-store.test.mjs"
     ]
   },

@@ -3978,6 +3978,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       productCandidates: candidates.length ? {
         products: candidates.map((entity) => {
           const candidate = parseJson(entity.payload, {});
+          if (String(candidate.ref || '').trim() === 'search_online') {
+            return { ref: 'search_online', label: entity.display_name };
+          }
           const company = String(candidate.company || '').trim();
           const officialName = String(candidate.officialName || '').trim();
           const canonicalProductId = String(candidate.canonicalProductId || '').trim();

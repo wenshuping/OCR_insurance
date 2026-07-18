@@ -11,6 +11,8 @@ export function preparseAgentMessage(value) {
   const index = selected
     ? Number(selected[1]) - 1
     : chineseIndexes.get(chineseSelection?.[1]) ?? -1;
+  const rejectsCandidates = /^(?:(?:以上|这些|这几个)\s*)?都(?:不是|不对)(?:[，,\s]*(?:请)?(?:联网)?(?:查找|查询|搜索)(?:一下)?)?[。！!]?$/u
+    .test(question);
   const hasUploadSignal = /上传|录入/u.test(question) && /保单|资料/u.test(question);
   const questionWithoutPositiveUpload = question.replace(
     /(?:不得不|不但(?:还)?(?:要|需))\s*(?:上传|录入)/gu,
@@ -23,6 +25,7 @@ export function preparseAgentMessage(value) {
     candidateSelection: index >= 0 && index < 20
       ? { index, rawText: (selected || chineseSelection)[0] }
       : null,
+    ...(rejectsCandidates ? { candidateRejection: { rawText: question } } : {}),
     operationHint: hasUploadSignal && !hasNegatedUploadAction
       ? 'upload_link'
       : null,

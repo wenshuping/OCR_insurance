@@ -166,7 +166,7 @@ function projectResolution(value, type) {
   }
   if (status === 'ambiguous') {
     const candidates = projectCandidates(value?.candidates, type);
-    return candidates.length
+    return candidates.length || type === 'product'
       ? { status: 'ambiguous', entity: null, candidates }
       : { status: 'missing', entity: null, candidates: [] };
   }
@@ -490,6 +490,22 @@ function pendingSelection(state, selection, now) {
   };
 }
 
+function pendingProductRejection(state, now) {
+  const pending = state.pendingClarification;
+  const originalQuestion = clean(pending?.originalQuestion, 1_000);
+  const expiresAt = finiteTimestamp(pending?.expiresAt);
+  const proposal = normalizedProposal(pending?.proposal, originalQuestion);
+  if (clean(pending?.entityType, 20) !== 'product'
+    || !originalQuestion
+    || expiresAt === null
+    || expiresAt <= now
+    || !proposal
+    || requiredEntityType(proposal) !== 'product') {
+    return { valid: false, entityType: 'product' };
+  }
+  return { valid: true, entityType: 'product', proposal, originalQuestion };
+}
+
 function completedComparisonSelection(state, selection, now) {
   if (state.pendingClarification
     || state.lastCompletedAction?.comparison !== true
@@ -586,11 +602,31 @@ export function createAgentSemanticResolver({
       const preparsed = preparseAgentMessage(normalizedQuestion);
       const state = sanitizedState(context, now, contextTtlMs);
       const proposalUnavailable = proposal === null || proposal === undefined;
+      const selectsOnlineSearch = Boolean(
+        preparsed.candidateSelection
+        && state.pendingClarification?.entityType === 'product'
+        && preparsed.candidateSelection.index === state.candidateSets.product.length,
+      );
       let selection = null;
+      let rejectedProductCandidates = false;
       let effectiveProposal = normalizedProposal(proposal, normalizedQuestion);
       let proposalQuestion = normalizedQuestion;
 
-      if (preparsed.candidateSelection) {
+      if (preparsed.candidateRejection || selectsOnlineSearch) {
+        const rejection = pendingProductRejection(state, now);
+        if (!rejection.valid || effectiveProposal) {
+          return expiredSelectionResult({
+            state,
+            entityType: rejection.entityType,
+            proposal: effectiveProposal,
+          });
+        }
+        effectiveProposal = rejection.proposal;
+        proposalQuestion = rejection.originalQuestion;
+        rejectedProductCandidates = true;
+      }
+
+      if (preparsed.candidateSelection && !selectsOnlineSearch) {
         selection = state.pendingClarification
           ? pendingSelection(state, preparsed.candidateSelection, now)
           : completedComparisonSelection(state, preparsed.candidateSelection, now);
@@ -649,6 +685,7 @@ export function createAgentSemanticResolver({
         const requiresResidualProductScan = !internalPlanQuery;
         let scan = { entities: [], overflow: false, invalidInsurer: false };
         if (!selection
+          && !rejectedProductCandidates
           && requiresResidualProductScan
           && typeof productResolver.resolveAllFromText === 'function') {
           try {
@@ -873,6 +910,7 @@ export function createAgentSemanticResolver({
               evidence.push(projectResolution(await productResolver.resolve({
                 mentions: [...explicitInsurerMentions, productMention],
                 activeProduct: null,
+                ...(rejectedProductCandidates ? { allowOnline: true } : {}),
                 ...(confirmsActiveProduct ? { confirmedCandidate: activeConfirmedProduct } : {}),
               }), 'product'));
             }

@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 
-import { createAgentProductEntityResolver as createResolverService } from '../server/agent-product-entity-resolver.service.mjs';
+import {
+  createAgentProductEntityResolver as createResolverService,
+  resolveAgentProductWithResponsibilityMatch,
+} from '../server/agent-product-entity-resolver.service.mjs';
 import { createAgentSemanticResolver } from '../server/agent-semantic-resolver.service.mjs';
 import { getDefaultOfficialDomainProfiles } from '../server/c-policy-analysis.service.mjs';
 import { listProductCatalogCompanies, searchProductCatalog } from '../server/product-catalog-search.mjs';
@@ -323,6 +326,164 @@ test('returns not_found for unresolved explicit insurers and unmatched products'
   } finally {
     db.close();
   }
+});
+
+test('online fallback reuses responsibility assistant matching and excludes rejected local candidates', async () => {
+  const localCandidate = {
+    canonicalProductId: 'local-product',
+    company: '新华保险',
+    officialName: '康健华尊医疗保险（本地候选）',
+    matchType: 'unique_high_confidence',
+    confidence: 0.8,
+  };
+  const calls = [];
+  const result = await resolveAgentProductWithResponsibilityMatch({
+    localResolver: {
+      resolve() {
+        return { status: 'ambiguous', entity: null, candidates: [localCandidate] };
+      },
+    },
+    matchResponsibilityProducts: async (input) => {
+      calls.push(input);
+      return {
+        status: 'candidates',
+        matches: [
+          { company: localCandidate.company, productName: localCandidate.officialName },
+          { company: '新华保险', productName: '新华人寿保险股份有限公司康健华尊医疗保险' },
+        ],
+      };
+    },
+    input: {
+      mentions: [
+        { type: 'insurer', rawText: '新华保险' },
+        { type: 'product', rawText: '康健华尊' },
+      ],
+      allowOnline: true,
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    company: '新华保险', name: '康健华尊', limit: 8, minScore: 0.1, includeOnline: true,
+  }]);
+  assert.equal(result.status, 'ambiguous');
+  assert.equal(result.candidates.length, 1);
+  assert.equal(result.candidates[0].officialName, '新华人寿保险股份有限公司康健华尊医疗保险');
+});
+
+test('online fallback excludes server-recorded rejected candidates even when local matching changes', async () => {
+  const rejected = {
+    canonicalProductId: 'local-a',
+    company: '中国人寿',
+    officialName: '国寿金彩明天两全保险（A款）（分红型）',
+  };
+  const result = await resolveAgentProductWithResponsibilityMatch({
+    localResolver: {
+      resolve() { return { status: 'not_found', entity: null, candidates: [] }; },
+    },
+    matchResponsibilityProducts: async () => ({
+      status: 'candidates',
+      matches: [
+        { company: '中国人寿保险股份有限公司', productName: rejected.officialName },
+        { company: '中国人寿保险股份有限公司', productName: '国寿潇洒明天两全保险（分红型）' },
+      ],
+    }),
+    input: {
+      mentions: [{ type: 'product', rawText: '潇洒明天' }],
+      allowOnline: true,
+      rejectedProductCandidates: [rejected],
+    },
+  });
+
+  assert.equal(result.status, 'ambiguous');
+  assert.deepEqual(result.candidates.map((candidate) => candidate.officialName), [
+    '国寿潇洒明天两全保险（分红型）',
+  ]);
+});
+
+test('online fallback returns not found when search only repeats every rejected candidate', async () => {
+  const rejectedProductCandidates = [
+    {
+      canonicalProductId: 'local-a', company: '中国人寿',
+      officialName: '国寿金彩明天两全保险（A款）（分红型）',
+    },
+    {
+      canonicalProductId: 'local-b', company: '中国人寿',
+      officialName: '国寿金彩明天两全保险（B款）（分红型）',
+    },
+  ];
+  const result = await resolveAgentProductWithResponsibilityMatch({
+    localResolver: {
+      resolve() { return { status: 'not_found', entity: null, candidates: [] }; },
+    },
+    matchResponsibilityProducts: async () => ({
+      status: 'candidates',
+      matches: rejectedProductCandidates.map((candidate) => ({
+        company: '中国人寿保险股份有限公司', productName: candidate.officialName,
+      })),
+    }),
+    input: {
+      mentions: [{ type: 'product', rawText: '潇洒明天' }],
+      allowOnline: true,
+      rejectedProductCandidates,
+    },
+  });
+
+  assert.deepEqual(result, { status: 'not_found', entity: null, candidates: [] });
+});
+
+test('initial local miss offers online search without starting it, then searches without an insurer', async () => {
+  const calls = [];
+  const localResolver = {
+    resolve() { return { status: 'not_found', entity: null, candidates: [] }; },
+  };
+  const matchResponsibilityProducts = async (input) => {
+    calls.push(input);
+    return {
+      status: 'candidates',
+      matches: [{ company: '联合承保机构', productName: '西湖益联保', needsConfirmation: true }],
+    };
+  };
+  const input = { mentions: [{ type: 'product', rawText: '西湖益联保' }] };
+
+  const local = await resolveAgentProductWithResponsibilityMatch({
+    localResolver, matchResponsibilityProducts, input,
+  });
+  assert.deepEqual(local, { status: 'ambiguous', entity: null, candidates: [] });
+  assert.equal(calls.length, 0);
+
+  const online = await resolveAgentProductWithResponsibilityMatch({
+    localResolver,
+    matchResponsibilityProducts,
+    input: { ...input, allowOnline: true },
+  });
+  assert.equal(online.status, 'ambiguous');
+  assert.equal(online.candidates[0].officialName, '西湖益联保');
+  assert.deepEqual(calls, [{
+    company: '', name: '西湖益联保', limit: 8, minScore: 0.1, includeOnline: true,
+  }]);
+});
+
+test('a confirmed online responsibility candidate resolves to a canonical product', async () => {
+  const officialName = '新华人寿保险股份有限公司康健华尊医疗保险';
+  const result = await resolveAgentProductWithResponsibilityMatch({
+    localResolver: { resolve() { return { status: 'not_found', entity: null, candidates: [] }; } },
+    matchResponsibilityProducts: async () => ({
+      status: 'candidates',
+      matches: [{ company: '新华保险', productName: officialName, needsConfirmation: true }],
+    }),
+    input: {
+      mentions: [
+        { type: 'insurer', rawText: '新华保险' },
+        { type: 'product', rawText: '康健华尊' },
+      ],
+      confirmedCandidate: { company: '新华保险', officialName },
+    },
+  });
+
+  assert.equal(result.status, 'resolved');
+  assert.equal(result.entity.matchType, 'confirmed_candidate');
+  assert.equal(result.entity.officialName, officialName);
+  assert.match(result.entity.canonicalProductId, /^product_/u);
 });
 
 test('keeps high-overlap character recall below the execution threshold', () => {

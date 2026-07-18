@@ -198,6 +198,7 @@ test('numbered product candidates remain selectable after gateway restart', asyn
           ? { ok: true, json: async () => ({ interaction: { type: 'clarification', text: '请选择：', candidates: [
             { ref: 'one', label: '新华保险《荣耀鑫享赢家版终身寿险》' },
             { ref: 'two', label: '新华保险《荣耀鑫享智赢版终身寿险》' },
+            { ref: 'search_online', label: '以上都不是，联网查询' },
           ] } }) }
           : { ok: true, json: async () => ({ interaction: { type: 'answer', text: '新华保险《荣耀鑫享智赢版终身寿险》：已查询。' } }) };
       }
@@ -216,11 +217,28 @@ test('numbered product candidates remain selectable after gateway restart', asyn
   `).get();
   assert.equal(JSON.parse(persistedCandidate.payload).officialName, '荣耀鑫享智赢版终身寿险');
   assert.match(JSON.parse(persistedCandidate.payload).canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  const persistedOnlineSearch = store.db.prepare(`
+    SELECT payload FROM agent_conversation_entities WHERE role = 'candidate' AND ordinal = 2
+  `).get();
+  assert.deepEqual(JSON.parse(persistedOnlineSearch.payload), {
+    canonicalProductId: '',
+    company: '',
+    officialName: '',
+    ref: 'search_online',
+  });
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath });
   t.after(() => reopened.close());
   const restartedService = createAgentConversationContextService({ store: reopened, clock: () => 1_720_000_001_000 });
+  const restartedContext = await restartedService.loadContext({
+    ...identity({ internalUserId: 7 }),
+    channelConversationId: 'choice-restart',
+  });
+  assert.deepEqual(restartedContext.productCandidates.products[2], {
+    ref: 'search_online',
+    label: '以上都不是，联网查询',
+  });
   await createDingtalkAgentGateway(gatewayOptions(adapter(restartedService))).handle({
     ...message, msgId: 'choice-2', text: { content: '2' },
   });

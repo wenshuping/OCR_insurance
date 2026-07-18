@@ -220,6 +220,47 @@ test('semantic product knowledge searches only the resolved product and controll
   });
 });
 
+test('semantic product knowledge returns a selected online reference with an unverified boundary', async () => {
+  const resolvedProduct = {
+    canonicalProductId: 'external-product-1',
+    company: '测试承保公司',
+    officialName: '测试惠民医疗险',
+  };
+  const { handlers } = harness({}, { productKnowledge: {
+    async search() {
+      return {
+        answer: '测试承保公司《测试惠民医疗险》：\n> ⚠️ 非官方公开资料，仅供沟通参考，待保险公司确认。\n\n1. 住院医疗费用线索：具体比例待确认。',
+        sources: [{
+          title: '公开产品介绍',
+          url: 'https://reference.test/product',
+          provenance: 'open_web_reference',
+          verified: false,
+          referenceOnly: true,
+        }],
+        referenceOnly: true,
+      };
+    },
+  } });
+
+  const result = await handlers.execute('insurance_product_knowledge', {
+    question: '保险责任是什么',
+    internalUserId: 9,
+    resolvedProduct,
+    queryAspects: ['main_responsibilities'],
+  });
+
+  assert.equal(result.facts.certainty, 'unverified');
+  assert.equal(result.provenance.source, 'external_product_reference');
+  assert.deepEqual(result.provenance.sources, [{
+    title: '公开产品介绍',
+    url: 'https://reference.test/product',
+    provenance: 'open_web_reference',
+  }]);
+  assert.match(result.presentation.message, /住院医疗费用线索/u);
+  assert.match(result.presentation.message, /非官方公开资料/u);
+  assert.doesNotMatch(result.presentation.message, /当前没有可核验来源/u);
+});
+
 test('product comparison preserves the customer question and uses the comparison generator', async () => {
   const products = [
     { canonicalProductId: 'a', company: '甲保险', officialName: '甲产品' },

@@ -2,12 +2,14 @@ import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from '.
 import { guardAgentFinalReply } from './agent-final-response-guard.service.mjs';
 import { compileAgentContextFactBlock } from './agent-context-fact-block.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
+import { preparseAgentMessage } from './agent-semantic-preparser.mjs';
 
 const PRODUCT_COMPARISON_PATTERN = /对比|比较|区别|差异|哪款|哪个好|\bVS\.?\b/iu;
 const COMPARISON_PRONOUN_PATTERN = /^(?:他|它|这个产品|该产品|上述产品)(?=\s*(?:和|与|对比|比较|VS\.?))/iu;
 const COMPARISON_IMPERATIVE_PATTERN = /^(?:你\s*)?(?:帮我|给我)?\s*(?:对比|比较|分析|看看)(?:一下)?\s*/u;
 const PRODUCT_QUESTION_ASPECT_PATTERN = /产品责任|保险责任|保障责任|保什么|保哪些|怎么赔|赔什么|优势|亮点|卖点|在售|停售|还能买|等待期|免责/u;
 const QUESTION_CONTENT_PATTERN = /(?:计划|方案|分别|各自|每个|是啥|是什么|有哪些|有什么|包含|包括|怎么|多少|吗|呢|\?)/u;
+const ONLINE_SEARCH_CANDIDATE_LABEL = '以上都不是，联网查询';
 
 function fallbackCandidateFromText(question) {
   const value = String(question || '').trim().slice(0, 1_000);
@@ -28,6 +30,7 @@ function productNameFromReply(value) {
 function candidateProduct(value) {
   const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const label = String(stored.label || value || '').trim();
+  if (stored.ref === 'search_online' || label === ONLINE_SEARCH_CANDIDATE_LABEL) return null;
   if (!label) return null;
   const productName = String(stored.officialName || stored.productName || productNameFromReply(label) || label).trim();
   const company = String(stored.company || (productNameFromReply(label) ? label.split('《', 1)[0].trim() : '')).trim();
@@ -165,9 +168,23 @@ function selectedCandidateProduct(value, products) {
   return candidateProduct(selected);
 }
 
+function selectedOnlineSearch(value, products) {
+  const candidates = Array.isArray(products) ? products : [];
+  const selectedIndex = selectedCandidateIndex(value);
+  const selected = selectedIndex >= 0
+    ? candidates[selectedIndex]
+    : candidates.find((candidate) => String(candidate?.label || candidate || '').trim() === String(value || '').trim());
+  const label = String(selected?.label || selected || '').trim();
+  return selected?.ref === 'search_online' || label === ONLINE_SEARCH_CANDIDATE_LABEL;
+}
+
 function candidateProducts(interaction) {
   return (Array.isArray(interaction?.candidates) ? interaction.candidates : [])
     .map((item) => {
+      const label = String(item?.label || '').trim();
+      if (item?.ref === 'search_online' || label === ONLINE_SEARCH_CANDIDATE_LABEL) {
+        return { ref: 'search_online', label: ONLINE_SEARCH_CANDIDATE_LABEL };
+      }
       const product = candidateProduct(item);
       if (!product) return null;
       return {
@@ -343,11 +360,14 @@ export function createAgentConversationRuntime({
         .find((item) => Array.isArray(item?.result?.interaction?.candidates));
       const toolInteraction = candidateToolResult?.result?.interaction;
       const products = candidateProducts(toolInteraction);
+      const candidateQuestion = rejectsProductCandidates
+        ? String(context?.productCandidates?.question || question).trim().slice(0, 1_000)
+        : question;
       const pendingSalesQuestion = products.length && candidateToolResult?.tool === 'ask_sales_champion'
         ? {
           candidate: {
             intent: 'sales_coaching',
-            question,
+            question: candidateQuestion,
             confidence: 1,
             requestedOperation: 'read',
           },
@@ -364,8 +384,8 @@ export function createAgentConversationRuntime({
         ? 'insurance_expert'
         : toolResults.some((item) => item?.tool === 'ask_sales_champion') ? 'sales_champion' : 'hermes';
       const committedCandidates = products.length
-        ? { products, question, updatedAt }
-        : product ? null : context.productCandidates;
+        ? { products, question: candidateQuestion, updatedAt }
+        : (product || candidateToolResult) ? null : context.productCandidates;
       try {
         await conversationContext.commitContext({
           ...identity,
@@ -385,7 +405,7 @@ export function createAgentConversationRuntime({
           question: pendingSalesQuestion || context.question,
           factBlock: compileAgentContextFactBlock({
             previous: context.factBlock,
-            currentQuestion: question,
+            currentQuestion: products.length ? candidateQuestion : question,
             taskStatus: products.length ? 'needs_clarification' : 'completed',
             owner,
             product: committedProduct,
@@ -405,11 +425,17 @@ export function createAgentConversationRuntime({
     let mustUseToolAfterContextRetry = false;
     let retryAfterContextCollision = false;
     const selectedProduct = selectedCandidateProduct(question, context?.productCandidates?.products);
+    const selectsOnlineSearch = selectedOnlineSearch(question, context?.productCandidates?.products);
+    const rejectsProductCandidates = Boolean(
+      context?.productCandidates?.products?.length
+      && (preparseAgentMessage(question).candidateRejection || selectsOnlineSearch),
+    );
     const pendingSalesCandidate = context?.question?.candidate?.intent === 'sales_coaching'
       ? context.question.candidate
       : null;
     const resumesSalesCoaching = Boolean(selectedProduct && pendingSalesCandidate);
     const controlledCandidateSelection = Boolean((agentLoopMode || semanticMode)
+      && !selectsOnlineSearch
       && (selectedProduct || selectedCandidateIndex(question) >= 0));
     if (agentLoopMode && toolCapability && confirmedActiveProduct
       && typeof toolCapabilityService?.bindConfirmedProduct === 'function') {
@@ -417,6 +443,24 @@ export function createAgentConversationRuntime({
         toolCapabilityService.bindConfirmedProduct(toolCapability, confirmedActiveProduct);
       } catch {
         reportError('AGENT_TOOL_CONTEXT_BIND_FAILED');
+      }
+    }
+    if (agentLoopMode && toolCapability && rejectsProductCandidates
+      && typeof toolCapabilityService?.authorizeOnlineProductSearch === 'function') {
+      try {
+        const rejectedProductCandidates = (Array.isArray(context?.productCandidates?.products)
+          ? context.productCandidates.products : []).flatMap((candidate) => (
+          candidate?.ref === 'search_online' || !candidate?.company || !candidate?.officialName
+            ? []
+            : [{
+                ...(candidate.canonicalProductId ? { canonicalProductId: candidate.canonicalProductId } : {}),
+                company: candidate.company,
+                officialName: candidate.officialName,
+              }]
+        ));
+        toolCapabilityService.authorizeOnlineProductSearch(toolCapability, rejectedProductCandidates);
+      } catch {
+        reportError('AGENT_TOOL_ONLINE_SEARCH_BIND_FAILED');
       }
     }
     if (agentLoopMode && !controlledCandidateSelection) {
@@ -527,7 +571,9 @@ export function createAgentConversationRuntime({
             runtime: 'hermes',
           };
         }
-        if (!mustUseToolAfterContextRetry && fallbackCandidateFromText(question).intent === 'chat') {
+        if (!mustUseToolAfterContextRetry
+          && !rejectsProductCandidates
+          && fallbackCandidateFromText(question).intent === 'chat') {
           await commitAgentReply(finalReply, agentLoopSessionId, []);
           return { decision: 'execute', interaction: { type: 'answer', text: finalReply }, runtime: 'hermes' };
         }
@@ -711,7 +757,9 @@ export function createAgentConversationRuntime({
         : activeProductName ? { productName: activeProductName, updatedAt } : null));
     const committedCandidates = products.length
       ? { products, question, updatedAt }
-      : (selectedProduct || clarificationCandidate) ? null : context.productCandidates;
+      : (selectedProduct || clarificationCandidate || Array.isArray(result?.interaction?.candidates))
+        ? null
+        : context.productCandidates;
     const nextHistory = [
       ...history,
       { role: 'user', content: question },

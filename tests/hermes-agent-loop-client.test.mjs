@@ -71,6 +71,7 @@ test('Hermes Agent Loop uses the dedicated profile with domain and public web to
   assert.match(prompt, /ACTIVE_ENTITIES 只能补齐本轮省略的实体.*不得把它覆盖到本轮新出现的产品线索/u);
   assert.match(prompt, /previousProduct 表示上一轮确认过的产品.*主语、比较对象还是与本轮无关/u);
   assert.match(prompt, /不得先要求用户补充正式名称/u);
+  assert.match(prompt, /以上都不是，联网查询.*必须先使用 web.*searchOnline=true.*不得传候选编号.*承保主体《正式产品名》/u);
   assert.match(prompt, /没有可用上下文、存在多个可能解释或无法确定指代/u);
   assert.match(prompt, /工具返回.*权威/u);
   assert.match(prompt, /相同工具和相同参数.*不得重复调用/u);
@@ -184,4 +185,26 @@ test('Hermes Agent Loop opens and resets its provider circuit', async () => {
   currentTime += 30_000;
   await assert.rejects(client.runTurn(input), (error) => error?.code === 'HERMES_PROVIDER_FAILED');
   assert.equal(calls, 3);
+});
+
+test('Hermes Agent Loop does not open its provider circuit after a controlled abort', async () => {
+  let calls = 0;
+  const client = createHermesAgentLoopClient({
+    command: '/fake/hermes', hermesHome: HOME, failureThreshold: 1,
+    execFile(_command, _args, _options, callback) {
+      calls += 1;
+      if (calls === 1) {
+        callback(Object.assign(new Error('aborted after tool result'), { name: 'AbortError' }), '', '');
+        return;
+      }
+      callback(null, '领域工具结果已返回', 'session_id: fresh-session\n');
+    },
+  });
+  const input = { question: '查询保险责任', capability: 'capability', gatewayUrl: GATEWAY };
+
+  await assert.rejects(client.runTurn(input), (error) => error?.code === 'HERMES_ABORTED');
+  const result = await client.runTurn(input);
+
+  assert.equal(result.finalReply, '领域工具结果已返回');
+  assert.equal(calls, 2);
 });

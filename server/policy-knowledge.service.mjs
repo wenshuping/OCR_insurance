@@ -1119,9 +1119,12 @@ function fallbackOpenWebSearchPlan(policy = {}) {
     queries: uniqueTrimmed([
       `${queryBase} 保险 条款`,
       `${queryBase} 产品 责任`,
-      `${queryBase} 老产品`,
+      `${queryBase} 完整保障范围 起付线 免赔额 报销比例 年度限额`,
+      `${queryBase} 投保须知 理赔须知 既往症 断保`,
+      `${queryBase} 产品类型 主要作用`,
+      `${queryBase} 责任免除 不予赔付 增值服务 健康服务`,
       `${queryBase} 保单`,
-    ], 6),
+    ], 8),
     preferredDomains: FALLBACK_OPEN_WEB_REFERENCE_DOMAINS,
     source: 'fallback',
   };
@@ -1297,10 +1300,13 @@ async function fetchOpenWebSearchResults({ plan, policy, fetchImpl = fetch, time
     { baseUrl: 'https://duckduckgo.com/html/', param: 'q', parse: parseDuckDuckGoResults },
     { baseUrl: 'https://www.baidu.com/s', param: 'wd', parse: parseBaiduResults },
   ];
+  const queries = searchQueriesFromPlan(plan);
+  const perQueryLimit = Math.max(1, Math.ceil(maxResults / Math.max(1, queries.length)));
   try {
-    for (const query of searchQueriesFromPlan(plan)) {
+    for (const query of queries) {
+      let queryResultCount = 0;
       for (const engine of engines) {
-        if (results.length >= maxResults) break;
+        if (queryResultCount >= perQueryLimit) break;
         try {
           const url = new URL(engine.baseUrl);
           url.searchParams.set(engine.param, query);
@@ -1319,18 +1325,18 @@ async function fetchOpenWebSearchResults({ plan, policy, fetchImpl = fetch, time
             if (!key || seen.has(key)) continue;
             seen.add(key);
             results.push(result);
-            if (results.length >= maxResults) break;
+            queryResultCount += 1;
+            if (queryResultCount >= perQueryLimit) break;
           }
         } catch {
           continue;
         }
       }
-      if (results.length >= maxResults) break;
     }
   } finally {
     clearTimeout(timeoutId);
   }
-  return results;
+  return results.slice(0, maxResults);
 }
 
 function explicitSalesStatus(text = '', productName = '') {
@@ -1506,10 +1512,44 @@ export async function searchOfficialProductSalesStatuses({
   }
 }
 
+function companiesFromOpenWebSearchResult(result = {}, officialDomainProfiles = []) {
+  const url = trimString(result.url);
+  const sourceText = normalizeComparableFact(`${result.title || ''} ${result.snippet || ''}`);
+  const rankedProfiles = (Array.isArray(officialDomainProfiles) ? officialDomainProfiles : [])
+    .map((profile) => {
+      const domains = normalizeOfficialDomains([
+        ...(profile?.officialDomains || []),
+        ...(profile?.siteDomains || []),
+      ]);
+      const aliases = uniqueTrimmed([
+        profile?.company,
+        ...(profile?.companyAliases || []),
+        ...(profile?.aliases || []),
+      ], 30).filter((alias) => normalizeComparableFact(alias).length >= 2);
+      const officialDomain = domains.some((domain) => domainMatches(resolveUrlHostname(url), domain));
+      const matchedAliasLength = aliases.reduce((longest, alias) => {
+        const normalizedAlias = normalizeComparableFact(alias);
+        return sourceText.includes(normalizedAlias) ? Math.max(longest, normalizedAlias.length) : longest;
+      }, 0);
+      return {
+        company: trimString(profile?.company || aliases[0]),
+        score: Number(officialDomain) * 10_000 + matchedAliasLength,
+      };
+    })
+    .filter((item) => item.company && item.score > 0)
+    .sort((left, right) => right.score - left.score);
+  if (rankedProfiles.length) return uniqueTrimmed(rankedProfiles.map((item) => item.company), 8);
+
+  const legalNames = `${result.title || ''} ${result.snippet || ''}`.match(
+    /[\p{Script=Han}A-Za-z0-9·（）()]{2,40}?(?:人寿保险|财产保险|健康保险|养老保险|保险)(?:股份有限公司|有限责任公司|有限公司)/gu,
+  ) || [];
+  return uniqueTrimmed(legalNames.map((name) => name.replace(/^(?:由|及|和|与|联合承保|首席承保)/u, '')), 8);
+}
+
 function openWebReferenceRecordFromSearchResult(result = {}, policy = {}, officialDomainProfiles = []) {
   const url = trimString(result.url);
-  const company = trimString(policy.company);
-  const productName = trimString(policy.name || policy.productName);
+  const company = trimString(result.company || policy.company);
+  const productName = trimString(result.productName || policy.name || policy.productName);
   if (!url || !company || !productName) return null;
   const sourceKind = isJrcpcxRecordLike({ url }) ? 'jrcpcx' : isOfficialUrl(url, policy, officialDomainProfiles) ? 'insurer_official' : 'open_web_reference';
   const official = sourceKind !== 'open_web_reference';
@@ -1540,18 +1580,30 @@ export async function crawlOpenWebProductReferenceRecords({
   fetchImpl = fetch,
   officialDomainProfiles = [],
   searchPlan,
+  seedRecords = [],
   timeoutMs = DEFAULT_OPEN_WEB_SEARCH_TIMEOUT_MS,
 } = {}) {
   const productName = trimString(policy.name || policy.productName);
-  if (!trimString(policy.company) || !productName) return { status: 'not_found', records: [], message: '请补充保险公司和产品名称。' };
+  if (!productName) return { status: 'not_found', records: [], message: '请补充产品名称。' };
   const plan = normalizeOpenWebSearchPlan(searchPlan || await callDeepSeekForOpenWebSearchPlan({ policy, fetchImpl, timeoutMs }), policy);
-  const results = await fetchOpenWebSearchResults({
+  const searchedResults = await fetchOpenWebSearchResults({
     plan,
     policy,
     fetchImpl,
     timeoutMs,
     maxResults: Math.max(3, Math.min(20, maxResults * 2)),
   });
+  const results = [];
+  const resultUrls = new Set();
+  for (const result of [
+    ...(Array.isArray(seedRecords) ? seedRecords : []).slice(0, Math.max(1, Math.floor(maxResults / 2))),
+    ...searchedResults,
+  ]) {
+    const url = trimString(result?.url);
+    if (!url || resultUrls.has(url)) continue;
+    resultUrls.add(url);
+    results.push(result);
+  }
   const records = [];
   const seen = new Set();
   for (const result of results) {
@@ -1561,20 +1613,27 @@ export async function crawlOpenWebProductReferenceRecords({
       fetchImpl,
       signal: undefined,
     });
-    const record = openWebReferenceRecordFromSearchResult(
-      {
-        ...result,
-        pageText: fetched.pageText,
-        sourceType: fetched.sourceType,
-      },
-      policy,
-      officialDomainProfiles,
-    );
-    if (!record) continue;
-    const key = `${record.company}\u001f${record.productName}\u001f${record.url}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    records.push(record);
+    const companies = trimString(policy.company)
+      ? [trimString(policy.company)]
+      : companiesFromOpenWebSearchResult({ ...result, pageText: fetched.pageText }, officialDomainProfiles);
+    for (const company of companies) {
+      const record = openWebReferenceRecordFromSearchResult(
+        {
+          ...result,
+          company,
+          pageText: fetched.pageText,
+          sourceType: fetched.sourceType,
+        },
+        policy,
+        officialDomainProfiles,
+      );
+      if (!record) continue;
+      const key = `${record.company}\u001f${record.productName}\u001f${record.url}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      records.push(record);
+      if (records.length >= maxResults) break;
+    }
     if (records.length >= maxResults) break;
   }
   if (!records.length) {
@@ -1958,13 +2017,19 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
     if (!record) continue;
     const existing = state.knowledgeRecords.find((row) => String(row.url || '') === record.url) || null;
     if (existing) {
+      const derivedExternalReview = record.referenceOnly === true
+        && /^(?:external_review_query_source|responsibility_query)$/u.test(trimString(record.parser));
+      const keepExistingBody = derivedExternalReview
+        && trimString(existing.pageText).length > trimString(record.pageText).length;
       existing.company = record.company || existing.company;
       existing.productName = record.productName || existing.productName;
       existing.productType = record.productType || existing.productType;
       existing.salesStatus = record.salesStatus || existing.salesStatus;
       existing.title = record.title || existing.title;
-      existing.snippet = record.snippet || existing.snippet;
-      existing.pageText = record.pageText || existing.pageText;
+      existing.snippet = keepExistingBody && trimString(existing.snippet).length > trimString(record.snippet).length
+        ? existing.snippet
+        : record.snippet || existing.snippet;
+      existing.pageText = keepExistingBody ? existing.pageText : record.pageText || existing.pageText;
       existing.sourceType = record.sourceType || existing.sourceType;
       existing.materialType = record.materialType || existing.materialType;
       existing.official = Boolean(record.official);
@@ -1977,8 +2042,10 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.sourceKind = record.sourceKind || existing.sourceKind;
       existing.officialDomain = record.officialDomain || existing.officialDomain;
       existing.sourceUrl = record.sourceUrl || existing.sourceUrl;
-      existing.parser = record.parser || existing.parser;
-      existing.extractionMethod = record.extractionMethod || existing.extractionMethod;
+      existing.parser = keepExistingBody ? existing.parser : record.parser || existing.parser;
+      existing.extractionMethod = keepExistingBody
+        ? existing.extractionMethod
+        : record.extractionMethod || existing.extractionMethod;
       existing.planCode = record.planCode || existing.planCode;
       existing.productCode = record.productCode || existing.productCode;
       existing.riskCode = record.riskCode || existing.riskCode;
@@ -2060,7 +2127,23 @@ export function findKnowledgeRecordsForPolicy({
     strictProductNameMatches(productName, record.productName, company)
       || strictProductNameMatches(productName, record.title, company),
   );
-  return (exactVersionMatches.length ? exactVersionMatches : matched)
+  const versionMatches = exactVersionMatches.length ? exactVersionMatches : matched;
+  const requestedYear = productName.match(/20\d{2}/u)?.[0] || String(new Date().getFullYear());
+  const versionEvidenceText = (record) => [record.title, record.snippet, trimString(record.pageText).slice(0, 2_000)]
+    .map(trimString).filter(Boolean).join(' ');
+  const targetYearMatches = versionMatches.filter((record) => (
+    isExternalReferenceSourceKind(sourceKindForKnowledgeRecord(record))
+    && versionEvidenceText(record).includes(requestedYear)
+  ));
+  const versionConsistentMatches = targetYearMatches.length >= 2
+    ? versionMatches.filter((record) => {
+        if (!isExternalReferenceSourceKind(sourceKindForKnowledgeRecord(record))) return true;
+        const sourceText = versionEvidenceText(record);
+        const explicitYears = sourceText.match(/20\d{2}/gu) || [];
+        return !explicitYears.length || explicitYears.includes(requestedYear);
+      })
+    : versionMatches;
+  return versionConsistentMatches
     .sort((left, right) => {
       const leftExact = Number(
         strictProductNameMatches(productName, left.productName, company)
@@ -2070,8 +2153,18 @@ export function findKnowledgeRecordsForPolicy({
         strictProductNameMatches(productName, right.productName, company)
           || strictProductNameMatches(productName, right.title, company),
       );
-      const leftScore = leftExact * 100 + Number(Boolean(left.pageText)) * 20 + Number(left.sourceType === 'pdf') * 10 + Number(left.materialType === 'terms') * 5;
-      const rightScore = rightExact * 100 + Number(Boolean(right.pageText)) * 20 + Number(right.sourceType === 'pdf') * 10 + Number(right.materialType === 'terms') * 5;
+      const leftText = trimString(left.pageText || left.snippet);
+      const rightText = trimString(right.pageText || right.snippet);
+      const leftResponsibilityHeadings = (leftText.match(/责任[一二三四五六七八九十]+[：:]/gu) || []).length;
+      const rightResponsibilityHeadings = (rightText.match(/责任[一二三四五六七八九十]+[：:]/gu) || []).length;
+      const leftContentScore = Number(/保险责任|保障责任|保障计划|给付|赔付|报销比例|起付线/u.test(leftText)) * 10
+        + Math.min(10, Math.floor(leftText.length / 1_000))
+        + Math.min(30, leftResponsibilityHeadings * 5);
+      const rightContentScore = Number(/保险责任|保障责任|保障计划|给付|赔付|报销比例|起付线/u.test(rightText)) * 10
+        + Math.min(10, Math.floor(rightText.length / 1_000))
+        + Math.min(30, rightResponsibilityHeadings * 5);
+      const leftScore = leftExact * 100 + Number(Boolean(left.pageText)) * 20 + Number(left.sourceType === 'pdf') * 10 + Number(left.materialType === 'terms') * 5 + leftContentScore;
+      const rightScore = rightExact * 100 + Number(Boolean(right.pageText)) * 20 + Number(right.sourceType === 'pdf') * 10 + Number(right.materialType === 'terms') * 5 + rightContentScore;
       return rightScore - leftScore || String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''));
     })
     .slice(0, maxResults);
@@ -2089,7 +2182,7 @@ export function findKnowledgeProductCandidates({
 } = {}) {
   const productName = trimString(policy.name || policy.productName);
   const company = trimString(policy.company);
-  if (!company || !productName) return [];
+  if (!productName) return [];
   const queryProductCodes = productIdentityCodesFromText(productName);
   const grouped = new Map();
   for (const rawRecord of Array.isArray(records) ? records : []) {
@@ -2118,7 +2211,8 @@ export function findKnowledgeProductCandidates({
     ) {
       continue;
     }
-    const companyMatch = !record.company || companiesMatch(company, record.company, officialDomainProfiles);
+    const companyMatch = !company || !record.company
+      || companiesMatch(company, record.company, officialDomainProfiles);
     if (!companyMatch) continue;
     const recordProductCodes = productIdentityCodesFromRecord(record);
     const matchedProductCode = recordProductCodes.find((code) => queryProductCodes.includes(code)) || '';
@@ -2303,6 +2397,22 @@ export function buildKnowledgeSearchArtifacts({
       sourceKind: sourceKindForKnowledgeRecord(record),
     };
   });
+  const externalContextText = (record) => {
+    const raw = trimString(record.pageText);
+    if (!isExternalReferenceSourceKind(sourceKindForKnowledgeRecord(record)) || raw.length <= 7_000) return raw;
+    const segments = [raw.slice(0, 1_800)];
+    const seenStarts = new Set([0]);
+    const marker = /责任[一二三四五六七八九十\d]+|保障责任|保障计划|起付线|免赔额|给付比例|报销比例|年度(?:累计)?(?:最高)?(?:支付)?限额|既往症|断保|中断后|投保资格|参保资格|就诊范围/gu;
+    for (const match of raw.matchAll(marker)) {
+      const start = Math.max(0, Number(match.index || 0) - 180);
+      const bucket = Math.floor(start / 500);
+      if (seenStarts.has(bucket)) continue;
+      seenStarts.add(bucket);
+      segments.push(raw.slice(start, start + 1_200));
+      if (segments.join('\n').length >= 7_000) break;
+    }
+    return segments.join('\n…\n').slice(0, 7_000);
+  };
   const context = matched
     .map((record, index) =>
       [
@@ -2311,7 +2421,7 @@ export function buildKnowledgeSearchArtifacts({
         `核实状态：${record.verificationLabel || evidenceVerificationFields(record).verificationLabel}`,
         record.referenceOnly ? '用途限制：仅作待核实参考，不得当作已确认保险责任' : '',
         record.snippet ? `摘要：${record.snippet}` : '',
-        record.pageText ? `正文：${record.pageText}` : '',
+        record.pageText ? `正文：${externalContextText(record)}` : '',
       ]
         .filter(Boolean)
         .join('\n'),

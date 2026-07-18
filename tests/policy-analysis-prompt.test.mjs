@@ -210,6 +210,95 @@ test('policy analysis prompt only asks DeepSeek for the responsibility table', a
   });
 });
 
+test('external responsibility analysis keeps product overview, quantitative responsibility details, and general rules', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    let analysisPrompt = '';
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'product_page',
+          skills: ['responsibility_extraction', 'indicator_quantification'],
+          confidence: 0.9,
+        });
+      }
+      analysisPrompt = prompt;
+      return createChatResponse({
+        productOverview: {
+          productType: '城市定制型商业补充医疗保险',
+          purpose: '补充基本医保后的个人医疗费用负担。',
+          positioning: '基本医保之上的补充保障。',
+          planOptions: [
+            { name: '基础方案', premium: '150元/年', totalCoverage: '320万元', relationship: '包含4项基础责任', sourceExcerpt: '资料1：基础方案。' },
+            { name: '升级方案', premium: '300元/年', totalCoverage: '470万元', relationship: '包含基础方案责任并新增责任', sourceExcerpt: '资料1：升级方案。' },
+          ],
+          sourceExcerpt: '资料1：本产品为商业补充医疗保险。',
+        },
+        coverageTable: [{
+          coverageType: '院内费用超额补偿',
+          scenario: '基础责任报销后剩余的院内个人负担费用。',
+          payout: {
+            scheme: '升级版',
+            deductible: '3万元',
+            reimbursementRate: '20%',
+            annualLimit: '20万元',
+          },
+          responsibilityNumber: '5',
+          introducedInPlan: '升级方案',
+          applicablePlans: ['升级方案'],
+          note: '非官方资料待保险公司确认',
+          sourceExcerpt: '资料1：超过3万元部分按20%报销，年度限额20万元。',
+        }],
+        generalRules: [{
+          title: '断保影响',
+          detail: '中断后重新参保，各档报销比例下降50%。',
+          sourceExcerpt: '资料2：各档报销比例下降50%。',
+        }],
+        exclusions: [{ title: '非治疗性项目', detail: '美容、体检不予赔付。', sourceExcerpt: '资料2：美容、体检不予赔付。' }],
+        valueAddedServices: [{ title: '就医服务', detail: '提供陪诊服务。', sourceExcerpt: '资料2：提供陪诊服务。' }],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: { company: '测试联合承保公司', name: '城市惠民医疗险' },
+      knowledgeRecords: [
+        {
+          company: '测试联合承保公司', productName: '城市惠民医疗险',
+          title: '完整保障方案', url: 'https://reference.test/coverage',
+          pageText: '本产品为商业补充医疗保险。超过3万元部分按20%报销，年度限额20万元。',
+          official: false, referenceOnly: true, sourceKind: 'open_web_reference', evidenceLevel: 'external_legacy_reference',
+        },
+        {
+          company: '测试联合承保公司', productName: '城市惠民医疗险',
+          title: '投保须知', url: 'https://reference.test/notice',
+          pageText: '中断后重新参保，各档报销比例下降50%。',
+          official: false, referenceOnly: true, sourceKind: 'open_web_reference', evidenceLevel: 'external_legacy_reference',
+        },
+      ],
+      allowExternalReferences: true,
+      fetchImpl,
+    });
+
+    assert.match(analysisPrompt, /JSON 字段只包含 productOverview、coverageTable、generalRules、exclusions、valueAddedServices/u);
+    assert.match(analysisPrompt, /起付线、免赔额、报销\/给付比例、年度限额/u);
+    assert.match(analysisPrompt, /既往症、断保续保、就诊范围/u);
+    assert.match(analysisPrompt, /每个 coverageTable 行只能包含 coverageType、scenario、payout、note、responsibilityNumber、introducedInPlan、applicablePlans、sourceExcerpt/u);
+    assert.match(analysisPrompt, /relationship 只描述方案之间的包含或新增关系/u);
+    assert.match(analysisPrompt, /scenario 不超过80个汉字，payout 不超过260个汉字，sourceExcerpt 不超过60个汉字/u);
+    assert.match(analysisPrompt, /用户未指定产品年度或条款版本，不得把当前年份当成产品版本/u);
+    assert.match(analysisPrompt, /互斥的保险期间、责任名称或给付规则/u);
+    assert.equal(result.productOverview.productType, '城市定制型商业补充医疗保险');
+    assert.equal(result.productOverview.planOptions.length, 2);
+    assert.equal(result.coverageTable[0].introducedInPlan, '升级方案');
+    assert.deepEqual(result.coverageTable[0].applicablePlans, ['升级方案']);
+    assert.match(result.coverageTable[0].payout, /适用方案：升级版.*起付线\/免赔额：3万元.*报销比例：20%.*年度限额：20万元/u);
+    assert.doesNotMatch(result.coverageTable[0].payout, /\[object Object\]/u);
+    assert.equal(result.generalRules[0].title, '断保影响');
+    assert.equal(result.exclusions[0].title, '非治疗性项目');
+    assert.equal(result.valueAddedServices[0].title, '就医服务');
+  });
+});
+
 test('policy analysis uses DeepSeek skill router to compile the next responsibility prompt', async () => {
   await withPolicyAnalysisEnv(async () => {
     const prompts = [];

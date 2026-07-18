@@ -14,6 +14,12 @@ const ALLOWED_CONTEXT_KEYS = new Set([
   'resolvedProduct', 'resolvedProducts', 'queryAspects', 'tool',
 ]);
 const ALLOWED_TOOLS = new Set(['family_summary', 'coverage_report', 'product_knowledge_search']);
+const RECOVERABLE_PLANNER_ERRORS = new Set([
+  'INSURANCE_EXPERT_PLANNER_UNAVAILABLE',
+  'INSURANCE_EXPERT_PLANNER_FAILED',
+  'INSURANCE_EXPERT_PLANNER_TIMEOUT',
+  'INSURANCE_EXPERT_PLAN_INVALID',
+]);
 
 function validateContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -63,9 +69,14 @@ export function createInsuranceExpertTool({
     const trustedContext = validateContext(context);
     const result = await withTimeout(
       async () => {
-        const expertPlan = planner && typeof planner.plan === 'function'
-          ? await planner.plan(trustedContext)
-          : null;
+        let expertPlan = null;
+        if (planner && typeof planner.plan === 'function') {
+          try {
+            expertPlan = await planner.plan(trustedContext);
+          } catch (error) {
+            if (!RECOVERABLE_PLANNER_ERRORS.has(error?.code)) throw error;
+          }
+        }
         if (!expertPlan) return execute(trustedContext.tool || trustedContext.intent, trustedContext);
         const roundResults = new Map();
         const executeRound = (round) => {

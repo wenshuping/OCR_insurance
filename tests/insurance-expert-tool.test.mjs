@@ -59,6 +59,49 @@ test('insurance expert planner selects atomic skills before the domain action ex
   assert.deepEqual(received.expertPlan, { ...expertPlan, maxRetrievalRounds: 1 });
 });
 
+test('insurance expert keeps the confirmed product query when its planner is temporarily unavailable', async () => {
+  let received;
+  const tool = createInsuranceExpertTool({
+    planner: { async plan() {
+      throw Object.assign(new Error('planner failed'), { code: 'INSURANCE_EXPERT_PLANNER_FAILED' });
+    } },
+    execute(action, context) {
+      received = { action, context };
+      return result();
+    },
+  });
+
+  const output = await tool.askInsuranceExpertTool({ context: {
+    internalUserId: 7,
+    intent: 'insurance_product_knowledge',
+    question: '潇洒明天 保险责任',
+    resolvedProduct: {
+      canonicalProductId: 'product-xiaosamingtian',
+      company: '中国人寿',
+      officialName: '潇洒明天',
+    },
+    queryAspects: ['main_responsibilities'],
+    tool: 'product_knowledge_search',
+  } });
+
+  assert.deepEqual(received, {
+    action: 'product_knowledge_search',
+    context: {
+      internalUserId: 7,
+      intent: 'insurance_product_knowledge',
+      question: '潇洒明天 保险责任',
+      resolvedProduct: {
+        canonicalProductId: 'product-xiaosamingtian',
+        company: '中国人寿',
+        officialName: '潇洒明天',
+      },
+      queryAspects: ['main_responsibilities'],
+      tool: 'product_knowledge_search',
+    },
+  });
+  assert.equal(output.interaction.text, '保险结论');
+});
+
 test('insurance expert retries only its planned loop when evidence validation is incomplete', async () => {
   const rounds = [];
   const tool = createInsuranceExpertTool({

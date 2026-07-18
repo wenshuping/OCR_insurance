@@ -112,6 +112,7 @@ export function createResponsibilityRoutes(context) {
     generateProductCustomerResponsibilityPlannerWithDeepSeek,
     retrieveCustomerResponsibilityMaterials,
     registerResponsibilityAssistantQuery,
+    registerResponsibilityAssistantProductMatch,
     registerCustomerResponsibilitySummaryQuery,
   } = context;
 
@@ -600,6 +601,68 @@ export function createResponsibilityRoutes(context) {
       .slice(0, maxResults);
   }
 
+  async function refreshExternalResponsibilityDetails(policy, officialDomainProfiles) {
+    if (typeof externalReferenceProductMatcher !== 'function') return 0;
+    const requestedYear = policy.name.match(/20\d{2}/u)?.[0] || String(new Date().getFullYear());
+    const reusableCachedEvidence = (state?.knowledgeRecords || []).some((record) => {
+      if (compact(record?.company) !== compact(policy.company)) return false;
+      if (!productNameMatchesQuery(record?.productName, policy.name)) return false;
+      const externalReference = record?.referenceOnly === true
+        || ['external_reference', 'external_legacy_reference'].includes(trim(record?.evidenceLevel));
+      return externalReference && trim(record?.pageText).length >= 500;
+    });
+    if (reusableCachedEvidence) return 0;
+    const recentDetailRecord = (state?.knowledgeRecords || []).some((record) => {
+      if (trim(record?.parser) !== 'responsibility_detail_enrichment_v4') return false;
+      if (compact(record?.company) !== compact(policy.company)) return false;
+      if (!productNameMatchesQuery(record?.productName, policy.name)) return false;
+      const fetchedAt = Date.parse(trim(record?.lastFetchedAt || record?.updatedAt));
+      return Number.isFinite(fetchedAt) && nowMs() - fetchedAt < 24 * 60 * 60 * 1_000;
+    });
+    if (recentDetailRecord) return 0;
+    try {
+      const detailSeedRecords = (state?.knowledgeRecords || [])
+        .filter((record) => compact(record?.company) === compact(policy.company))
+        .filter((record) => productNameMatchesQuery(record?.productName, policy.name))
+        .filter((record) => trim(record?.url) && trim(record?.title).includes(requestedYear))
+        .filter((record) => /(?:理赔须知|保障计划|投保须知|保障方案|投保手册)/u.test(trim(record?.title)))
+        .sort((left, right) => {
+          const score = (record) => Number(/理赔须知/u.test(trim(record?.title))) * 4
+            + Number(/保障计划|保障方案/u.test(trim(record?.title))) * 3
+            + Number(/投保须知|投保手册/u.test(trim(record?.title))) * 2
+            + Number(Boolean(trim(record?.pageText)));
+          return score(right) - score(left);
+        })
+        .slice(0, 4);
+      const detailResult = await externalReferenceProductMatcher({
+        policy,
+        maxResults: 8,
+        fetchImpl: knowledgeFetchImpl,
+        officialDomainProfiles,
+        seedRecords: detailSeedRecords,
+        searchPlan: {
+          queries: [
+            `${requestedYear} ${policy.company} ${policy.name} 完整保障范围 起付线 免赔额 报销比例 年度限额`,
+            `${requestedYear} ${policy.name} 保障责任 赔付比例 限额 住院津贴 特药`,
+            `${requestedYear} ${policy.name} 投保须知 理赔须知 既往症 断保 就诊要求`,
+            `${requestedYear} ${policy.name} 产品类型 主要作用`,
+            `${requestedYear} ${policy.name} 责任免除 不予赔付 增值服务 健康服务`,
+          ],
+          preferredDomains: [],
+        },
+      });
+      const detailRecords = (Array.isArray(detailResult?.records) ? detailResult.records : []).map((record) => ({
+        ...record,
+        parser: 'responsibility_detail_enrichment_v4',
+      }));
+      const saved = saveKnowledgeRecords(detailRecords, officialDomainProfiles);
+      if (saved.length) await persistLookupArtifacts({ knowledgeRecords: saved });
+      return saved.length;
+    } catch {
+      return 0;
+    }
+  }
+
   async function queryResponsibilityAssistant({
     company,
     name,
@@ -611,6 +674,9 @@ export function createResponsibilityRoutes(context) {
     const policy = { company: input.company, name: input.name };
     const scan = { ocrText: `${input.company} ${input.name}`, data: input };
     const analysisStartedAt = nowMs();
+    if (allowExternalReferences) {
+      await refreshExternalResponsibilityDetails(policy, buildEffectiveOfficialDomainProfiles(state));
+    }
     const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer
       ? existingResponsibilityCardAnalysis(policy)
       : null;
@@ -776,16 +842,19 @@ export function createResponsibilityRoutes(context) {
     }
   });
 
-  router.post('/matches', async (req, res) => {
-    try {
-      const input = normalizeResponsibilityQueryInput(req.body);
-      const policy = { company: input.company, name: input.name };
-      const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-      const maxResults = positiveIntegerOrFallback(req.body?.limit, 3, 50);
-      const minScore = scoreThresholdOrFallback(req.body?.minScore, 0.32);
-      const includeOnline = booleanFromBody(req.body?.includeOnline);
-      let savedRecordCount = 0;
-      let matches = findKnowledgeProductCandidates({
+  async function matchResponsibilityAssistantProducts(body = {}, { allowMissingCompany = false } = {}) {
+    const company = trim(body?.company).slice(0, 80);
+    const name = trim(body?.name).slice(0, 160);
+    const input = allowMissingCompany && !company && name
+      ? { company: '', name }
+      : normalizeResponsibilityQueryInput(body);
+    const policy = { company: input.company, name: input.name };
+    const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
+    const maxResults = positiveIntegerOrFallback(body?.limit, 3, 50);
+    const minScore = scoreThresholdOrFallback(body?.minScore, 0.32);
+    const includeOnline = booleanFromBody(body?.includeOnline);
+    let savedRecordCount = 0;
+    let matches = findKnowledgeProductCandidates({
         policy,
         records: state.knowledgeRecords || [],
         officialDomainProfiles,
@@ -808,49 +877,35 @@ export function createResponsibilityRoutes(context) {
         matches = mergePolicyProductMatches([matches, customerPhotoMatches], maxResults);
       }
       if (!includeOnline || localStatus === 'exact') {
-        res.json(matchResponse({ policy, matches }));
-        return;
+        return matchResponse({ policy, matches });
       }
 
-      if (typeof crawlOfficialKnowledge === 'function') {
-        try {
-          const discovered = await crawlOfficialKnowledge({
+      const cachedExternalMatches = findKnowledgeProductCandidates({
+        policy,
+        records: state.knowledgeRecords || [],
+        officialDomainProfiles,
+        maxResults,
+        minScore,
+        requirePageText: false,
+        includeExternalReferences: true,
+      }).filter((match) => match.referenceOnly === true);
+      if (cachedExternalMatches.length) {
+        savedRecordCount += await refreshExternalResponsibilityDetails(policy, officialDomainProfiles);
+        return matchResponse({
+          policy,
+          matches: mergePolicyProductMatches([matches, cachedExternalMatches], maxResults),
+          message: '已找到此前保存的开放网页外部线索；非官方资料需保险公司确认后再使用责任信息。',
+          savedRecordCount,
+        });
+      }
+
+      const officialResultPromise = typeof crawlOfficialKnowledge === 'function'
+        ? Promise.resolve(crawlOfficialKnowledge({
             policy,
             officialDomainProfiles,
             fetchImpl: knowledgeFetchImpl,
-          });
-          const saved = saveKnowledgeRecords(
-            (Array.isArray(discovered) ? discovered : []).map((record) => ({
-              ...record,
-              sourceKind: 'insurer_official',
-              evidenceLabel: record.evidenceLabel || '保险公司官方资料',
-              evidenceLevel: record.evidenceLevel || 'insurer_official',
-            })),
-            officialDomainProfiles,
-          );
-          if (saved.length) {
-            savedRecordCount += saved.length;
-            await persistLookupArtifacts({ knowledgeRecords: saved });
-            matches = findKnowledgeProductCandidates({
-              policy,
-              records: state.knowledgeRecords || [],
-              officialDomainProfiles,
-              maxResults,
-              minScore,
-            });
-            const officialStatus = typeof withPolicyProductMatchStatus === 'function'
-              ? withPolicyProductMatchStatus({ policy, matches }).status
-              : (matches.length ? 'candidates' : 'not_found');
-            if (officialStatus === 'exact') {
-              res.json(matchResponse({ policy, matches, savedRecordCount }));
-              return;
-            }
-          }
-        } catch {
-          // The regulatory fallback below still gives the customer a conservative next step.
-        }
-      }
-
+          })).catch(() => [])
+        : Promise.resolve([]);
       const onlineResultPromise = typeof onlineResponsibilityProductMatcher === 'function'
         ? Promise.resolve(onlineResponsibilityProductMatcher({
           policy,
@@ -876,6 +931,40 @@ export function createResponsibilityRoutes(context) {
         }))
         : Promise.resolve({ status: 'not_found', records: [], message: '' });
 
+      {
+        const discovered = await officialResultPromise;
+        try {
+          const saved = saveKnowledgeRecords(
+            (Array.isArray(discovered) ? discovered : []).map((record) => ({
+              ...record,
+              sourceKind: 'insurer_official',
+              evidenceLabel: record.evidenceLabel || '保险公司官方资料',
+              evidenceLevel: record.evidenceLevel || 'insurer_official',
+            })),
+            officialDomainProfiles,
+          );
+          if (saved.length) {
+            savedRecordCount += saved.length;
+            await persistLookupArtifacts({ knowledgeRecords: saved });
+            matches = findKnowledgeProductCandidates({
+              policy,
+              records: state.knowledgeRecords || [],
+              officialDomainProfiles,
+              maxResults,
+              minScore,
+            });
+            const officialStatus = typeof withPolicyProductMatchStatus === 'function'
+              ? withPolicyProductMatchStatus({ policy, matches }).status
+              : (matches.length ? 'candidates' : 'not_found');
+            if (officialStatus === 'exact') {
+              return matchResponse({ policy, matches, savedRecordCount });
+            }
+          }
+        } catch {
+          // The regulatory fallback below still gives the customer a conservative next step.
+        }
+      }
+
       let onlineResult = await onlineResultPromise;
       {
         const onlineRecords = Array.isArray(onlineResult?.records) ? onlineResult.records : [];
@@ -893,13 +982,12 @@ export function createResponsibilityRoutes(context) {
           });
           matches = mergePolicyProductMatches([matches, onlineMatches], maxResults);
           if (matches.length) {
-            res.json(matchResponse({
+            return matchResponse({
               policy,
               matches,
               message: onlineResult.message,
               savedRecordCount,
-            }));
-            return;
+            });
           }
         }
       }
@@ -922,13 +1010,12 @@ export function createResponsibilityRoutes(context) {
           });
           matches = mergePolicyProductMatches([matches, externalMatches], maxResults);
           if (externalMatches.length) {
-            res.json(matchResponse({
+            return matchResponse({
               policy,
               matches,
               message: externalResult.message || '已找到开放网页线索；非官方资料需保险公司确认后再使用责任信息。',
               savedRecordCount,
-            }));
-            return;
+            });
           }
         }
       }
@@ -950,34 +1037,43 @@ export function createResponsibilityRoutes(context) {
           });
           matches = mergePolicyProductMatches([matches, legacyMatches], maxResults);
           if (legacyMatches.length) {
-            res.json(matchResponse({
+            return matchResponse({
               policy,
               matches,
               message: '已找到历史老产品外部线索，资料为非官方来源，需客户确认并向保险公司核实后再使用责任信息。',
               savedRecordCount,
-            }));
-            return;
+            });
           }
         }
       }
 
       if (matches.length) {
-        res.json(matchResponse({
+        return matchResponse({
           policy,
           matches,
           message: onlineResult?.message,
           savedRecordCount,
-        }));
-        return;
+        });
       }
 
-      res.json(matchResponse({
-        policy,
-        matches: [],
-        status: onlineResult?.status === 'source_review_required' ? 'source_review_required' : 'not_found',
-        message: onlineResult?.message,
-        savedRecordCount,
-      }));
+    return matchResponse({
+      policy,
+      matches: [],
+      status: onlineResult?.status === 'source_review_required' ? 'source_review_required' : 'not_found',
+      message: onlineResult?.message,
+      savedRecordCount,
+    });
+  }
+
+  if (typeof registerResponsibilityAssistantProductMatch === 'function') {
+    registerResponsibilityAssistantProductMatch((body) => (
+      matchResponsibilityAssistantProducts(body, { allowMissingCompany: true })
+    ));
+  }
+
+  router.post('/matches', async (req, res) => {
+    try {
+      res.json(await matchResponsibilityAssistantProducts(req.body));
     } catch (error) {
       sendError(res, error, 400);
     }

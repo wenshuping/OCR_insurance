@@ -38,12 +38,14 @@ test('tool validation permits only explicit operations, natural names, and opaqu
     names: ['康健无忧两全保险', '新华保险'],
     contextRefs: ['ctx_family_alpha'],
     queryAspects: ['product_advantages'],
+    searchOnline: true,
   }), {
     question: '康健无忧主要保什么？',
     operation: 'product_knowledge',
     names: ['康健无忧两全保险', '新华保险'],
     contextRefs: ['ctx_family_alpha'],
     queryAspects: ['product_advantages'],
+    searchOnline: true,
   });
   assert.deepEqual(validateHermesDomainToolInput('ask_sales_champion', {
     question: '下一步怎么沟通？', operation: 'sales_coaching',

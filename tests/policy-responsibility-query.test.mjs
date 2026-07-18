@@ -20,6 +20,7 @@ import {
   findKnowledgeProductCandidates,
   legacyExternalProductReferenceRecords,
   searchOfficialProductSalesStatuses,
+  upsertKnowledgeRecords,
   withPolicyProductMatchStatus,
 } from '../server/policy-knowledge.service.mjs';
 
@@ -235,7 +236,7 @@ test('responsibility query uses Feishu knowledge before falling back to the curr
   assert.equal(result.coverageTable[0].coverageType, '重大疾病保险金');
 });
 
-test('responsibility query returns external review rows without waiting for the model', async () => {
+test('responsibility query prefers multi-source expert synthesis before the external review fallback', async () => {
   const calls = [];
   const result = await queryPolicyResponsibilities({
     scan: {
@@ -268,9 +269,11 @@ test('responsibility query returns external review rows without waiting for the 
         analysis: {
           coverageTable: [
             {
-              coverageType: '身故保险金',
+              coverageType: '保险金给付',
+              liability: '身故保险金',
               scenario: '非官方公开资料称被保险人身故。',
               payout: '按合同约定给付身故保险金。',
+              sourceExcerpt: '被保险人身故，按合同约定给付身故保险金。',
               note: '非官方资料待保险公司确认',
             },
           ],
@@ -288,12 +291,61 @@ test('responsibility query returns external review rows without waiting for the 
     },
   });
 
-  assert.equal(calls.length, 0);
-  assert.equal(result.rawAnalysis.generatedBy, 'external_reference_review_fallback');
-  assert.equal(result.coverageTable[0].coverageType, '生存保险金（待核实）');
-  assert.ok(result.coverageTable.some((row) => row.coverageType === '身故保险金（待核实）'));
+  assert.equal(calls.length, 1);
+  assert.equal(result.rawAnalysis.generatedBy, 'multi_source_external_analysis');
+  assert.equal(result.coverageTable[0].coverageType, '身故保险金');
+  assert.match(result.coverageTable[0].scenario, /被保险人身故/u);
+  assert.equal(result.coverageTable[0].sourceUrl, 'https://insurance.example.test/xiaosa');
+  assert.equal(result.coverageTable[0].sourceTitle, '潇洒明天外部资料');
   assert.equal(result.sources[0].official, false);
   assert.equal(result.sources[0].evidenceLevel, LEGACY_EXTERNAL_REFERENCE_LEVEL);
+});
+
+test('external responsibility synthesis merges shared plan responsibilities without dropping plan differences', async () => {
+  const result = await queryPolicyResponsibilities({
+    scan: { data: { company: '测试承保公司', name: '测试惠民医疗险' } },
+    allowExternalReferences: true,
+    knowledgeRecords: [{
+      company: '测试承保公司',
+      productName: '测试惠民医疗险',
+      title: '测试惠民医疗险公开资料',
+      url: 'https://reference.test/medical',
+      pageText: '医保目录内合规自付费用补充医疗保障。住院津贴。',
+      official: false,
+      sourceKind: 'open_web_reference',
+      evidenceLevel: LEGACY_EXTERNAL_REFERENCE_LEVEL,
+    }],
+    query: async () => ({
+      analysis: { coverageTable: [
+        {
+          coverageType: '基础版-医保目录内合规自付费用补充医疗保障',
+          scenario: '基本医保报销后的目录内费用',
+          payout: '最高限额100万元',
+          sourceExcerpt: '资料1：医保目录内合规自付费用补充医疗保障。',
+        },
+        {
+          coverageType: '升级版-医保目录内合规自付费用补充医疗保障',
+          scenario: '基本医保报销后的目录内费用',
+          payout: '最高限额150万元',
+          sourceExcerpt: '资料1：医保目录内合规自付费用补充医疗保障。',
+        },
+        {
+          coverageType: '升级版-住院津贴',
+          scenario: '住院治疗',
+          payout: '每日100元',
+          sourceExcerpt: '资料1：住院津贴。',
+        },
+      ] },
+      sources: [{ title: '测试惠民医疗险公开资料', url: 'https://reference.test/medical' }],
+    }),
+  });
+
+  assert.equal(result.coverageTable.length, 2);
+  assert.equal(result.coverageTable[0].coverageType, '医保目录内合规自付费用补充医疗保障');
+  assert.match(result.coverageTable[0].scenario, /基础版：.*升级版：/u);
+  assert.match(result.coverageTable[0].payout, /基础版：最高限额100万元.*升级版：最高限额150万元/u);
+  assert.equal(result.coverageTable[1].coverageType, '住院津贴');
+  assert.match(result.coverageTable[1].scenario, /升级版：住院治疗/u);
 });
 
 test('customer policy photo candidates require approval before global matching', () => {
@@ -498,6 +550,171 @@ test('external reference fallback formats old popular products into concise revi
   assert.doesNotMatch(renderedText, /金投首页|黄金|相关推荐|银保监局/u);
 });
 
+test('external reference fallback extracts numbered responsibilities without product-specific rules', () => {
+  const result = buildExternalReferenceResponsibilityAnalysis([
+    {
+      company: '测试联合承保公司',
+      productName: '城市惠民保障',
+      productType: '重疾险',
+      title: '热门重大疾病保险｜城市惠民保障计划',
+      url: 'https://reference.test/coverage',
+      pageText: [
+        '保障责任 责任一：医保目录内合规自付费用补充医疗保障。',
+        '扣除年度累计0.9万元起付线后，按10%至80%报销，年度累计最高支付限额120万元。',
+        '责任二：医保目录外合理医疗费用补充医疗保障。',
+        '扣除年度累计1万元起付线后，按30%至70%报销，年度累计最高支付限额120万元。',
+      ].join(' '),
+      official: false,
+      sourceKind: 'open_web_reference',
+      evidenceLevel: 'external_reference',
+      referenceOnly: true,
+    },
+    {
+      company: '测试联合承保公司',
+      productName: '城市惠民医疗险',
+      title: '产品资讯导航页',
+      url: 'https://reference.test/navigation',
+      pageText: '当前位置 登录 免费注册 我的保单 客服热线 产品测评 保险问答 '.repeat(100),
+      official: false,
+      sourceKind: 'open_web_reference',
+      evidenceLevel: 'external_reference',
+      referenceOnly: true,
+    },
+  ]);
+
+  assert.equal(result.coverageTable.length, 2);
+  assert.match(result.coverageTable[0].coverageType, /责任一.*医保目录内/u);
+  assert.match(result.coverageTable[0].payout, /0\.9万元起付线/u);
+  assert.match(result.coverageTable[1].coverageType, /责任二.*医保目录外/u);
+  assert.ok(result.coverageTable.every((row) => row.referenceOnly === true && row.official === false));
+  assert.equal(result.rawAnalysis.productCategory, 'medical');
+  assert.deepEqual(result.sources.map((source) => source.url), ['https://reference.test/coverage']);
+  assert.doesNotMatch(JSON.stringify(result.coverageTable), /当前位置|登录|免费注册|我的保单|客服热线/u);
+});
+
+test('external reference fallback summarizes enumerated coverage changes as separate responsibility cards', () => {
+  const result = buildExternalReferenceResponsibilityAnalysis([{
+    company: '测试保险公司',
+    productName: '测试保障产品',
+    title: '测试保障产品公开说明',
+    url: 'https://reference.test/updates',
+    pageText: [
+      '保障责任主要有三点：',
+      '一是新增“住院津贴保障”，住院期间按每日200元给付；',
+      '二是提升重大疾病保险金额度，最高保额增加至50万元；',
+      '三是增加保费豁免责任，符合约定条件时豁免后续保费。',
+      '四是截至2026年1月1日，持有本地居住证连续满2年以上。',
+    ].join(''),
+    official: false,
+    sourceKind: 'open_web_reference',
+    evidenceLevel: 'external_reference',
+    referenceOnly: true,
+  }]);
+
+  assert.equal(result.coverageTable.length, 3);
+  assert.match(result.coverageTable[0].coverageType, /住院津贴保障/u);
+  assert.match(result.coverageTable[0].payout, /每日200元给付/u);
+  assert.match(result.coverageTable[1].coverageType, /重大疾病保险金额度/u);
+  assert.match(result.coverageTable[2].coverageType, /保费豁免责任/u);
+  assert.doesNotMatch(JSON.stringify(result.coverageTable), /居住证/u);
+});
+
+test('derived external review records cannot overwrite richer crawled responsibility text', () => {
+  const state = { knowledgeRecords: [{
+    id: 1,
+    company: '测试保险公司',
+    productName: '测试保障产品',
+    title: '测试保障产品保障计划',
+    url: 'https://reference.test/coverage',
+    pageText: '责任一：身故保险金。被保险人身故时按基本保险金额给付。'.repeat(30),
+    snippet: '包含完整责任正文和给付规则',
+    official: false,
+    sourceKind: 'open_web_reference',
+    evidenceLevel: 'external_reference',
+    referenceOnly: true,
+    parser: 'deepseek_planned_open_web_search',
+  }] };
+
+  upsertKnowledgeRecords(state, [{
+    company: '测试保险公司',
+    productName: '测试保障产品',
+    title: '测试保障产品公开介绍',
+    url: 'https://reference.test/coverage',
+    pageText: '测试保障产品公开介绍',
+    snippet: '公开介绍',
+    official: false,
+    sourceKind: 'open_web_reference',
+    evidenceLevel: 'external_reference',
+    referenceOnly: true,
+    parser: 'external_review_query_source',
+  }]);
+
+  assert.match(state.knowledgeRecords[0].pageText, /责任一：身故保险金/u);
+  assert.equal(state.knowledgeRecords[0].parser, 'deepseek_planned_open_web_search');
+  assert.equal(state.knowledgeRecords[0].snippet, '包含完整责任正文和给付规则');
+});
+
+test('external knowledge search prefers responsibility-rich pages over newer title-only cache rows', () => {
+  const artifacts = buildKnowledgeSearchArtifacts({
+    policy: { company: '测试联合承保公司', name: '城市惠民医疗险' },
+    includeExternalReferences: true,
+    records: [
+      {
+        company: '测试联合承保公司', productName: '城市惠民医疗险',
+        title: '城市惠民医疗险公开介绍', url: 'https://reference.test/thin',
+        pageText: '城市惠民医疗险公开介绍', official: false,
+        sourceKind: 'open_web_reference', referenceOnly: true,
+        updatedAt: '2026-07-18T00:00:00.000Z',
+      },
+      {
+        company: '测试联合承保公司', productName: '城市惠民医疗险',
+        title: '城市惠民医疗险保障计划', url: 'https://reference.test/rich',
+        pageText: '保障责任：责任一：医保目录内费用按约定报销。责任二：医保目录外费用按约定报销。',
+        official: false, sourceKind: 'open_web_reference', referenceOnly: true,
+        updatedAt: '2026-07-17T00:00:00.000Z',
+      },
+    ],
+  });
+
+  assert.equal(artifacts.records[0].url, 'https://reference.test/rich');
+});
+
+test('external knowledge search excludes explicitly stale annual terms when current-year sources are available', () => {
+  const currentYear = new Date().getFullYear();
+  const staleYear = currentYear - 1;
+  const common = {
+    company: '测试联合承保公司', productName: '城市惠民医疗险',
+    official: false, sourceKind: 'open_web_reference', referenceOnly: true,
+  };
+  const artifacts = buildKnowledgeSearchArtifacts({
+    policy: { company: common.company, name: common.productName },
+    includeExternalReferences: true,
+    maxResults: 8,
+    records: [
+      {
+        ...common, title: `${staleYear}城市惠民医疗险详细保障`, url: 'https://reference.test/stale',
+        pageText: `${staleYear}责任五起付线5万元，报销比例10%。`,
+      },
+      {
+        ...common, title: `${currentYear}城市惠民医疗险保障方案`, url: 'https://reference.test/current-1',
+        pageText: `${currentYear}责任五起付线3万元，报销比例20%。`,
+      },
+      {
+        ...common, title: `${currentYear}城市惠民医疗险理赔须知`, url: 'https://reference.test/current-2',
+        pageText: `${currentYear}中断后重新投保，报销比例按规则调整。`,
+      },
+      {
+        ...common, title: '城市惠民医疗险官网入口', url: 'https://reference.test/yearless',
+        pageText: '城市惠民医疗险产品入口。',
+      },
+    ],
+  });
+
+  assert.ok(artifacts.records.some((record) => record.url === 'https://reference.test/current-1'));
+  assert.ok(artifacts.records.some((record) => record.url === 'https://reference.test/yearless'));
+  assert.ok(!artifacts.records.some((record) => record.url === 'https://reference.test/stale'));
+});
+
 test('buildExternalReferenceResponsibilityAnalysis ignores official-only records', () => {
   assert.equal(
     buildExternalReferenceResponsibilityAnalysis([
@@ -570,6 +787,28 @@ test('knowledge product candidates fuzzy match similar local official products',
   const zunxiang = matches.find((match) => match.productName === '尊享人生年金保险（分红型）');
   const zunshang = matches.find((match) => match.productName === '新华人寿保险股份有限公司尊尚人生两全保险（分红型）');
   assert.notEqual(zunxiang.canonicalProductId, zunshang.canonicalProductId);
+});
+
+test('knowledge product candidates can query across insurers when company is omitted', () => {
+  const matches = findKnowledgeProductCandidates({
+    policy: { name: '城市惠民医疗保险' },
+    minScore: 0.1,
+    requirePageText: false,
+    records: [
+      {
+        company: '甲保险', productName: '甲市城市惠民医疗保险',
+        title: '甲市城市惠民医疗保险', url: 'https://example-a.test/terms.pdf',
+        official: true, sourceKind: 'jrcpcx',
+      },
+      {
+        company: '乙保险', productName: '乙市城市惠民医疗保险',
+        title: '乙市城市惠民医疗保险', url: 'https://example-b.test/terms.pdf',
+        official: true, sourceKind: 'jrcpcx',
+      },
+    ],
+  });
+
+  assert.deepEqual(matches.map((match) => match.company).sort(), ['乙保险', '甲保险']);
 });
 
 test('knowledge product candidates expose product codes and rank matching code first', () => {
@@ -823,6 +1062,81 @@ test('DeepSeek open web search plan can produce dynamic external reference recor
   assert.equal(gated.status, 'candidates');
   assert.equal(gated.matches[0].needsConfirmation, true);
   assert.ok(requests.some((request) => request.url.includes('/chat/completions')));
+});
+
+test('open web discovery samples every planned query instead of filling all slots from the first query', async () => {
+  const searchedQueries = [];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(url);
+    const query = parsed.searchParams.get('q') || parsed.searchParams.get('wd') || '';
+    if (parsed.hostname === 'insurance.example.test') {
+      return new Response('<html><body>城市惠民医疗险保障正文</body></html>', {
+        status: 200, headers: { 'content-type': 'text/html' },
+      });
+    }
+    searchedQueries.push(query);
+    const detail = query.includes('理赔须知');
+    const suffix = detail ? 'notice' : 'coverage';
+    return new Response(`
+      <html><body><div class="result">
+        <a class="result__a" href="https://insurance.example.test/${suffix}">城市惠民医疗险${detail ? '理赔须知' : '保障方案'}</a>
+        <a class="result__snippet">城市惠民医疗险${detail ? '断保规则' : '责任明细'}。</a>
+      </div></body></html>
+    `, { status: 200, headers: { 'content-type': 'text/html' } });
+  };
+
+  const result = await crawlOpenWebProductReferenceRecords({
+    policy: { company: '测试联合承保公司', name: '城市惠民医疗险' },
+    fetchImpl,
+    searchPlan: {
+      queries: ['城市惠民医疗险 保障方案', '城市惠民医疗险 理赔须知'],
+      preferredDomains: [],
+    },
+    maxResults: 2,
+  });
+
+  assert.deepEqual(result.records.map((record) => record.url).sort(), [
+    'https://insurance.example.test/coverage',
+    'https://insurance.example.test/notice',
+  ]);
+  assert.ok(searchedQueries.some((query) => query.includes('保障方案')));
+  assert.ok(searchedQueries.some((query) => query.includes('理赔须知')));
+});
+
+test('open web product discovery can infer an insurer when the user only supplied a product name', async () => {
+  const fakeSearchHtml = `
+    <html><body>
+      <div class="result">
+        <a class="result__a" href="https://public.example.test/product">城市补充医疗保障计划</a>
+        <a class="result__snippet">该计划由示例人寿保险股份有限公司牵头承保。</a>
+      </div>
+    </body></html>
+  `;
+  const fetchImpl = async () => new Response(fakeSearchHtml, {
+    status: 200,
+    headers: { 'content-type': 'text/html' },
+  });
+  const result = await crawlOpenWebProductReferenceRecords({
+    policy: { company: '', name: '城市补充医疗保障计划' },
+    fetchImpl,
+    searchPlan: {
+      queries: ['城市补充医疗保障计划 承保公司'],
+      preferredDomains: ['public.example.test'],
+    },
+    officialDomainProfiles: [{
+      company: '示例人寿保险股份有限公司',
+      aliases: ['示例人寿', '示例人寿保险股份有限公司'],
+      companyAliases: ['示例人寿保险股份有限公司'],
+      officialDomains: ['insurer.example.test'],
+      siteDomains: ['insurer.example.test'],
+    }],
+    maxResults: 5,
+  });
+
+  assert.equal(result.status, 'candidates');
+  assert.equal(result.records[0].company, '示例人寿保险股份有限公司');
+  assert.equal(result.records[0].productName, '城市补充医疗保障计划');
+  assert.equal(result.records[0].sourceKind, 'open_web_reference');
 });
 
 test('official sales-status lookup accepts only explicit status on an insurer domain', async () => {

@@ -200,11 +200,17 @@ function onSaleProductEvidence(rows = [], product = {}, allowedOrigins = []) {
   return sources.length ? { product, sources, checkedAt: checkedAtValues.sort().at(-1) || '' } : null;
 }
 
-function responsibilityAssistantEvidence(result = {}, product = {}, allowedOrigins = [], question = '') {
+function responsibilityAssistantEvidence(
+  result = {},
+  product = {},
+  allowedOrigins = [],
+  question = '',
+  { allowExternalReferences = false } = {},
+) {
   const analysis = result?.analysis || result;
   const cards = Array.isArray(analysis?.responsibilityCards) ? analysis.responsibilityCards : [];
   const coverageRows = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
-  const selectedRows = (cards.length ? cards : coverageRows).slice(0, 12);
+  const selectedRows = (cards.length ? cards : coverageRows).slice(0, 20);
   const mainResponsibilities = selectedRows.flatMap((item) => {
     const title = text(item?.title || item?.coverageType);
     const plainText = [item?.triggerCondition, item?.scenario, item?.payoutSummary, item?.payout, item?.note, item?.sourceExcerpt]
@@ -224,23 +230,26 @@ function responsibilityAssistantEvidence(result = {}, product = {}, allowedOrigi
   ];
   const seen = new Set();
   const sources = candidates.flatMap((source) => {
-    if (source?.referenceOnly === true || source?.official === false) return [];
-    if (source?.official !== true && text(source?.evidenceLevel) !== 'insurer_official') return [];
+    const referenceOnly = source?.referenceOnly === true || source?.official === false;
+    if (referenceOnly && !allowExternalReferences) return [];
+    if (!referenceOnly && source?.official !== true && text(source?.evidenceLevel) !== 'insurer_official') return [];
     try {
       const url = new URL(source?.url);
-      if (url.protocol !== 'https:' || url.username || url.password || seen.has(url.href)) return [];
+      const allowedProtocol = url.protocol === 'https:' || (referenceOnly && url.protocol === 'http:');
+      if (!allowedProtocol || url.username || url.password || seen.has(url.href)) return [];
       seen.add(url.href);
       if (!allowedOrigins.includes(url.origin)) allowedOrigins.push(url.origin);
       return [{
-        title: text(source?.title) || `${product.productName}官方资料`,
+        title: text(source?.title) || `${product.productName}${referenceOnly ? '公开资料' : '官方资料'}`,
         url: url.href,
-        provenance: 'insurer_official',
-        verified: true,
+        provenance: referenceOnly ? 'open_web_reference' : 'insurer_official',
+        verified: !referenceOnly,
+        referenceOnly,
       }];
     } catch {
       return [];
     }
-  }).slice(0, 5);
+  }).slice(0, 8);
   if (!sources.length) return null;
   const coreAdvantageTitles = [
     '一般医疗费用保险金',
@@ -284,6 +293,28 @@ function responsibilityAssistantEvidence(result = {}, product = {}, allowedOrigi
       };
     })
     .filter((card) => card.title && card.content);
+  const referenceOnly = allowExternalReferences && sources.every((source) => source.referenceOnly === true);
+  const disclaimer = text(analysis?.disclaimer)
+    || (Array.isArray(analysis?.notes) ? analysis.notes.map(text).find((note) => /非官方|仅供.*参考|待.*确认/u.test(note)) : '')
+    || '本结果基于非官方公开资料线索，仅供沟通参考，需以保险公司确认或补发合同条款为准。';
+  const directAnswer = mainResponsibilities.map((item, index) => (
+    `${index + 1}. ${item.title}：${item.plainText}`
+  )).join('\n') || text(analysis?.report);
+  const externalDirectAnswer = referenceOnly
+    ? externalResponsibilitySummary(
+      selectedRows,
+      disclaimer,
+      text(analysis?.rawAnalysis?.productCategory),
+      sources,
+      {
+        multiSourceSynthesis: text(analysis?.rawAnalysis?.generatedBy) === 'multi_source_external_analysis',
+        productOverview: analysis?.productOverview,
+        generalRules: analysis?.generalRules,
+        exclusions: analysis?.exclusions,
+        valueAddedServices: analysis?.valueAddedServices,
+      },
+    )
+    : '';
   return {
     summary: {
       headline: text(analysis?.report) || `${product.productName}保险责任`,
@@ -291,10 +322,228 @@ function responsibilityAssistantEvidence(result = {}, product = {}, allowedOrigi
     },
     sources,
     responsibilityCardEvidence,
-    directAnswer: mainResponsibilities.map((item, index) => (
-      `${index + 1}. ${item.title}：${item.plainText}`
-    )).join('\n') || text(analysis?.report),
+    directAnswer: externalDirectAnswer || directAnswer,
+    referenceOnly,
   };
+}
+
+function conciseExternalResponsibilityText(value, maxLength = 260) {
+  const normalized = text(value)
+    .replace(/\s+/gu, ' ')
+    .split(/(?:相关推荐|上一篇|下一篇|当前位置|当前所在位置|所在位置|首页\s*\||免费注册|登录|客服热线|保险问答|产品测评|扫码下载)/u)[0]
+    .trim();
+  if (!normalized) return '';
+  const sentences = normalized.split(/(?<=[。；])/u).map(text).filter(Boolean);
+  let result = '';
+  for (const sentence of sentences) {
+    if (result && result.length + sentence.length > maxLength) break;
+    result += sentence;
+    if (result.length >= maxLength) break;
+  }
+  return (result || normalized).slice(0, maxLength).replace(/[，、；：\s]+$/u, '');
+}
+
+function externalResponsibilityLabels(productCategory = '') {
+  if (productCategory === 'medical') {
+    return { description: '保障范围', trigger: '适用条件', payout: '起付线/报销比例/限额' };
+  }
+  if (productCategory === 'critical_illness') {
+    return { description: '疾病/状态范围', trigger: '给付条件', payout: '给付比例/次数/限额' };
+  }
+  if (productCategory === 'annuity') {
+    return { description: '领取责任', trigger: '领取时间/条件', payout: '领取金额/频率' };
+  }
+  if (['incremental_whole_life', 'ordinary_whole_life', 'term_life', 'endowment', 'participating_life'].includes(productCategory)) {
+    return { description: '责任内容', trigger: '给付触发', payout: '给付金额/计算方式' };
+  }
+  if (productCategory === 'accident') {
+    return { description: '事故/保障场景', trigger: '给付条件', payout: '给付比例/限额' };
+  }
+  if (productCategory === 'long_term_care') {
+    return { description: '护理状态/责任范围', trigger: '给付条件', payout: '给付金额/周期' };
+  }
+  if (['universal_life', 'investment_linked'].includes(productCategory)) {
+    return { description: '保障/账户权益', trigger: '适用条件', payout: '给付或账户规则' };
+  }
+  return { description: '责任内容', trigger: '触发条件', payout: '给付规则' };
+}
+
+function compactDedupeText(value) {
+  return text(value).replace(/[\s，,。；;：:、“”"'（）()【】\[\]]+/gu, '');
+}
+
+function externalResponsibilitySummary(
+  rows = [],
+  disclaimer = '',
+  productCategory = '',
+  sources = [],
+  {
+    multiSourceSynthesis = false,
+    productOverview = {},
+    generalRules = [],
+    exclusions = [],
+    valueAddedServices = [],
+  } = {},
+) {
+  const labels = externalResponsibilityLabels(productCategory);
+  const citationSources = (Array.isArray(sources) ? sources : []).slice(0, 8).flatMap((source) => {
+    try {
+      const url = new URL(source?.url);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return [];
+      return [{ title: text(source?.title).replace(/[\[\]\n]/gu, '').slice(0, 100) || '公开资料', url: url.href }];
+    } catch {
+      return [];
+    }
+  });
+  const citationIndexByUrl = new Map(citationSources.map((source, index) => [source.url, index + 1]));
+  const citedIndicesFrom = (sourceExcerpt = '', sourceUrl = '') => {
+    const citedIndices = [...new Set(Array.from(text(sourceExcerpt).matchAll(/资料\s*(\d+)/gu))
+      .map((match) => Number(match[1]))
+      .filter((index) => index > 0 && index <= citationSources.length))];
+    const sourceIndex = citationIndexByUrl.get(text(sourceUrl))
+      || (citationSources.length === 1 ? 1 : 0);
+    if (!citedIndices.length && sourceIndex) citedIndices.push(sourceIndex);
+    return citedIndices;
+  };
+  const responsibilities = (Array.isArray(rows) ? rows : []).slice(0, 20).flatMap((row) => {
+    const title = text(row?.title || row?.coverageType)
+      .replace(/（待核实）/gu, '')
+      .replace(/^待核实保险责任线索$/u, '保险责任线索');
+    const trigger = conciseExternalResponsibilityText(row?.triggerCondition, 220);
+    const description = conciseExternalResponsibilityText(
+      row?.scenario || row?.sourceExcerpt,
+      240,
+    );
+    let payout = conciseExternalResponsibilityText(
+      row?.payoutSummary || row?.payout,
+      260,
+    );
+    const normalizedDescription = compactDedupeText(description);
+    const normalizedPayout = compactDedupeText(payout);
+    if (normalizedDescription && normalizedPayout
+      && (normalizedDescription.includes(normalizedPayout) || normalizedPayout.includes(normalizedDescription))) {
+      payout = '';
+    }
+    const sourceUrl = text(row?.sourceUrl);
+    const citedIndices = citedIndicesFrom(row?.sourceExcerpt, sourceUrl);
+    return title && (trigger || description || payout)
+      ? [{
+          title,
+          trigger,
+          description,
+          payout,
+          responsibilityNumber: text(row?.responsibilityNumber),
+          introducedInPlan: text(row?.introducedInPlan),
+          citedIndices,
+        }]
+      : [];
+  });
+  if (!responsibilities.length) return '';
+  const overview = productOverview && typeof productOverview === 'object' ? productOverview : {};
+  const overviewLines = [
+    text(overview.productType) ? `- 产品类型：${conciseExternalResponsibilityText(overview.productType, 180)}` : '',
+    text(overview.purpose) ? `- 主要作用：${conciseExternalResponsibilityText(overview.purpose, 260)}` : '',
+    text(overview.positioning) ? `- 保障定位：${conciseExternalResponsibilityText(overview.positioning, 260)}` : '',
+  ].filter(Boolean);
+  const overviewCitations = citedIndicesFrom(overview.sourceExcerpt);
+  const planOptions = (Array.isArray(overview.planOptions) ? overview.planOptions : []).slice(0, 8).flatMap((plan) => {
+    const name = conciseExternalResponsibilityText(plan?.name, 80);
+    if (!name) return [];
+    return [{
+      name,
+      premium: conciseExternalResponsibilityText(plan?.premium, 140),
+      totalCoverage: conciseExternalResponsibilityText(plan?.totalCoverage, 140),
+      relationship: conciseExternalResponsibilityText(plan?.relationship, 220),
+      citedIndices: citedIndicesFrom(plan?.sourceExcerpt),
+    }];
+  });
+  const normalizedRules = (Array.isArray(generalRules) ? generalRules : []).slice(0, 12).flatMap((rule) => {
+    const title = conciseExternalResponsibilityText(rule?.title, 100);
+    const detail = conciseExternalResponsibilityText(rule?.detail, 320);
+    return title && detail ? [{ title, detail, citedIndices: citedIndicesFrom(rule?.sourceExcerpt) }] : [];
+  });
+  const normalizeSupplementalItems = (items) => (Array.isArray(items) ? items : []).slice(0, 12).flatMap((item) => {
+    const title = conciseExternalResponsibilityText(item?.title, 100);
+    const detail = conciseExternalResponsibilityText(item?.detail, 320);
+    return title && detail ? [{ title, detail, citedIndices: citedIndicesFrom(item?.sourceExcerpt) }] : [];
+  });
+  const normalizedExclusions = normalizeSupplementalItems(exclusions);
+  const normalizedServices = normalizeSupplementalItems(valueAddedServices);
+  const responsibilityLines = (items) => items.flatMap((item, index) => [
+    `${index + 1}. **${item.responsibilityNumber ? `责任${item.responsibilityNumber}：` : ''}${item.title}**`,
+    ...(item.description ? [`${labels.description}：${item.description}`] : []),
+    ...(item.trigger ? [`${labels.trigger}：${item.trigger}`] : []),
+    ...(item.payout ? [`${labels.payout}：${item.payout}`] : []),
+    ...(item.citedIndices.length ? [`引用：${item.citedIndices.map((index) => `〔${index}〕`).join('')}`] : []),
+    '',
+  ]);
+  const shouldGroupPlans = planOptions.length > 1 && responsibilities.some((item) => item.introducedInPlan);
+  const groupedResponsibilities = shouldGroupPlans
+    ? planOptions.flatMap((plan) => {
+        const items = responsibilities.filter((item) => item.introducedInPlan === plan.name);
+        return items.length ? [`### ${plan.name}责任`, ...responsibilityLines(items)] : [];
+      }).concat((() => {
+        const items = responsibilities.filter((item) => !planOptions.some((plan) => plan.name === item.introducedInPlan));
+        return items.length ? ['### 其他责任', ...responsibilityLines(items)] : [];
+      })())
+    : responsibilityLines(responsibilities);
+  const warning = text(disclaimer)
+    || '本结果基于非官方公开资料，仅供沟通参考，具体以保险公司确认或正式合同条款为准。';
+  return [
+    `> ⚠️ ${warning}`,
+    '',
+    ...(overviewLines.length ? [
+      '### 产品概览',
+      ...overviewLines,
+      ...(overviewCitations.length ? [`引用：${overviewCitations.map((index) => `〔${index}〕`).join('')}`] : []),
+      '',
+    ] : []),
+    ...(planOptions.length ? [
+      '### 方案概览',
+      ...planOptions.flatMap((plan) => [
+        `- **${plan.name}**${plan.premium ? `：${plan.premium}` : ''}${plan.totalCoverage ? `；总保额：${plan.totalCoverage}` : ''}`,
+        ...(plan.relationship ? [`  ${plan.relationship}`] : []),
+        ...(plan.citedIndices.length ? [`  引用：${plan.citedIndices.map((index) => `〔${index}〕`).join('')}`] : []),
+      ]),
+      '',
+    ] : []),
+    multiSourceSynthesis
+      ? `### 多来源责任汇总（${responsibilities.length}条明细，含子项，待核实）`
+      : `### 公开资料责任线索（${responsibilities.length}项，非完整责任）`,
+    ...groupedResponsibilities,
+    ...(normalizedRules.length ? [
+      '### 通用重要规则',
+      ...normalizedRules.flatMap((rule, index) => [
+        `${index + 1}. **${rule.title}**：${rule.detail}`,
+        ...(rule.citedIndices.length ? [`引用：${rule.citedIndices.map((sourceIndex) => `〔${sourceIndex}〕`).join('')}`] : []),
+      ]),
+      '',
+    ] : []),
+    ...(normalizedExclusions.length ? [
+      '### 免责简要',
+      ...normalizedExclusions.flatMap((item, index) => [
+        `${index + 1}. **${item.title}**：${item.detail}`,
+        ...(item.citedIndices.length ? [`引用：${item.citedIndices.map((sourceIndex) => `〔${sourceIndex}〕`).join('')}`] : []),
+      ]),
+      '',
+    ] : []),
+    ...(normalizedServices.length ? [
+      '### 增值服务',
+      ...normalizedServices.flatMap((item, index) => [
+        `${index + 1}. **${item.title}**：${item.detail}`,
+        ...(item.citedIndices.length ? [`引用：${item.citedIndices.map((sourceIndex) => `〔${sourceIndex}〕`).join('')}`] : []),
+      ]),
+      '',
+    ] : []),
+    ...(citationSources.length ? [
+      '### 公开资料来源（非官方）',
+      ...citationSources.map((source, index) => (
+        source.url.startsWith('https:')
+          ? `${index + 1}. [${source.title}](${source.url})`
+          : `${index + 1}. ${source.title}：${source.url}`
+      )),
+    ] : []),
+  ].join('\n').trim();
 }
 
 function customerResponsibilitySummaryEvidence(result = {}, product = {}, allowedOrigins = []) {
@@ -1111,6 +1360,7 @@ export function createAgentProductKnowledgeSearch({
     company: requestedCompany,
     queryAspects = [],
     expertPlan = null,
+    allowExternalReferences = false,
   } = {}) {
     const query = [text(requestedCompany), text(productName), text(question)].filter(Boolean).join(' ');
     const companies = listProductCatalogCompanies({ db, visibility: 'public' });
@@ -1145,8 +1395,14 @@ export function createAgentProductKnowledgeSearch({
         FROM knowledge_records
         WHERE product_name = ?
           AND json_valid(payload) = 1
-          AND json_extract(payload, '$.evidenceLevel') = 'insurer_official'
-      `).all(requestedProductName) : []),
+          AND (
+            json_extract(payload, '$.evidenceLevel') = 'insurer_official'
+            OR (? = 1 AND (
+              json_extract(payload, '$.referenceOnly') = 1
+              OR json_extract(payload, '$.evidenceLevel') = 'external_reference'
+            ))
+          )
+      `).all(requestedProductName, allowExternalReferences ? 1 : 0) : []),
     ].filter((product) => !company || text(product.company) === company)
       .map((product) => ({ ...product, score: 1_000 })) : [];
     const rankedProducts = exactProducts.length
@@ -1276,12 +1532,39 @@ export function createAgentProductKnowledgeSearch({
     const eligible = [];
     for (const product of products) {
       if (Number(product.score || 0) <= 0) continue;
+      const productKnowledgeRows = knowledgeStatement
+        ? knowledgeStatement.all(product.company, product.productName)
+        : [];
+      const useExternalReferences = allowExternalReferences && productKnowledgeRows.some((row) => {
+        try {
+          const payload = JSON.parse(row.payload || '{}');
+          return payload?.referenceOnly === true
+            || ['external_reference', 'external_legacy_reference'].includes(text(payload?.evidenceLevel));
+        } catch {
+          return false;
+        }
+      });
       if (typeof responsibilityQuery === 'function') {
         try {
-          const result = await responsibilityQuery({ company: product.company, name: product.productName });
-          const assistant = responsibilityAssistantEvidence(result, product, allowedOrigins, question);
+          const result = await responsibilityQuery({
+            company: product.company,
+            name: product.productName,
+            ...(useExternalReferences ? {
+              preferLocalKnowledgeAnswer: false,
+              allowExternalReferences: true,
+            } : {}),
+          });
+          const assistant = responsibilityAssistantEvidence(
+            result,
+            product,
+            allowedOrigins,
+            question,
+            { allowExternalReferences: useExternalReferences },
+          );
           if (assistant) {
-            if (RESPONSIBILITY_QUESTION_PATTERN.test(text(question)) && typeof responsibilitySummaryQuery === 'function') {
+            if (!assistant.referenceOnly
+              && RESPONSIBILITY_QUESTION_PATTERN.test(text(question))
+              && typeof responsibilitySummaryQuery === 'function') {
               try {
                 const summaryResult = await responsibilitySummaryQuery({
                   company: product.company,
@@ -1322,6 +1605,20 @@ export function createAgentProductKnowledgeSearch({
     const selected = eligible[0] || null;
     if (!selected) return { ...missingProductEvidenceGuidance({ productName: requestedProductName, question }), sources: [] };
     const { product, summary, sources, customerResponsibilitySummary = null, responsibilityCardEvidence = [] } = selected;
+    if (selected.referenceOnly === true) {
+      return {
+        answer: `${product.company}《${product.productName}》：\n${text(selected.directAnswer)}`,
+        sources,
+        referenceOnly: true,
+        retrieval: {
+          mode: 'external_reference_review',
+          rounds: 1,
+          queryCount: 1,
+          completeness: 'unverified',
+          missingEvidence: ['insurer_official_source'],
+        },
+      };
+    }
     const responsibilityQuestion = RESPONSIBILITY_QUESTION_PATTERN.test(text(question));
     const canonicalProductId = text(product.canonicalProductId)
       || text(productIdentityStatement?.get(product.company, product.productName)?.canonical_product_id);
@@ -1532,6 +1829,7 @@ export function createAgentProductKnowledgeSearch({
         company: text(product?.company),
         queryAspects,
         expertPlan,
+        allowExternalReferences: true,
       });
     }
     if (text(productName)) return searchSingle({ question, productName, company, queryAspects, expertPlan });

@@ -153,14 +153,14 @@ function routeCategory(content, identity, participating, compoundGrowth) {
   if (annuityIdentity) return 'annuity';
   if (endowmentIdentity) return 'endowment';
 
+  if (includes(content, /(?:医疗保险金|住院|门诊|免赔额|报销|医疗费用|医保目录|药品医疗保障)/u)
+    && !includes(content, /意外医疗/u)) return 'medical';
   if (includes(content, /重大疾病|重疾|轻度疾病|中度疾病|重度疾病|特定疾病/u)) return 'critical_illness';
   if (includes(content, /(?:投资连结|投连险|投资账户|单位价格|买入价|卖出价)/u)) return 'investment_linked';
   if (includes(content, /(?:万能保险|万能型|个人账户价值|保单账户价值|结算利率|最低保证利率)/u)) return 'universal_life';
   if (includes(content, /(?:长期护理|护理保险金|护理状态|失能护理|长期照护)/u)) return 'long_term_care';
   if (includes(content, /(?:年金|养老金|养老年金|生存保险金|祝寿金|教育金)/u)) return 'annuity';
   if (includes(content, /(?:两全|满期保险金|满期生存保险金)/u)) return 'endowment';
-  if (includes(content, /(?:医疗保险金|住院|门诊|免赔额|报销|医疗费用)/u)
-    && !includes(content, /意外医疗/u)) return 'medical';
   if (includes(content, /增额终身寿|增额寿|保额递增/u)) return 'incremental_whole_life';
   if (includes(content, /(?:定期寿险|定期人寿|保险期间.{0,20}(?:年|岁).*身故|身故.{0,20}保险期间.{0,20}(?:年|岁))/u)) return 'term_life';
   if (includes(content, /(?:意外伤害保险|意外身故|意外伤残|意外医疗|交通意外)/u) && !lifeProductSignal) return 'accident';

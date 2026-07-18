@@ -216,6 +216,21 @@ function safeLink(value, allowedOrigins = []) {
   }
 }
 
+function safeExternalReferenceLink(value) {
+  try {
+    const url = new URL(text(value));
+    const hostname = url.hostname.toLowerCase();
+    const privateIpv4 = /^(?:0|10|127|169\.254|192\.168)(?:\.|$)|^172\.(?:1[6-9]|2\d|3[01])(?:\.|$)/u.test(hostname);
+    if (!['http:', 'https:'].includes(url.protocol)
+      || url.username || url.password
+      || hostname === 'localhost' || hostname.endsWith('.local')
+      || privateIpv4 || hostname === '[::1]') return '';
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
 function publicKnowledgeAnswer(answer, sources) {
   const sourceLines = (Array.isArray(sources) ? sources : []).slice(0, 3).map((source, index) => (
     `${index + 1}. [${text(source.title).replace(/[\[\]\n]/gu, '').slice(0, 100) || `官方来源 ${index + 1}`}](${source.url})`
@@ -516,6 +531,22 @@ export function createAgentQuestionHandlers({
       }
       const result = results[0] || null;
       const sources = projectSources(result);
+      if (result?.referenceOnly === true && text(result?.answer)) {
+        const externalSources = (Array.isArray(result?.sources) ? result.sources : [])
+          .filter((source) => source?.referenceOnly === true && source?.verified !== true)
+          .map((source) => ({
+            title: text(source.title).slice(0, 500),
+            url: safeExternalReferenceLink(source.url),
+            provenance: text(source.provenance || 'open_web_reference').slice(0, 200),
+          }))
+          .filter((source) => source.title && source.url)
+          .slice(0, 5);
+        return stableResult(
+          { certainty: 'unverified', answer: text(result.answer) },
+          { source: 'external_product_reference', sources: externalSources },
+          { message: text(result.answer) },
+        );
+      }
       if (!sources.length) {
         return stableResult(
           { certainty: 'unverified', answer: '' },

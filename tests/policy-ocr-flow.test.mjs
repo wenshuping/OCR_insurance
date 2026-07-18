@@ -9676,6 +9676,67 @@ test('responsibility assistant online fallback returns JRCPCX candidates and per
   }
 });
 
+test('responsibility assistant enriches cached external candidates before the customer selects one', async () => {
+  let crawlCalls = 0;
+  const app = createPolicyOcrApp({
+    crawlOfficialKnowledge: async () => {
+      crawlCalls += 1;
+      return [];
+    },
+    onlineResponsibilityProductMatcher: async () => {
+      crawlCalls += 1;
+      return { status: 'not_found', records: [] };
+    },
+    externalReferenceProductMatcher: async () => {
+      crawlCalls += 1;
+      return { status: 'not_found', records: [] };
+    },
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [{
+        id: 1,
+        company: '测试联合承保公司',
+        productName: '城市惠民医疗险',
+        title: '城市惠民医疗险公开介绍',
+        url: 'https://reference.test/product',
+        pageText: '城市惠民医疗险公开资料。',
+        official: false,
+        sourceKind: 'open_web_reference',
+        evidenceLevel: 'external_reference',
+        referenceOnly: true,
+      }],
+      policies: [],
+      nextId: 2,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试联合承保公司',
+        name: '城市惠民医疗险',
+        includeOnline: true,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.status, 'candidates');
+    assert.equal(matched.payload.matches.length, 1);
+    assert.equal(matched.payload.matches[0].company, '测试联合承保公司');
+    assert.equal(matched.payload.matches[0].referenceOnly, true);
+    assert.equal(crawlCalls, 1);
+  } finally {
+    await server.close();
+  }
+});
+
 test('responsibility assistant online lookup continues when local fuzzy candidates exist', async () => {
   let onlineCalled = false;
   const app = createPolicyOcrApp({
@@ -9901,7 +9962,25 @@ test('responsibility assistant online lookup persists DeepSeek-planned open web 
 
 test('responsibility assistant external review query persists knowledge without indicators or cards', async () => {
   const persisted = [];
+  const detailQueries = [];
   const app = createPolicyOcrApp({
+    externalReferenceProductMatcher: async (input) => {
+      detailQueries.push(...(input.searchPlan?.queries || []));
+      return {
+        status: 'candidates',
+        records: [{
+          company: input.policy.company,
+          productName: input.policy.name,
+          title: '潇洒明天详细责任资料',
+          url: 'https://insurance.example.test/detail',
+          pageText: '完整责任、给付比例和限额资料。',
+          official: false,
+          sourceKind: 'open_web_reference',
+          evidenceLevel: 'external_legacy_reference',
+          referenceOnly: true,
+        }],
+      };
+    },
     assistantAnalyzer: async ({ allowExternalReferences }) => {
       assert.equal(allowExternalReferences, true);
       return {
@@ -9963,9 +10042,78 @@ test('responsibility assistant external review query persists knowledge without 
     assert.equal(queried.payload.persistence.indicatorRecordCount, 0);
     assert.equal(queried.payload.persistence.responsibilityCardCount, 0);
     assert.match(queried.payload.analysis.coverageTable[0].note, /非官方资料待保险公司确认/u);
+    assert.ok(detailQueries.some((query) => /起付线.*报销比例.*年度限额/u.test(query)));
+    assert.ok(detailQueries.some((query) => /既往症.*断保/u.test(query)));
+    assert.ok(persisted.some((item) => item.knowledgeRecords?.some((record) => record.parser === 'responsibility_detail_enrichment_v4')));
     assert.ok(persisted.some((item) => item.knowledgeRecords?.some((record) => record.sourceKind === 'open_web_reference')));
     assert.equal(persisted.some((item) => (item.indicatorRecords || []).length), false);
     assert.equal(persisted.some((item) => (item.responsibilityCards || []).length), false);
+  } finally {
+    await server.close();
+  }
+});
+
+test('responsibility assistant reuses substantive cached external evidence without blocking on another web refresh', async () => {
+  let matcherCalls = 0;
+  const app = createPolicyOcrApp({
+    externalReferenceProductMatcher: async () => {
+      matcherCalls += 1;
+      return { status: 'not_found', records: [] };
+    },
+    assistantAnalyzer: async ({ allowExternalReferences }) => {
+      assert.equal(allowExternalReferences, true);
+      return {
+        coverageTable: [{
+          coverageType: '生存保险金线索',
+          scenario: '公开资料载明每三周年仍生存。',
+          payout: '按条款约定金额给付。',
+        }],
+        sources: [{
+          title: '已缓存公开条款资料',
+          url: 'https://reference.example.test/terms',
+          official: false,
+          referenceOnly: true,
+          evidenceLevel: 'external_legacy_reference',
+        }],
+      };
+    },
+    state: {
+      users: [],
+      sessions: [],
+      adminSessions: [],
+      smsCodes: [],
+      sourceRecords: [],
+      pendingScans: [],
+      officialDomainProfiles: [],
+      knowledgeRecords: [{
+        company: '中国平安',
+        productName: '平安鸿利两全保险',
+        title: '平安鸿利两全保险公开条款资料',
+        url: 'https://reference.example.test/terms',
+        pageText: '平安鸿利两全保险责任资料。'.repeat(40),
+        evidenceLevel: 'external_legacy_reference',
+        referenceOnly: true,
+      }],
+      insuranceIndicatorRecords: [],
+      policies: [],
+      nextId: 1,
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const queried = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '中国平安',
+        name: '平安鸿利两全保险',
+        preferLocalKnowledgeAnswer: false,
+        allowExternalReferences: true,
+      }),
+    });
+    assert.equal(queried.response.status, 200);
+    assert.equal(matcherCalls, 0);
+    assert.match(queried.payload.analysis.coverageTable[0].note, /非官方资料待保险公司确认/u);
   } finally {
     await server.close();
   }

@@ -105,6 +105,7 @@ function promptFor({ question, safeRecentContext }) {
     'ACTIVE_ENTITIES 只能补齐本轮省略的实体；只要用户本轮出现新的产品名称、简称、俗称或其他产品线索，就必须优先按该新线索调用工具，不得把它覆盖到本轮新出现的产品线索。',
     'ACTIVE_ENTITIES.previousProduct 表示上一轮确认过的产品，只是可供语义理解的历史事实。你应根据用户本轮原话自行判断它是主语、比较对象还是与本轮无关；不得默认把它当作当前产品。',
     '当且仅当本轮主任务已经确定为产品事实查询时，用户提供的产品简称、俗称、残缺名称、疑似错别字或仅一段产品线索，才必须原样放入 ask_insurance_expert.names，由工具检索正式产品和候选项，不得先要求用户补充正式名称。用户只发送这一段产品线索时，视为产品查询。',
+    '当上一轮保险专家返回产品候选，而用户明确回复“都不是”“都不对”，或选择候选项“以上都不是，联网查询”时，必须先使用 web 检索该公开产品的正式名称和承保主体，再调用 ask_insurance_expert 并设置 searchOnline=true；question 必须保留上一轮原始产品查询，不得传候选编号；能确认公开身份时 names 必须使用结构化格式“承保主体《正式产品名》”，否则保留上一轮原始产品线索。联合承保产品应优先填写公开资料明确标注的首席或牵头承保主体；未标注首席主体时可填写其中一个已确认的承保主体，不得因为存在多个承保主体而放弃已确认的产品身份。web 只用于发现公开身份线索，不得替代保险专家的产品确认和责任结论。',
     '如果完成任务所需的实体没有可用上下文、存在多个可能解释或无法确定指代，直接提出一个具体澄清问题，不得猜测。',
     '调用产品知识时，names 只填写彼此独立的保险产品名称；同一产品下的计划、版本、档位或可选责任不是多款产品，names 应只填写一次共同的产品名称，并在 question 中保留要比较的计划或版本。',
     '调用产品知识时必须原样保留用户的问题；明确时可填写 queryAspects 作为语义提示，不确定时省略，由保险专家依据原问题判断。不得把优势问题改写成责任问题。',
@@ -207,9 +208,11 @@ export function createHermesAgentLoopClient({
       circuitOpenedAt = null;
       return { sessionId: returnedSessionId, finalReply };
     } catch (error) {
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= Math.max(1, Number(failureThreshold) || 5)) {
-        circuitOpenedAt = Number(now());
+      if (!['HERMES_ABORTED', 'HERMES_SESSION_NOT_FOUND'].includes(String(error?.code || ''))) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= Math.max(1, Number(failureThreshold) || 5)) {
+          circuitOpenedAt = Number(now());
+        }
       }
       throw error;
     } finally {

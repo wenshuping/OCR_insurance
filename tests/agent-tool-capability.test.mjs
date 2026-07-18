@@ -99,6 +99,30 @@ test('binds a trusted confirmed product to claims without exposing mutable state
   );
 });
 
+test('binds online product search authority only after a server-controlled selection', () => {
+  const service = createAgentToolCapabilityService({
+    clock: () => 2_200,
+    createToken: () => 'opaque-token-online-search',
+  });
+  const issued = service.issue(request({ allowedTools: ['ask_insurance_expert'] }));
+
+  assert.equal(service.consume({
+    token: issued.token, tool: 'ask_insurance_expert',
+  }).onlineProductSearchAllowed, undefined);
+  const rejectedCandidates = [{
+    canonicalProductId: 'rejected-a', company: '中国人寿', officialName: '国寿金彩明天两全保险（A款）（分红型）',
+  }];
+  const authorized = service.authorizeOnlineProductSearch(issued.token, rejectedCandidates);
+  authorized.onlineProductSearchAllowed = false;
+  authorized.rejectedProductCandidates[0].officialName = 'tampered';
+
+  assert.equal(service.inspect(issued.token).onlineProductSearchAllowed, true);
+  assert.deepEqual(service.inspect(issued.token).rejectedProductCandidates, rejectedCandidates);
+  assert.equal(service.consume({
+    token: issued.token, tool: 'ask_insurance_expert',
+  }).onlineProductSearchAllowed, true);
+});
+
 test('notifies a bounded waiter as soon as a domain tool records its result', async () => {
   const service = createAgentToolCapabilityService({ clock: () => 2_500, createToken: () => 'opaque-token-wait' });
   const issued = service.issue(request());
@@ -124,6 +148,30 @@ test('notifies a bounded waiter as soon as a domain tool records its result', as
   assert.deepEqual(claims.toolResults[0].result.interaction.candidates, [
     { ref: 'product-1', label: '新华保险《寰宇尊悦高端医疗保险》' },
   ]);
+});
+
+test('preserves an empty insurance product candidate list as a context-clear signal', () => {
+  const service = createAgentToolCapabilityService({
+    clock: () => 2_550,
+    createToken: () => 'opaque-token-empty-candidates',
+  });
+  const issued = service.issue(request({ allowedTools: ['ask_insurance_expert'] }));
+
+  service.recordResult({
+    token: issued.token,
+    tool: 'ask_insurance_expert',
+    result: {
+      status: 'needs_clarification', decision: 'clarify',
+      interaction: {
+        type: 'clarification', text: '联网后仍未找到正式产品。', candidates: [],
+      },
+    },
+  });
+
+  assert.deepEqual(
+    service.inspect(issued.token).toolResults[0].result.interaction.candidates,
+    [],
+  );
 });
 
 test('does not preserve candidates from the sales champion tool', () => {
