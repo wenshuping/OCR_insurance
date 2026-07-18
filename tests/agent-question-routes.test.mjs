@@ -344,6 +344,18 @@ test('HTTP candidate selection projects local rule runtime and fallback provenan
   assert.equal(server.calls.route[0].proposal, null);
 });
 
+test('HTTP candidate rejection projects the same controlled rule provenance', async (t) => {
+  const server = await startServer();
+  t.after(server.close);
+  const result = await post(server, '/api/agent/questions/route', semanticBody({
+    question: '都不是', runtime: 'hermes', proposal: null,
+  }));
+  assert.equal(result.response.status, 200);
+  assert.equal(server.calls.route[0].runtime, 'rule');
+  assert.equal(server.calls.route[0].fallbackReason, 'candidate_selection');
+  assert.equal(server.calls.route[0].proposal, null);
+});
+
 test('HTTP leading candidate selection preserves a bound current semantic proposal', async (t) => {
   const server = await startServer();
   t.after(server.close);

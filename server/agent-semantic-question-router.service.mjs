@@ -46,7 +46,9 @@ function stableRetry() {
 }
 
 function resolveFallbackReason(input, preparsed) {
-  if (preparsed.candidateSelection && !input.proposal) return 'candidate_selection';
+  if ((preparsed.candidateSelection || preparsed.candidateRejection) && !input.proposal) {
+    return 'candidate_selection';
+  }
   const explicit = clean(input.fallbackReason, 40);
   if (input.runtime === 'rule') {
     if (['direct_unavailable', 'direct_invalid_output'].includes(explicit)) return explicit;
@@ -63,16 +65,19 @@ function resolveFallbackReason(input, preparsed) {
   return !explicit || explicit === 'none' ? 'none' : 'invalid_runtime_fallback';
 }
 
-function productCandidates(result) {
+function productCandidates(result, { includeOnlineSearch = false } = {}) {
   const candidates = Array.isArray(result?.nextTaskState?.candidateSets?.product)
     ? result.nextTaskState.candidateSets.product.slice(0, 10)
     : [];
-  return candidates.map((candidate, index) => ({
-    ref: `choice_${index + 1}`,
-    label: clean(candidate?.officialName)
-      ? `${clean(candidate?.company) ? `${clean(candidate.company)} ` : ''}《${clean(candidate.officialName)}》`
-      : `候选产品 ${index + 1}`,
-  })).filter((candidate) => candidate.label);
+  const projected = candidates.map((candidate, index) => ({
+      ref: `choice_${index + 1}`,
+      label: clean(candidate?.officialName)
+        ? `${clean(candidate?.company) ? `${clean(candidate.company)} ` : ''}《${clean(candidate.officialName)}》`
+        : `候选产品 ${index + 1}`,
+    })).filter((candidate) => candidate.label);
+  return includeOnlineSearch
+    ? [...projected, { ref: 'search_online', label: '以上都不是，联网查询' }]
+    : projected;
 }
 
 function familyCandidates(result) {
@@ -88,21 +93,22 @@ function familyCandidates(result) {
 function clarification(result, hasConversation) {
   const reason = clean(result?.decisionReason, 100);
   if (reason === 'entity_ambiguous' && result?.ambiguities?.includes('product')) {
-    const candidates = productCandidates(result);
+    const candidates = productCandidates(result, { includeOnlineSearch: true });
+    const productChoiceCount = candidates.filter((candidate) => candidate.ref !== 'search_online').length;
     return {
       decision: 'clarify',
       interaction: {
         type: 'clarification',
         text: hasConversation
-          ? candidates.length === 0
-            ? '我暂时没能确认你说的是哪款产品。请补充保险公司，以及保单或条款上的完整产品名称。'
-            : candidates.length === 1
-            ? '你是不是想查询以下产品？请回复 1 确认。'
-            : '找到多个可能的正式产品，请选择一项。'
-          : candidates.length
+          ? productChoiceCount === 0
+            ? '本地产品库暂未找到匹配项，可选择“以上都不是，联网查询”继续查找。'
+            : productChoiceCount === 1
+            ? '你是不是想查询以下产品？请选择；如果不是，请选择“以上都不是，联网查询”。'
+            : '找到多个可能的正式产品，请选择一项；如果都不是，请选择最后一项联网查询。'
+          : productChoiceCount
             ? '找到多个可能的正式产品，请回复完整名称。'
-            : '请补充保险公司，以及保单或条款上的完整产品名称。',
-        ...(candidates.length ? { candidates } : {}),
+            : '本地产品库暂未找到匹配项，请回复“都不是”联网查询。',
+        ...(hasConversation ? { candidates } : {}),
       },
     };
   }
@@ -359,7 +365,8 @@ export function createAgentSemanticQuestionRouter({
   async function resolve(input, conversation, trustedInputProposal) {
     try {
       const preparsed = preparseAgentMessage(input.question);
-      const pending = !trustedInputProposal && preparsed.candidateSelection
+      const pending = !trustedInputProposal
+        && (preparsed.candidateSelection || preparsed.candidateRejection)
         ? conversation.taskState?.pendingClarification
         : null;
       const pendingProposal = pending?.proposal || null;
@@ -565,13 +572,16 @@ export function createAgentSemanticQuestionRouter({
         }
       }
       const preparsed = preparseAgentMessage(question);
-      const localRuleRuntime = Boolean(preparsed.candidateSelection && !trustedInputProposal)
+      const localRuleRuntime = Boolean(
+        (preparsed.candidateSelection || preparsed.candidateRejection) && !trustedInputProposal,
+      )
         || (!trustedInputProposal && preparsed.operationHint === 'upload_link' && input.runtime === 'hermes');
       const runtimeInput = localRuleRuntime
         ? {
           ...input,
           runtime: 'rule',
-          fallbackReason: preparsed.candidateSelection && !trustedInputProposal
+          fallbackReason: (preparsed.candidateSelection || preparsed.candidateRejection)
+            && !trustedInputProposal
             ? 'candidate_selection' : 'rule_preparse',
         }
         : input;

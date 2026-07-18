@@ -296,6 +296,7 @@ test('insurance expert retries the real product handler after cross-layer eviden
     intent: 'insurance_product_knowledge',
     tool: 'product_knowledge_search',
     question: '三个计划分别是什么',
+    queryAspects: ['comparison', 'main_responsibilities'],
     resolvedProduct: {
       canonicalProductId: 'product_test', company: '新华保险', officialName: '测试医疗保险',
     },
@@ -446,6 +447,18 @@ test('open sales coaching uses the sales champion without loading family data', 
       generateInput = input;
       return { content: '先确认养老目标、资金使用期限和流动性要求。', model: 'stub-model' };
     },
+    async salesChampionTurnInterpreter({ question }) {
+      return {
+        contractVersion: 1,
+        customerStatements: [{ text: question, source: 'current_message' }],
+        stage: { value: 'discovery', confidence: 0.91 },
+        concerns: [{ type: 'product_fit', priority: 'primary', confidence: 0.9 }],
+        signals: { explicitRefusal: false, stopContact: false, factSensitive: false },
+        missingInformation: ['customer_goal', 'budget'],
+        proposedCapabilities: ['needs_discovery'],
+        insuranceNeeds: [],
+      };
+    },
   });
 
   const result = await handlers.sales_champion({
@@ -456,16 +469,19 @@ test('open sales coaching uses the sales champion without loading family data', 
       { role: 'user', content: '我有100万存款到期' },
       { role: 'assistant', content: '请补充身体情况' },
     ],
+    productMentions: ['新华保险的康健华尊'],
+    officialFactNeeds: ['renewal'],
+    insuranceExpertEvidence: [{
+      status: 'verified',
+      products: [{ company: '新华保险', officialName: '康健华尊医疗保险', canonicalProductId: 'drop-id' }],
+      answer: '已核验续保信息。',
+    }],
   });
 
-  assert.equal(result.presentation.message, '先确认养老目标、资金使用期限和流动性要求。');
-  assert.equal(generateInput.context.consultationScope, 'open');
-  assert.deepEqual(generateInput.context.familyInput, {});
-  assert.deepEqual(generateInput.history, [
-    { role: 'user', content: '我有100万存款到期' },
-    { role: 'assistant', content: '请补充身体情况' },
-  ]);
-  assert.equal(generateInput.question, '现在50岁手里有100万，有什么好的产品推荐吗');
+  assert.match(result.presentation.message, /现在属于需求发现阶段/u);
+  assert.match(result.presentation.message, /客户希望解决的核心问题/u);
+  assert.equal(result.provenance.skill, 'needs_discovery');
+  assert.equal(generateInput, undefined);
 });
 
 test('open sales coaching returns an explicit expert availability message on provider failure', async () => {

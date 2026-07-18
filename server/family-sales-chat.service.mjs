@@ -4,20 +4,15 @@ import {
   privacySafeFamilySalesReviewInputJson,
   restoreFamilySalesReviewDisplayText,
 } from './family-sales-review.service.mjs';
-import {
-  selectAgentSkillPrompt,
-  selectAgentSkillPromptWithDeepSeek,
-} from './agent-skill-router.service.mjs';
-import {
-  redactDeepSeekDirectIdentifiers,
-  sanitizeDeepSeekRequestBody,
-} from './deepseek-privacy-gateway.mjs';
+import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { salesChampionPromptRules } from './sales-champion-skill-registry.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-pro';
 const DEFAULT_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_TOKENS = 8_000;
 const DEFAULT_REASONING_EFFORT = 'high';
+const OPEN_CONSULTATION_MAX_TOKENS = 2_500;
 const HISTORY_LIMIT = 12;
 const DEEPSEEK_V4_MODELS = new Set(['deepseek-v4-flash', 'deepseek-v4-pro']);
 const FAMILY_SALES_CHAT_PUBLIC_IDENTITY = '保险营销专家';
@@ -59,7 +54,7 @@ function sanitizeFamilySalesChatPublicIdentity(content = '') {
 
 function sanitizeFamilySalesChatInternalFields(content = '') {
   return trim(content).replace(
-    /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext)`?/gu,
+    /`?(?:familyInput|consultationScope|sourceUpdated|latestSalesReview|latestFamilyReport|salesMemoryContext|policyImportContext|productMentions|officialFactNeeds|insuranceExpertEvidence|salesTurn)`?/gu,
     '现有资料',
   );
 }
@@ -179,12 +174,12 @@ export function buildFamilySalesChatMessages({
   context,
   history = [],
   question = '',
-  skillPrompt = null,
 } = {}) {
   const contextJson = privacySafeChatContextJson(context || {});
   const normalizedHistory = normalizeHistory(history);
-  const resolvedSkillPrompt = skillPrompt || selectAgentSkillPrompt({ scene: 'family_sales_chat', question });
   const openConsultation = context?.consultationScope === 'open';
+  const hasStructuredSalesTurn = Boolean(context?.salesTurn?.proposal);
+  const selectedSkillRules = salesChampionPromptRules(context?.salesTurn?.selection);
   return [
     {
       role: 'system',
@@ -192,8 +187,9 @@ export function buildFamilySalesChatMessages({
         openConsultation
           ? '你是一名保险营销专家，面向保险顾问提供开放式客户需求分析、产品方向建议和销售辅导。'
           : '你是一名保险营销专家，面向保险顾问提供家庭销售建议续聊支持。',
-        resolvedSkillPrompt.promptHint,
-        `本轮启用 skills：${resolvedSkillPrompt.skills.map((skill) => skill.label).join('、') || '通用保险续聊'}`,
+        hasStructuredSalesTurn
+          ? '本轮销售阶段、客户关注点、缺失信息和受控 Skills 已由 Sales Champion 的结构化 turn contract 校验；必须按该结构化结果执行，不得重新按关键词判断意图或 Skill。'
+          : '本轮没有结构化销售 turn，只能使用通用销售澄清能力，不得根据关键词自行选择更具体的 Skill。',
         openConsultation
           ? '当前没有绑定家庭档案。你要基于本轮客户描述进行专业分析；信息不足时自然追问，不能假定存在未提供的家庭、保单或产品资料。'
           : '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
@@ -210,9 +206,20 @@ export function buildFamilySalesChatMessages({
         '10. 如果上下文包含 policyImportContext，它是 OCR Insurance 输出的脱敏保单草稿；只能引用其中已提供字段，并明确提示 missingFields。不得推测被掩码身份、保单号、证件号或原始图片内容。',
         '11. 开放式产品推荐不得从历史对话中擅自绑定某一款产品；缺少已核验候选产品及客户目标时，先给产品方向和需要确认的问题，再由受控产品知识流程核验具体产品。',
         '12. 不得向用户展示上下文 JSON 的字段名、内部变量名、数据结构或系统实现；只能用自然语言说明“现有资料”“已提供信息”或“待补充信息”。',
-        '',
-        '本轮 skill 规则：',
-        ...resolvedSkillPrompt.systemRules.map((rule, index) => `${index + 1}. ${rule}`),
+        '13. 用户提到的保险公司或产品名称只是客户背景线索，不得因此把客户跟进、需求分析、异议处理或沟通话术改成产品检索；本轮最终回答始终围绕顾问的销售问题。',
+        '14. 产品名称线索本身不能证明保险责任。只有保险专家证据中标记为 verified 的内容可以作为官方产品事实；没有已核验证据时，把相关责任、续保、领取、现金价值或收益写成“待核实”，但仍要给出不依赖这些事实的跟进策略。',
+        '15. 开放式客户跟进要先根据顾问本轮原话形成客户画像，逐项覆盖已明确的年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标；严格区分客户事实、顾问估计和待核实项，不得因产品名称模糊而忽略其余客户信息。',
+        '16. salesTurn.insuranceNeedResults 只表示 Insurance Expert 调用状态；只有对应 insuranceExpertEvidence 为 verified 时才能陈述保险事实或保障缺口。needs_family_or_policy_evidence、needs_resolved_product 或 unavailable 都必须转成待补资料/待核实，而不是自行补全。',
+        '17. Sales Champion 始终拥有最终销售回答：Insurance Expert 证据用于理解保险内容和保障缺口，但最终仍要结合销售阶段与客户关注点给出沟通策略。',
+        '18. 输出遵守结构化 Skill 的 executionContract：客户已表达事实、销售阶段或异议解读、可执行沟通建议或话术、需要核验的保险事实、以及不确定边界。',
+        '19. 不得虚构客户姓名、性别、称谓、健康、社保、负债、预算、缴费能力、退休金额、心理状态、财产安排或家庭决策方式。婚姻、居住、房产、子女和产品名称只是背景，除非结构化 concern 或 verified evidence 明确支持，否则不能据此推出结论。',
+        '20. 只追问 salesTurn.proposal.missingInformation 中列出的缺失信息；不得自行扩展成保单体检、产品核验、法律咨询或保障缺口分析。',
+        '21. 开放式咨询控制在1200个中文字符以内，不使用复杂表格；优先给客户理解、当前销售目标、一段话术和下一步问题。',
+        ...(selectedSkillRules.length ? [
+          '',
+          '本轮受控 Skill 执行规则：',
+          ...selectedSkillRules.map((rule, index) => `${index + 1}. ${rule}`),
+        ] : []),
       ].join('\n'),
     },
     {
@@ -259,26 +266,22 @@ export async function generateFamilySalesChatReply({
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const directIdentifiers = familySalesReviewDirectIdentifiers(context?.familyInput || {});
-    const skillPrompt = await selectAgentSkillPromptWithDeepSeek({
-      scene: 'family_sales_chat',
-      question: redactDeepSeekDirectIdentifiers(userQuestion, directIdentifiers),
-      fetchImpl,
-      config: {
-        apiKey: config.apiKey,
-        baseUrl: config.baseUrl,
-        model: trim(env.FAMILY_AGENT_SKILL_ROUTER_MODEL || env.DEEPSEEK_SKILL_ROUTER_MODEL || 'deepseek-v4-flash'),
-        timeoutMs: numberOrDefault(env.FAMILY_AGENT_SKILL_ROUTER_TIMEOUT_MS, 30_000),
-      },
-      privacyOptions: directIdentifiers,
-    });
+    const openConsultation = context?.consultationScope === 'open';
     const body = {
       model: config.model,
-      max_tokens: config.maxTokens,
-      messages: buildFamilySalesChatMessages({ context, history, question: userQuestion, skillPrompt }),
+      max_tokens: openConsultation
+        ? Math.min(config.maxTokens, OPEN_CONSULTATION_MAX_TOKENS)
+        : config.maxTokens,
+      messages: buildFamilySalesChatMessages({ context, history, question: userQuestion }),
     };
     if (DEEPSEEK_V4_MODELS.has(config.model)) {
-      body.thinking = { type: 'enabled' };
-      body.reasoning_effort = DEFAULT_REASONING_EFFORT;
+      if (openConsultation) {
+        body.thinking = { type: 'disabled' };
+        body.temperature = 0.1;
+      } else {
+        body.thinking = { type: 'enabled' };
+        body.reasoning_effort = DEFAULT_REASONING_EFFORT;
+      }
     } else {
       body.temperature = 0.2;
     }

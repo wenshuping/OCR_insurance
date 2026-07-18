@@ -1097,6 +1097,82 @@ test('ambiguous product selection revalidates formal identity and ignores stored
   assert.deepEqual(selected.nextTaskState.candidateSets.product, []);
 });
 
+test('rejecting every product candidate retries the original product through online matching', async () => {
+  const localCandidate = { ...PRODUCT, canonicalProductId: 'local-candidate', officialName: '康健华尊医疗保险（旧候选）' };
+  const onlineCandidate = { ...PRODUCT, canonicalProductId: 'online-candidate', officialName: '新华人寿保险股份有限公司康健华尊医疗保险' };
+  const { resolver, productCalls } = harness({
+    productResult: (input) => input.allowOnline === true
+      ? { status: 'ambiguous', entity: null, candidates: [onlineCandidate] }
+      : { status: 'ambiguous', entity: null, candidates: [localCandidate] },
+  });
+  const original = await resolver.resolve({
+    internalUserId: 7,
+    question: '新华保险的康健华尊保什么',
+    runtime: 'hermes',
+    proposal: proposal({
+      mentions: [
+        { type: 'insurer', rawText: '新华保险' },
+        { type: 'product', rawText: '康健华尊' },
+      ],
+    }),
+  });
+  assert.equal(original.decision, 'clarify');
+  assert.equal(original.nextTaskState.candidateSets.product[0].officialName, localCandidate.officialName);
+
+  const retried = await resolver.resolve({
+    internalUserId: 7,
+    question: '2',
+    runtime: 'rule',
+    proposal: null,
+    context: { taskState: original.nextTaskState },
+  });
+  assert.equal(retried.decision, 'clarify');
+  assert.equal(productCalls.length, 2);
+  assert.equal(productCalls[1].allowOnline, true);
+  assert.deepEqual(productCalls[1].mentions, [
+    { type: 'insurer', rawText: '新华保险' },
+    { type: 'product', rawText: '康健华尊' },
+  ]);
+  assert.equal(retried.nextTaskState.candidateSets.product[0].officialName, onlineCandidate.officialName);
+});
+
+test('selecting the only online-search action after a local miss retries the original product', async () => {
+  const onlineCandidate = {
+    ...PRODUCT,
+    canonicalProductId: 'online-only-candidate',
+    company: '联合承保机构',
+    officialName: '西湖益联保',
+  };
+  const { resolver, productCalls } = harness({
+    productResult: (input) => input.allowOnline === true
+      ? { status: 'ambiguous', entity: null, candidates: [onlineCandidate] }
+      : { status: 'ambiguous', entity: null, candidates: [] },
+  });
+  const original = await resolver.resolve({
+    internalUserId: 7,
+    question: '西湖益联保保险责任',
+    runtime: 'hermes',
+    proposal: proposal({ mentions: [{ type: 'product', rawText: '西湖益联保' }] }),
+  });
+  assert.equal(original.decision, 'clarify');
+  assert.deepEqual(original.nextTaskState.candidateSets.product, []);
+  assert.equal(original.nextTaskState.pendingClarification?.entityType, 'product');
+
+  const retried = await resolver.resolve({
+    internalUserId: 7,
+    question: '1',
+    runtime: 'rule',
+    proposal: null,
+    context: { taskState: original.nextTaskState },
+  });
+  assert.equal(retried.decision, 'clarify');
+  assert.equal(retried.decisionReason, 'entity_ambiguous');
+  assert.equal(productCalls.length, 2);
+  assert.equal(productCalls[1].allowOnline, true);
+  assert.deepEqual(productCalls[1].mentions, [{ type: 'product', rawText: '西湖益联保' }]);
+  assert.equal(retried.nextTaskState.candidateSets.product[0].officialName, '西湖益联保');
+});
+
 test('pending selection keeps a bound current Hermes proposal and follow-up aspects', async () => {
   const candidates = [
     { ...PRODUCT, canonicalProductId: 'product-1', officialName: '第一款保险' },
@@ -1215,7 +1291,7 @@ test('expired, out-of-range, and unbound selections fail with candidate_selectio
     { taskState: { candidateSets: { product: [PRODUCT] }, pendingClarification: stored } },
     { taskState: { candidateSets: { product: [PRODUCT] }, pendingClarification: null } },
   ];
-  const questions = ['选择1', '选择2', '2'];
+  const questions = ['选择1', '选择3', '2'];
   for (let index = 0; index < contexts.length; index += 1) {
     const { resolver } = harness();
     const result = await resolver.resolve({

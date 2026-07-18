@@ -233,6 +233,8 @@ function normalizeBaseBody(body, { requireCandidate = false, questionRoute = fal
   if (fallbackReasonProvided && !SEMANTIC_FALLBACK_REASONS.has(fallbackReason)) return null;
   const preparsed = preparseAgentMessage(question);
   const isCandidateSelection = Boolean(preparsed.candidateSelection);
+  const isCandidateRejection = Boolean(preparsed.candidateRejection);
+  const isCandidateAction = isCandidateSelection || isCandidateRejection;
   const isExplicitUpload = preparsed.operationHint === 'upload_link';
   let normalizedProposal;
   if (proposal !== null && proposal !== undefined) {
@@ -244,9 +246,10 @@ function normalizeBaseBody(body, { requireCandidate = false, questionRoute = fal
   }
   let effectiveRuntime = runtime;
   let effectiveFallbackReason = fallbackReason;
-  if (isCandidateSelection) {
+  if (isCandidateAction) {
     if (runtime !== 'hermes' || fallbackReasonProvided) return null;
-    if (normalizedProposal) {
+    if (isCandidateRejection && normalizedProposal) return null;
+    if (isCandidateSelection && normalizedProposal) {
       const boundSelection = normalizedProposal.references.some((reference) => (
         reference.type === 'candidate_index'
         && reference.rawText === preparsed.candidateSelection.rawText

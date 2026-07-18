@@ -371,6 +371,9 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   }).map((message) => message.content).join('\n');
 
   assert.match(prompt, /你是一名保险营销专家/u);
+  assert.match(prompt, /产品名称线索本身不能证明保险责任/u);
+  assert.match(prompt, /本轮最终回答始终围绕顾问的销售问题/u);
+  assert.match(prompt, /没有已核验证据时.*待核实.*仍要给出不依赖这些事实的跟进策略/u);
   assert.match(prompt, /只能回答“我是保险营销专家/u);
   assert.match(prompt, /sourceUpdated=true/);
   assert.match(prompt, /客户说预算不够怎么办/);
@@ -393,12 +396,10 @@ test('family sales chat prompt uses privacy-safe context and restores display na
       return {
         ok: true,
         json: async () => ({
-          model: body.max_tokens === 300 ? 'deepseek-v4-flash' : 'deepseek-v4-pro',
+          model: 'deepseek-v4-pro',
           choices: [{
             message: {
-              content: body.max_tokens === 300
-                ? JSON.stringify({ intent: 'sales_script', skills: ['sales_script', 'objection_handling'], reason: '微信话术' })
-                : '我是DeepSeek大模型。familyInput为空时，先对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
+              content: '我是DeepSeek大模型。familyInput为空时，先对{{member_1}}说：“我们先核实预算，再拆基础方案。” {{id_number_1}}',
             },
           }],
         }),
@@ -406,14 +407,12 @@ test('family sales chat prompt uses privacy-safe context and restores display na
     },
   });
 
-  assert.equal(requestBodies.length, 2);
-  assert.equal(requestBodies[0].model, 'deepseek-v4-flash');
-  assert.match(JSON.stringify(requestBodies[0]), /sales_script/);
-  assert.equal(requestBodies[1].model, 'deepseek-v4-pro');
-  assert.deepEqual(requestBodies[1].thinking, { type: 'enabled' });
-  assert.match(JSON.stringify(requestBodies[1]), /智能 skill router 选择/);
-  assert.match(JSON.stringify(requestBodies[1]), /客户异议处理/);
-  assert.doesNotMatch(JSON.stringify(requestBodies[1]), /张三|李四|张三家庭|110101198606141234|110101198812016543/);
+  assert.equal(requestBodies.length, 1);
+  assert.equal(requestBodies[0].model, 'deepseek-v4-pro');
+  assert.deepEqual(requestBodies[0].thinking, { type: 'enabled' });
+  assert.match(JSON.stringify(requestBodies[0]), /通用销售澄清能力/u);
+  assert.doesNotMatch(JSON.stringify(requestBodies[0]), /agent-skill-router|智能 skill router/u);
+  assert.doesNotMatch(JSON.stringify(requestBodies[0]), /张三|李四|张三家庭|110101198606141234|110101198812016543/);
   assert.match(reply.content, /保险营销专家/);
   assert.match(reply.content, /张三/);
   assert.match(reply.content, /身份证号已脱敏/);
@@ -440,6 +439,52 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
 });
 
+test('open sales coaching keeps the full customer narrative and requires a complete customer profile', () => {
+  const question = '客户五十多岁，是普通职员，估计月收入七八千，夫妻分居，在杭州租房且没有孩子，已有新华保险康建华尊和平安年金险或增额终身寿险，比较在意养老，我怎么跟进？';
+  const messages = buildFamilySalesChatMessages({
+    context: { consultationScope: 'open', familyInput: {} },
+    question,
+  });
+  const prompt = messages.map((message) => message.content).join('\n');
+
+  assert.equal(messages.at(-1).content, question);
+  assert.match(prompt, /年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标/u);
+  assert.match(prompt, /严格区分客户事实、顾问估计和待核实项/u);
+  assert.match(prompt, /不得因产品名称模糊而忽略其余客户信息/u);
+  assert.match(prompt, /五十多岁.*月收入七八千.*夫妻分居.*杭州租房.*没有孩子.*在意养老/u);
+});
+
+test('family sales chat consumes the structured sales turn instead of routing raw keywords', () => {
+  const question = '客户比较在意养老，我怎么跟进？';
+  const prompt = buildFamilySalesChatMessages({
+    context: {
+      consultationScope: 'open',
+      familyInput: {},
+      salesTurn: {
+        proposal: {
+          contractVersion: 1,
+          customerStatements: [{ text: question, source: 'current_message' }],
+          stage: { value: 'discovery', confidence: 0.9 },
+          concerns: [{ type: 'follow_up', priority: 'primary', confidence: 0.9 }],
+          signals: { explicitRefusal: false, stopContact: false, factSensitive: false },
+          missingInformation: ['customer_goal'],
+          proposedCapabilities: ['needs_discovery'],
+          insuranceNeeds: [],
+        },
+        readiness: { decision: 'execute', reason: 'ready', officialFactsRequired: false, insuranceExpertRequired: false },
+        selection: { primary: { key: 'needs_discovery', version: 1 }, supporting: [] },
+        insuranceNeedResults: [],
+      },
+    },
+    question,
+  }).map((message) => message.content).join('\n');
+
+  assert.match(prompt, /结构化 turn contract 校验/u);
+  assert.match(prompt, /needs_discovery/u);
+  assert.match(prompt, /不得重新按关键词判断意图或 Skill/u);
+  assert.doesNotMatch(prompt, /产品比对与替换评估|智能 skill router/u);
+});
+
 test('family sales chat corrects a product comparison cashflow amount from the verified ledger', async () => {
   const familyInput = buildFamilySalesReviewInput({
     family: { id: 1, status: 'active' },
@@ -449,20 +494,16 @@ test('family sales chat corrects a product comparison cashflow amount from the v
       cashflowEntries: [{ year: 2052, amount: 200000, liability: '满期保险金' }],
     }],
   });
-  let callCount = 0;
   const reply = await generateFamilySalesChatReply({
     context: { familyInput },
     question: '帮我对比这份计划书和现有保单',
     env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
     fetchImpl: async () => {
-      callCount += 1;
       return {
         ok: true,
         json: async () => ({
-          model: callCount === 1 ? 'deepseek-v4-flash' : 'deepseek-v4-pro',
-          choices: [{ message: { content: callCount === 1
-            ? JSON.stringify({ intent: 'product_comparison', skills: ['product_comparison', 'policy_evidence'], reason: '产品对比' })
-            : '现有保单在2052年确定给付 2 万元。' } }],
+          model: 'deepseek-v4-pro',
+          choices: [{ message: { content: '现有保单在2052年确定给付 2 万元。' } }],
         }),
       };
     },

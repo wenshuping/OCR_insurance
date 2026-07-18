@@ -283,6 +283,7 @@ test('ambiguous products are persisted and choice two executes without exposing 
   assert.deepEqual(first.interaction.candidates, [
     { ref: 'choice_1', label: '测试保险 《正式产品1》' },
     { ref: 'choice_2', label: '测试保险 《正式产品2》' },
+    { ref: 'search_online', label: '以上都不是，联网查询' },
   ]);
   assert.doesNotMatch(JSON.stringify(first), /private-/u);
 
@@ -327,15 +328,15 @@ test('a single product suggestion asks for friendly numbered confirmation', asyn
     runtime: 'hermes', question, proposal: semanticProposal,
   });
 
-  assert.equal(result.interaction.text, '你是不是想查询以下产品？请回复 1 确认。');
-  assert.deepEqual(result.interaction.candidates, [{
-    ref: 'choice_1',
-    label: '新华保险 《医药安欣（易核版）医疗保险》',
-  }]);
+  assert.equal(result.interaction.text, '你是不是想查询以下产品？请选择；如果不是，请选择“以上都不是，联网查询”。');
+  assert.deepEqual(result.interaction.candidates, [
+    { ref: 'choice_1', label: '新华保险 《医药安欣（易核版）医疗保险》' },
+    { ref: 'search_online', label: '以上都不是，联网查询' },
+  ]);
   assert.doesNotMatch(JSON.stringify(result), /private-draft-id/u);
 });
 
-test('an empty product ambiguity asks for identifying details instead of a nonexistent choice', async () => {
+test('an empty local product query offers the explicit online-search choice', async () => {
   const question = '这个产品是什么';
   const semanticProposal = proposal(question);
   const { router } = wrapperHarness({
@@ -352,9 +353,10 @@ test('an empty product ambiguity asks for identifying details instead of a nonex
     runtime: 'hermes', question, proposal: semanticProposal,
   });
 
-  assert.match(result.interaction.text, /没能确认/u);
-  assert.match(result.interaction.text, /保险公司/u);
-  assert.equal(result.interaction.candidates, undefined);
+  assert.match(result.interaction.text, /本地产品库暂未找到/u);
+  assert.deepEqual(result.interaction.candidates, [
+    { ref: 'search_online', label: '以上都不是，联网查询' },
+  ]);
 });
 
 test('pending choice with a current Hermes proposal keeps current aspects and provenance', async () => {

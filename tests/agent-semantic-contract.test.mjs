@@ -248,6 +248,15 @@ test('pre-parser recognizes only high-certainty selection and upload signals', (
   });
 });
 
+test('pre-parser recognizes only explicit rejection of the current candidate set', () => {
+  for (const input of ['都不是', '以上都不对', '这些都不是，联网查询']) {
+    assert.deepEqual(preparseAgentMessage(input).candidateRejection, { rawText: input });
+  }
+  for (const input of ['这个不是', '不都是', '我觉得都不太合适', '都不是重疾险']) {
+    assert.equal(preparseAgentMessage(input).candidateRejection, undefined, input);
+  }
+});
+
 test('pre-parser accepts bounded complete selections and rejects weak or out-of-range forms', () => {
   for (const [input, index] of [
     ['选2', 1],

@@ -28,7 +28,7 @@ test('insurance expert agent plans plan comparison and complete official evidenc
     intent: 'insurance_product_knowledge',
     question: '计划一、计划二、计划三分别是啥',
     resolvedProduct: { company: '新华保险', officialName: '寰宇尊悦高端医疗保险' },
-    queryAspects: ['main_responsibilities'],
+    queryAspects: ['comparison', 'main_responsibilities'],
   });
 
   assert.deepEqual(plan.skills, ['plan_comparison', 'official_terms_retrieval', 'evidence_validation']);
@@ -67,6 +67,7 @@ test('insurance expert plan compiler adds required official retrieval for contra
   const plan = await planner.plan({
     intent: 'insurance_product_knowledge',
     question: '三个计划分别是什么',
+    queryAspects: ['comparison', 'main_responsibilities'],
   });
 
   assert.deepEqual(plan.skills, [
@@ -129,7 +130,7 @@ test('generic insurance QA compiles without forcing responsibility detail', asyn
   assert.equal(plan.skills.includes('responsibility_detail'), false);
 });
 
-test('insurance expert agent exposes local skill registry candidates with safety boundaries', async () => {
+test('insurance expert agent rejects a raw-text attempt to expose an unrelated local skill', async () => {
   let requestBody;
   const skillRegistry = createInsuranceExpertSkillRegistry({
     localSkills: [{
@@ -155,12 +156,8 @@ test('insurance expert agent exposes local skill registry candidates with safety
     },
   });
 
-  const plan = await planner.plan({
-    intent: 'insurance_product_knowledge',
-    question: '帮我记录这张保单，后面提醒续期',
-  });
-
-  assert.deepEqual(plan.skills, ['insurance', 'evidence_validation']);
-  assert.match(requestBody.messages[0].content, /insurance｜本地保单记录管理/u);
-  assert.match(requestBody.messages[0].content, /NEVER provides insurance advice/u);
+  await assert.rejects(planner.plan({
+    intent: 'insurance_product_knowledge', question: '帮我记录这张保单，后面提醒续期',
+  }), (error) => error.code === 'INSURANCE_EXPERT_PLAN_INVALID');
+  assert.doesNotMatch(requestBody.messages[0].content, /insurance｜本地保单记录管理/u);
 });

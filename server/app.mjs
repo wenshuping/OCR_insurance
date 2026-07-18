@@ -7,13 +7,17 @@ import { createAdminRoutes } from './routes/admin.routes.mjs';
 import { createAgentRouter } from './routes/agent.routes.mjs';
 import { startTransferRegenerationRecovery } from './agent-confirmation.service.mjs';
 import { createAgentConfirmationService } from './agent-confirmation.service.mjs';
+import { interpretSalesChampionTurn } from './sales-champion-turn-interpreter.service.mjs';
 import { createAgentReportRegenerationQueue } from './agent-report-regeneration-queue.service.mjs';
 import { createAgentQuestionHandlers } from './agent-question-handlers.service.mjs';
 import { createAgentQuestionRouter } from './agent-question-router.service.mjs';
 import { DEFAULT_AGENT_RUNTIME_SETTINGS } from './agent-question-policy.service.mjs';
 import { createAgentProductKnowledgeService } from './agent-resolved-product-knowledge.service.mjs';
 import { createAgentFamilyEntityResolver } from './agent-family-entity-resolver.service.mjs';
-import { createAgentProductEntityResolver } from './agent-product-entity-resolver.service.mjs';
+import {
+  createAgentProductEntityResolver,
+  resolveAgentProductWithResponsibilityMatch,
+} from './agent-product-entity-resolver.service.mjs';
 import { createAgentSemanticConversationService } from './agent-semantic-conversation.service.mjs';
 import { createAgentSemanticAuditService } from './agent-semantic-audit.service.mjs';
 import { createAgentSemanticQuestionRouter } from './agent-semantic-question-router.service.mjs';
@@ -2513,6 +2517,7 @@ export function createPolicyOcrApp(options = {}) {
   }
 
   let responsibilityAssistantQuery = null;
+  let responsibilityAssistantProductMatch = null;
   let customerResponsibilitySummaryQuery = null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
@@ -2688,6 +2693,7 @@ export function createPolicyOcrApp(options = {}) {
       });
     },
     registerResponsibilityAssistantQuery(query) { responsibilityAssistantQuery = query; },
+    registerResponsibilityAssistantProductMatch(query) { responsibilityAssistantProductMatch = query; },
     registerCustomerResponsibilitySummaryQuery(query) { customerResponsibilitySummaryQuery = query; },
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
@@ -2865,6 +2871,8 @@ export function createPolicyOcrApp(options = {}) {
       allowedKnowledgeOriginsProvider: loadAgentKnowledgeAllowedOrigins,
       insuranceExpertPlanner,
       insuranceExpertSkillRegistry,
+      salesChampionTurnInterpreter: options.salesChampionTurnInterpreter
+        || (insuranceExpertEnv.DEEPSEEK_API_KEY ? interpretSalesChampionTurn : undefined),
       authorizedFamilyDataLoader: async ({ familyId, internalUserId }) => {
         if (typeof agentStore.loadAuthorizedFamilyState === 'function') {
           return agentStore.loadAuthorizedFamilyState({ familyId, internalUserId });
@@ -2920,11 +2928,16 @@ export function createPolicyOcrApp(options = {}) {
   const agentProductResolver = options.agentProductResolver || (options.db
     ? {
       async resolve(input) {
-        return createAgentProductEntityResolver({
+        const localResolver = createAgentProductEntityResolver({
           db: options.db,
           tenantId: options.agentProductTenantId ?? 'default',
           officialDomainProfiles: await loadAgentOfficialDomainProfiles(),
-        }).resolve(input);
+        });
+        return resolveAgentProductWithResponsibilityMatch({
+          localResolver,
+          matchResponsibilityProducts: responsibilityAssistantProductMatch,
+          input,
+        });
       },
       async resolveAllFromText(input) {
         return createAgentProductEntityResolver({
@@ -3002,6 +3015,7 @@ export function createPolicyOcrApp(options = {}) {
         questionRouter: agentQuestionRouter,
         resolveChannelIdentity: options.resolveDingTalkIdentity,
         productResolver: agentProductResolver,
+        conversationContext: agentConversationContext,
       })
       : null
   );

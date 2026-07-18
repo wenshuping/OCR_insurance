@@ -12,10 +12,11 @@ const PRODUCT_COMPARISON_PATTERN = /对比|比较|区别|差异|哪款|哪个好
 const PRODUCT_DISCOVERY_PATTERN = /(?:(?:在售|停售|销售中).*(?:保险|医疗|重疾|年金|寿险)|(?:保险|医疗|重疾|年金|寿险).*(?:在售|停售|销售中|有哪些))/u;
 const UNDERSTANDING_CHALLENGE_PATTERN = /(?:你)?(?:听懂|看懂|明白|理解)(?:我)?(?:说|问|意思).*(?:吗|没|没有)|我(?:说|问)的是/u;
 const MARKDOWN_CONTENT_PATTERN = /(?:^|\n)\s*(?:#{1,6}\s|[-*]\s|\d+\.\s|>\s|\|.*\|)|\*\*[^*]+\*\*/u;
-const RESPONSIBILITY_ANSWER_PATTERN = /(?:^|\n)### 责任明细（(\d+)项）/u;
+const RESPONSIBILITY_ANSWER_PATTERN = /(?:^|\n)### (责任明细|公开资料责任线索|多来源责任汇总)（(\d+)项(?:，(?:非完整责任|待核实))?）/u;
 const COMPARISON_PRODUCT_PRONOUN_PATTERN = /^(?:他|它|这个产品|该产品|上述产品)(?=\s*(?:和|与|对比|比较|VS\.?))/iu;
 const PRODUCT_QUESTION_ASPECT_PATTERN = /产品责任|保险责任|保障责任|保什么|保哪些|怎么赔|赔什么|优势|亮点|卖点|在售|停售|还能买|等待期|免责/u;
 const QUESTION_CONTENT_PATTERN = /(?:计划|方案|分别|各自|每个|是啥|是什么|有哪些|有什么|包含|包括|怎么|多少|吗|呢|\?)/u;
+const ONLINE_SEARCH_CANDIDATE_LABEL = '以上都不是，联网查询';
 
 function gatewayError(code, status = 502) {
   return Object.assign(new Error(code), { code, status });
@@ -185,17 +186,31 @@ function circledNumber(value) {
 
 function responsibilityCardMarkdown(value) {
   const source = String(value || '').replace(/\r\n?/gu, '\n').trim();
-  const count = source.match(RESPONSIBILITY_ANSWER_PATTERN)?.[1] || '';
-  const output = ['### 🛡️ 保险责任助手', count ? `> 已生成 **${count} 项责任摘要**` : '', ''].filter(Boolean);
+  const answerHeading = source.match(RESPONSIBILITY_ANSWER_PATTERN);
+  const partialExternalResult = answerHeading?.[1] === '公开资料责任线索';
+  const multiSourceExternalResult = answerHeading?.[1] === '多来源责任汇总';
+  const count = answerHeading?.[2] || '';
+  const countSummary = count
+    ? partialExternalResult
+      ? `> 已找到 **${count} 项公开资料线索**，不是完整责任清单`
+      : multiSourceExternalResult
+        ? `> 已从多来源汇总 **${count} 项责任**，仍需正式条款核实`
+      : `> 已生成 **${count} 项责任摘要**`
+    : '';
+  const output = ['### 🛡️ 保险责任助手', countSummary, ''].filter(Boolean);
   let inResponsibilityCard = false;
   let cardCount = 0;
   for (const rawLine of source.split('\n')) {
     const line = rawLine.trim();
     if (!line) continue;
-    const detailHeading = line.match(/^### 责任明细（(\d+)项）$/u);
+    const detailHeading = line.match(/^### (责任明细|公开资料责任线索|多来源责任汇总)（(\d+)项(?:，(?:非完整责任|待核实))?）$/u);
     if (detailHeading) {
       inResponsibilityCard = false;
-      output.push('', `### 责任明细　${detailHeading[1]} 项`, '');
+      output.push('', detailHeading[1] === '公开资料责任线索'
+        ? `### 公开资料责任线索　${detailHeading[2]} 项（非完整责任）`
+        : detailHeading[1] === '多来源责任汇总'
+          ? `### 多来源责任汇总　${detailHeading[2]} 项（待核实）`
+        : `### 责任明细　${detailHeading[2]} 项`, '');
       continue;
     }
     const responsibilityTitle = line.match(/^(\d+)\.\s+\*\*([^*]+)\*\*$/u);
@@ -215,6 +230,7 @@ function responsibilityCardMarkdown(value) {
       if (line.startsWith('触发条件：')) output.push(`> **触发条件：** ${line.slice(5).trim()}`);
       else if (line.startsWith('calculationStatus:')) output.push(`> \`${line}\``);
       else if (line.startsWith('来源：')) output.push(`> **来源：** ${line.slice(3).split('、').map((item) => `\`${item.trim()}\``).join(' ')}`);
+      else if (line.startsWith('引用：')) output.push(`> **引用：** ${line.slice(3).trim()}`);
       else if (line.startsWith('计算所需保单信息：')) output.push(`> **所需保单信息：** ${line.slice(9).split('、').map((item) => `\`${item.trim()}\``).join(' ')}`);
       else if (/^给付/u.test(line)) output.push(`> **${line}**`);
       else output.push(`> ${line}`);
@@ -285,6 +301,7 @@ function productNameFromReply(value) {
 function candidateProduct(value) {
   const stored = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   const label = String(stored.label || value || '').trim();
+  if (stored.ref === 'search_online' || label === ONLINE_SEARCH_CANDIDATE_LABEL) return null;
   if (!label) return null;
   const productName = String(stored.officialName || productNameFromReply(label) || label).trim();
   const company = String(stored.company || (productNameFromReply(label) ? label.split('《', 1)[0].trim() : '')).trim();
@@ -564,6 +581,10 @@ export function createDingtalkAgentGateway({
         }
         if (payload?.interaction?.type === 'clarification' && Array.isArray(payload.interaction.candidates)) {
           const products = payload.interaction.candidates.map((item) => {
+            const label = String(item?.label || '').trim();
+            if (item?.ref === 'search_online' || label === ONLINE_SEARCH_CANDIDATE_LABEL) {
+              return { ref: 'search_online', label: ONLINE_SEARCH_CANDIDATE_LABEL };
+            }
             const product = candidateProduct(item);
             return product ? {
               ...(String(item?.ref || '').trim() ? { ref: String(item.ref).trim() } : {}),

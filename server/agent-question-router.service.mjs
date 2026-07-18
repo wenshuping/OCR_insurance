@@ -7,7 +7,6 @@ import {
   validateAgentQuestionPolicy,
 } from './agent-question-policy.service.mjs';
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
-import { routeSalesChampionShadowTurn } from './sales-champion-shadow-interpreter.service.mjs';
 
 const DECISIONS = new Set(['execute', 'clarify', 'confirm', 'deny', 'open_web']);
 const INTERACTIONS = new Set(['answer', 'clarification', 'confirmation', 'progress', 'secure_link', 'denied']);
@@ -117,6 +116,32 @@ function projectSemanticProducts(candidate, semanticContext) {
       ? semanticContext.queryAspects : [])
       .filter((value) => typeof value === 'string' && QUERY_ASPECTS.has(value)))].slice(0, 8),
   };
+}
+
+function projectSalesContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { productMentions: [], officialFactNeeds: [], resolvedProducts: [] };
+  }
+  const productMentions = [...new Set((Array.isArray(value.productMentions) ? value.productMentions : [])
+    .map((item) => boundedString(item, 200))
+    .filter(Boolean))].slice(0, 5);
+  const officialFactNeeds = [...new Set((Array.isArray(value.officialFactNeeds) ? value.officialFactNeeds : [])
+    .filter((item) => typeof item === 'string' && QUERY_ASPECTS.has(item)))].slice(0, 8);
+  const resolvedProducts = (Array.isArray(value.resolvedProducts) ? value.resolvedProducts : [])
+    .slice(0, 5)
+    .flatMap((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+      const canonicalProductId = boundedString(item.canonicalProductId, 200);
+      const company = boundedString(item.company, 200);
+      const officialName = boundedString(item.officialName, 200);
+      return canonicalProductId && company && officialName
+        ? [{ canonicalProductId, company, officialName }]
+        : [];
+    })
+    .filter((product, index, products) => products.findIndex((candidate) => (
+      candidate.canonicalProductId === product.canonicalProductId
+    )) === index);
+  return { productMentions, officialFactNeeds, resolvedProducts };
 }
 
 async function defaultFamilyResolver({ store, state, internalUserId }) {
@@ -311,6 +336,7 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     conversationContext,
     conversationHistory,
     semanticContext,
+    salesContext,
   } = {}) {
     const userId = Number(internalUserId);
     if (!Number.isInteger(userId) || userId <= 0) throw new TypeError('internalUserId is required');
@@ -324,10 +350,6 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       : null;
     const selected = selectPolicy(candidate, published);
     const policy = selected.policy;
-    const salesChampionShadow = candidate.intent === 'sales_coaching'
-      ? routeSalesChampionShadowTurn({ question: candidate.question })
-      : null;
-
     let authorizedResourceIds = [];
     const finish = async (result, resultCode = 'completed') => {
       const safe = publicResult(result, result?.decision || 'deny');
@@ -350,7 +372,6 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         decision: safe.decision,
         fallback: policy?.key === 'unknown_read' || policy?.key === 'unknown_write',
         result: resultCode,
-        ...(salesChampionShadow ? { salesChampionShadow } : {}),
         actor: 'agent_question_router',
         createdAt: now.toISOString(),
       };
@@ -450,6 +471,12 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
         ? { history: projectConversationHistory(conversationHistory) }
         : {}),
     };
+    if (policy.intent === 'sales_coaching') {
+      const trustedSalesContext = projectSalesContext(salesContext);
+      authorizedContext.productMentions = trustedSalesContext.productMentions;
+      authorizedContext.officialFactNeeds = trustedSalesContext.officialFactNeeds;
+      authorizedContext.resolvedProducts = trustedSalesContext.resolvedProducts;
+    }
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);
       const semanticProducts = projectSemanticProducts(candidate, semanticContext);

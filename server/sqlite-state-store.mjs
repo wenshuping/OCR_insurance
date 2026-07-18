@@ -3956,6 +3956,7 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       FROM agent_conversation_entities WHERE conversation_id = ? ORDER BY role, ordinal
     `).all(id);
     const current = entities.find((entity) => entity.role === 'current');
+    const currentPayload = current ? parseJson(current.payload, {}) : {};
     const candidates = entities.filter((entity) => entity.role === 'candidate');
     return {
       version: Number(row.context_version),
@@ -3964,10 +3965,22 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       history: Array.isArray(payload.history) ? payload.history : [],
       question: payload.question || null,
       factBlock: payload.factBlock || null,
-      product: current ? { productName: current.display_name, updatedAt: Number(current.updated_at) } : null,
+      product: current ? {
+        productName: current.display_name,
+        ...(String(currentPayload.company || '').trim()
+          ? { company: String(currentPayload.company).trim() }
+          : {}),
+        ...(String(currentPayload.canonicalProductId || '').trim()
+          ? { canonicalProductId: String(currentPayload.canonicalProductId).trim() }
+          : {}),
+        updatedAt: Number(current.updated_at),
+      } : null,
       productCandidates: candidates.length ? {
         products: candidates.map((entity) => {
           const candidate = parseJson(entity.payload, {});
+          if (String(candidate.ref || '').trim() === 'search_online') {
+            return { ref: 'search_online', label: entity.display_name };
+          }
           const company = String(candidate.company || '').trim();
           const officialName = String(candidate.officialName || '').trim();
           const canonicalProductId = String(candidate.canonicalProductId || '').trim();
@@ -4023,7 +4036,12 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
         VALUES (?, ?, ?, ?, ?, ?)
       `);
       const currentProductName = String(product?.productName || '').trim();
-      if (currentProductName) insertEntity.run(id, 'current', 0, currentProductName, Number(product.updatedAt || timestamp), '{}');
+      if (currentProductName) insertEntity.run(
+        id, 'current', 0, currentProductName, Number(product.updatedAt || timestamp), JSON.stringify({
+          company: String(product?.company || '').trim().slice(0, 200),
+          canonicalProductId: String(product?.canonicalProductId || '').trim().slice(0, 200),
+        }),
+      );
       const candidateProducts = Array.isArray(productCandidates?.products) ? productCandidates.products : [];
       candidateProducts.forEach((value, index) => {
         const candidate = value && typeof value === 'object' && !Array.isArray(value) ? value : {};

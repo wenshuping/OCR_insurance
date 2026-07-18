@@ -34,7 +34,12 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
     history: [{ role: 'user', content: '国寿惠享保保险责任' }],
     hermesSessionId: 'hermes-session-user-7',
     agentLoopSessionId: 'agent-loop-session-user-7',
-    product: { productName: '国寿惠享保（免健告）百万医疗险', updatedAt: 1_720_000_000_000 },
+    product: {
+      productName: '国寿惠享保（免健告）百万医疗险',
+      company: '中国人寿财险',
+      canonicalProductId: 'product_hxb',
+      updatedAt: 1_720_000_000_000,
+    },
     productCandidates: null,
     question: {
       candidate: { intent: 'insurance_product_knowledge', question: '国寿惠享保保险责任', confidence: 1, requestedOperation: 'read' },
@@ -60,9 +65,55 @@ test('agent conversation context survives a SQLite store restart', async (t) => 
   assert.equal(restored.hermesSessionId, 'hermes-session-user-7');
   assert.equal(restored.agentLoopSessionId, 'agent-loop-session-user-7');
   assert.equal(restored.product.productName, '国寿惠享保（免健告）百万医疗险');
+  assert.equal(restored.product.company, '中国人寿财险');
+  assert.equal(restored.product.canonicalProductId, 'product_hxb');
   assert.equal(restored.factBlock.goal.owner, 'insurance_expert');
   assert.equal(restored.factBlock.verifiedEntities.product.source, 'domain_agent');
   assert.equal(restored.version, 2);
+});
+
+test('agent conversation context recovers a confirmed product identity from a legacy question', async () => {
+  const now = 1_720_000_000_000;
+  const store = {
+    async resolveAgentConversation() {
+      return { id: 'legacy-conversation', contextVersion: 2 };
+    },
+    async findAgentConversation() {
+      return { id: 'legacy-conversation', contextVersion: 2 };
+    },
+    async loadAgentConversationContext() {
+      return {
+        version: 2,
+        history: [],
+        product: { productName: '尊佑金悦庆典版养老年金保险（分红型）', updatedAt: now },
+        productCandidates: null,
+        question: {
+          candidate: {
+            intent: 'insurance_product_knowledge',
+            question: '尊佑金悦庆典版养老年金保险（分红型）怎么样',
+            confidence: 1,
+            requestedOperation: 'read',
+            entities: {
+              productName: '尊佑金悦庆典版养老年金保险（分红型）',
+              productCompany: '新华保险',
+              productCanonicalId: 'product_zjy',
+            },
+          },
+          updatedAt: now,
+        },
+      };
+    },
+    async saveAgentConversationContext() {},
+  };
+  const context = await createAgentConversationContextService({ store, clock: () => now })
+    .loadContext(identity());
+
+  assert.deepEqual(context.product, {
+    productName: '尊佑金悦庆典版养老年金保险（分红型）',
+    company: '新华保险',
+    canonicalProductId: 'product_zjy',
+    updatedAt: now,
+  });
 });
 
 test('agent conversation context isolates users and channel conversations', async (t) => {
@@ -147,6 +198,7 @@ test('numbered product candidates remain selectable after gateway restart', asyn
           ? { ok: true, json: async () => ({ interaction: { type: 'clarification', text: '请选择：', candidates: [
             { ref: 'one', label: '新华保险《荣耀鑫享赢家版终身寿险》' },
             { ref: 'two', label: '新华保险《荣耀鑫享智赢版终身寿险》' },
+            { ref: 'search_online', label: '以上都不是，联网查询' },
           ] } }) }
           : { ok: true, json: async () => ({ interaction: { type: 'answer', text: '新华保险《荣耀鑫享智赢版终身寿险》：已查询。' } }) };
       }
@@ -165,11 +217,28 @@ test('numbered product candidates remain selectable after gateway restart', asyn
   `).get();
   assert.equal(JSON.parse(persistedCandidate.payload).officialName, '荣耀鑫享智赢版终身寿险');
   assert.match(JSON.parse(persistedCandidate.payload).canonicalProductId, /^product_[a-f0-9]{16}$/u);
+  const persistedOnlineSearch = store.db.prepare(`
+    SELECT payload FROM agent_conversation_entities WHERE role = 'candidate' AND ordinal = 2
+  `).get();
+  assert.deepEqual(JSON.parse(persistedOnlineSearch.payload), {
+    canonicalProductId: '',
+    company: '',
+    officialName: '',
+    ref: 'search_online',
+  });
   store.close();
 
   const reopened = await createSqliteStateStore({ dbPath });
   t.after(() => reopened.close());
   const restartedService = createAgentConversationContextService({ store: reopened, clock: () => 1_720_000_001_000 });
+  const restartedContext = await restartedService.loadContext({
+    ...identity({ internalUserId: 7 }),
+    channelConversationId: 'choice-restart',
+  });
+  assert.deepEqual(restartedContext.productCandidates.products[2], {
+    ref: 'search_online',
+    label: '以上都不是，联网查询',
+  });
   await createDingtalkAgentGateway(gatewayOptions(adapter(restartedService))).handle({
     ...message, msgId: 'choice-2', text: { content: '2' },
   });

@@ -38,16 +38,22 @@ test('tool validation permits only explicit operations, natural names, and opaqu
     names: ['康健无忧两全保险', '新华保险'],
     contextRefs: ['ctx_family_alpha'],
     queryAspects: ['product_advantages'],
+    searchOnline: true,
   }), {
     question: '康健无忧主要保什么？',
     operation: 'product_knowledge',
     names: ['康健无忧两全保险', '新华保险'],
     contextRefs: ['ctx_family_alpha'],
     queryAspects: ['product_advantages'],
+    searchOnline: true,
   });
   assert.deepEqual(validateHermesDomainToolInput('ask_sales_champion', {
     question: '下一步怎么沟通？', operation: 'sales_coaching',
-  }), { question: '下一步怎么沟通？', operation: 'sales_coaching' });
+    productMentions: ['新华保险的康健华尊'], officialFactNeeds: ['renewal'],
+  }), {
+    question: '下一步怎么沟通？', operation: 'sales_coaching',
+    productMentions: ['新华保险的康健华尊'], officialFactNeeds: ['renewal'],
+  });
 
   for (const forbiddenKey of ['internalUserId', 'userId', 'familyId', 'policyId', 'permissions']) {
     assert.throws(() => validateHermesDomainToolInput('ask_insurance_expert', {
@@ -65,6 +71,9 @@ test('tool validation permits only explicit operations, natural names, and opaqu
   }), (error) => error.code === 'OCR_AGENT_TOOL_INPUT_INVALID');
   assert.throws(() => validateHermesDomainToolInput('ask_insurance_expert', {
     question: '查询', operation: 'product_knowledge', queryAspects: ['unknown'],
+  }), (error) => error.code === 'OCR_AGENT_TOOL_INPUT_INVALID');
+  assert.throws(() => validateHermesDomainToolInput('ask_insurance_expert', {
+    question: '查询', operation: 'product_knowledge', productMentions: ['康健华尊'],
   }), (error) => error.code === 'OCR_AGENT_TOOL_INPUT_INVALID');
 });
 

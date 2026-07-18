@@ -39,7 +39,7 @@ test('local insurance skills are loaded with their safety boundaries', () => {
   ]);
 });
 
-test('insurance expert skill registry selects local record skills only when relevant', () => {
+test('insurance expert skill registry does not infer local record skills from raw product text', () => {
   const registry = createInsuranceExpertSkillRegistry({
     localSkills: [{
       key: 'insurance',
@@ -55,9 +55,10 @@ test('insurance expert skill registry selects local record skills only when rele
   }).map((item) => item.key);
   const responsibilitySkills = registry.skillsForIntent('insurance_product_knowledge', {
     question: '寰宇尊悦保险责任',
+    queryAspects: ['main_responsibilities'],
   }).map((item) => item.key);
 
-  assert.ok(recordSkills.includes('insurance'));
+  assert.equal(recordSkills.includes('insurance'), false);
   assert.equal(responsibilitySkills.includes('insurance'), false);
   assert.ok(responsibilitySkills.includes('responsibility_detail'));
 });
@@ -78,7 +79,7 @@ test('insurance expert skill registry falls back to generic QA for common produc
   ]);
 });
 
-test('skill registry prompt includes callable keys and local safety boundaries', () => {
+test('skill registry prompt only includes candidates authorized by semantic aspects', () => {
   const registry = createInsuranceExpertSkillRegistry({
     localSkills: [{
       key: 'insurance',
@@ -91,9 +92,10 @@ test('skill registry prompt includes callable keys and local safety boundaries',
 
   const prompt = formatSkillRegistryForPrompt(registry.skillsForIntent('insurance_product_knowledge', {
     question: '记录保单续期',
+    queryAspects: ['renewal'],
   }));
 
-  assert.match(prompt, /insurance｜本地保单记录管理/u);
-  assert.match(prompt, /NEVER provides insurance advice/u);
+  assert.match(prompt, /renewal_lookup｜续保查询/u);
+  assert.doesNotMatch(prompt, /insurance｜本地保单记录管理/u);
   assert.doesNotMatch(prompt, /responsibility_detail｜C端保险责任助理/u);
 });

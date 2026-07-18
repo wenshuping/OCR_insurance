@@ -10,10 +10,6 @@ function withCode(error, code, status) {
   return error;
 }
 
-function includesAny(text, patterns = []) {
-  return patterns.some((pattern) => pattern.test(text));
-}
-
 const COMMON_INSURANCE_RULES = [
   '只基于已提供的家庭、保单、家庭报告、销售建议、官网证据和对话内容输出。',
   '缺少收入、负债、预算、健康告知、现金价值、分红、领取利益或责任条款证据时写“待核实”。',
@@ -98,48 +94,14 @@ function normalizeSkillKeys(values = []) {
     .slice(0, 4);
 }
 
-function routeIntent(question = '', scene = '') {
-  const text = `${scene}\n${trim(question)}`;
-  if (includesAny(text, [/预算/u, /太贵/u, /买很多/u, /不够/u, /异议/u, /拒绝/u, /回应/u, /怎么回/u])) {
-    return 'objection_handling';
-  }
-  if (includesAny(text, [/对比/u, /比较/u, /哪个好/u, /哪款/u, /替换/u, /换保/u, /转保/u, /退保/u, /竞品/u, /优劣/u, /差异/u, /产品.*产品/u])) {
-    return 'product_comparison';
-  }
-  if (includesAny(text, [/缺口/u, /补哪/u, /优先/u, /保障/u, /重疾/u, /医疗/u, /定寿/u, /意外/u, /失能/u])) {
-    return 'coverage_gap';
-  }
-  if (includesAny(text, [/责任/u, /条款/u, /官网/u, /证据/u, /准不准/u, /保什么/u, /除外/u, /等待期/u])) {
-    return 'policy_evidence';
-  }
-  if (includesAny(text, [/微信/u, /话术/u, /面谈/u, /提纲/u, /开场/u, /邀约/u, /客户/u])) {
-    return 'sales_script';
-  }
-  if (includesAny(text, [/重算/u, /重新生成/u, /再生成/u, /报告/u, /销售建议/u])) {
-    return 'sales_review_regeneration';
-  }
-  if (includesAny(text, [/补资料/u, /清单/u, /下一步/u, /跟进/u, /核实/u])) {
-    return 'followup_materials';
-  }
-  return 'sales_script';
-}
-
 function unique(values = []) {
   return Array.from(new Set(values.filter(Boolean)));
 }
 
-export function selectAgentSkillPrompt({ scene = 'family_sales_chat', question = '', salesChatContext = null } = {}) {
-  const primaryIntent = salesChatContext ? 'sales_review_regeneration' : routeIntent(question, scene);
-  const questionText = trim(question);
-  const needsReplacementCaution = primaryIntent === 'product_comparison' && includesAny(questionText, [/替换/u, /换保/u, /转保/u, /退保/u, /旧保单/u, /原来/u]);
+export function selectAgentSkillPrompt({ scene = 'family_sales_chat', salesChatContext = null } = {}) {
+  const primaryIntent = salesChatContext ? 'sales_review_regeneration' : 'sales_script';
   const skillKeys = unique([
     primaryIntent,
-    primaryIntent === 'objection_handling' ? 'sales_script' : '',
-    primaryIntent === 'coverage_gap' ? 'followup_materials' : '',
-    primaryIntent === 'policy_evidence' ? 'followup_materials' : '',
-    primaryIntent === 'product_comparison' ? 'policy_evidence' : '',
-    primaryIntent === 'product_comparison' ? 'sales_script' : '',
-    needsReplacementCaution ? 'followup_materials' : '',
     salesChatContext ? 'sales_script' : '',
   ]);
   const skillRules = skillKeys.flatMap((key) => SKILL_DEFINITIONS[key]?.rules || []);
@@ -151,7 +113,7 @@ export function selectAgentSkillPrompt({ scene = 'family_sales_chat', question =
       label: SKILL_DEFINITIONS[key]?.label || key,
     })),
     systemRules: unique([...COMMON_INSURANCE_RULES, ...skillRules]),
-    promptHint: `本轮识别为“${SKILL_DEFINITIONS[primaryIntent]?.label || primaryIntent}”，请按对应保险业务规则组织输出。`,
+    promptHint: `本地安全 fallback 仅启用“${SKILL_DEFINITIONS[primaryIntent]?.label || primaryIntent}”；不得按原始问题关键词推断更具体的 skill。`,
     selectedBy: 'local_fallback',
   };
 }

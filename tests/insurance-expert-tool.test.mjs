@@ -53,9 +53,53 @@ test('insurance expert planner selects atomic skills before the domain action ex
     internalUserId: 7,
     intent: 'insurance_product_knowledge',
     question: '计划一、计划二、计划三分别是啥',
+    queryAspects: ['comparison', 'main_responsibilities'],
   } });
 
   assert.deepEqual(received.expertPlan, { ...expertPlan, maxRetrievalRounds: 1 });
+});
+
+test('insurance expert keeps the confirmed product query when its planner is temporarily unavailable', async () => {
+  let received;
+  const tool = createInsuranceExpertTool({
+    planner: { async plan() {
+      throw Object.assign(new Error('planner failed'), { code: 'INSURANCE_EXPERT_PLANNER_FAILED' });
+    } },
+    execute(action, context) {
+      received = { action, context };
+      return result();
+    },
+  });
+
+  const output = await tool.askInsuranceExpertTool({ context: {
+    internalUserId: 7,
+    intent: 'insurance_product_knowledge',
+    question: '潇洒明天 保险责任',
+    resolvedProduct: {
+      canonicalProductId: 'product-xiaosamingtian',
+      company: '中国人寿',
+      officialName: '潇洒明天',
+    },
+    queryAspects: ['main_responsibilities'],
+    tool: 'product_knowledge_search',
+  } });
+
+  assert.deepEqual(received, {
+    action: 'product_knowledge_search',
+    context: {
+      internalUserId: 7,
+      intent: 'insurance_product_knowledge',
+      question: '潇洒明天 保险责任',
+      resolvedProduct: {
+        canonicalProductId: 'product-xiaosamingtian',
+        company: '中国人寿',
+        officialName: '潇洒明天',
+      },
+      queryAspects: ['main_responsibilities'],
+      tool: 'product_knowledge_search',
+    },
+  });
+  assert.equal(output.interaction.text, '保险结论');
 });
 
 test('insurance expert retries only its planned loop when evidence validation is incomplete', async () => {
@@ -121,8 +165,8 @@ test('insurance expert returns a structured timeout error', async () => {
   );
 });
 
-test('insurance expert tool allows registry selected local skills through the controlled loop', async () => {
-  let received;
+test('insurance expert tool rejects a local skill not authorized by semantic aspects', async () => {
+  let executeCalled = false;
   const skillRegistry = createInsuranceExpertSkillRegistry({
     localSkills: [{
       key: 'insurance',
@@ -141,14 +185,11 @@ test('insurance expert tool allows registry selected local skills through the co
         maxRetrievalRounds: 1,
       };
     } },
-    execute(_action, context) { received = context; return result(); },
+    execute() { executeCalled = true; return result(); },
   });
 
-  await tool.askInsuranceExpertTool({ context: {
-    internalUserId: 7,
-    intent: 'insurance_product_knowledge',
-    question: '帮我记录保单续期',
-  } });
-
-  assert.deepEqual(received.expertPlan.skills, ['insurance', 'evidence_validation']);
+  await assert.rejects(tool.askInsuranceExpertTool({ context: {
+    internalUserId: 7, intent: 'insurance_product_knowledge', question: '帮我记录保单续期',
+  } }), /unauthorized skill/u);
+  assert.equal(executeCalled, false);
 });

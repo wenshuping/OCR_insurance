@@ -1,14 +1,74 @@
 import { attachDomainAgentProvenance } from './domain-agent-tool-contract.service.mjs';
+import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import { redactDeepSeekDirectIdentifiers } from './deepseek-privacy-gateway.mjs';
+import { evaluateSalesChampionRoute } from './sales-champion-router.service.mjs';
+import { executeSalesChampionAtomicSkill } from './sales-champion-skill-executor.service.mjs';
 
 const ALLOWED_INTENTS = new Set([
   'view_sales_advice_report', 'sales_report', 'sales_coaching', 'chat',
 ]);
 const ALLOWED_CONTEXT_KEYS = new Set([
   'internalUserId', 'intent', 'question', 'familyId', 'tool', 'history',
+  'productMentions', 'officialFactNeeds', 'insuranceExpertEvidence', 'resolvedProducts',
 ]);
 const ALLOWED_TOOLS = new Set(['sales_report']);
+const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
+const EVIDENCE_STATUSES = new Set(['verified', 'unavailable', 'unresolved']);
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
+
+function safeText(value, limit) {
+  return typeof value === 'string'
+    ? redactDeepSeekDirectIdentifiers(value).trim().slice(0, limit)
+    : '';
+}
+
+function normalizeProductMentions(value) {
+  return [...new Set((Array.isArray(value) ? value : [])
+    .map((item) => safeText(item, 200))
+    .filter(Boolean))].slice(0, 5);
+}
+
+function normalizeInsuranceEvidence(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 2).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const status = safeText(item.status, 40);
+    if (!EVIDENCE_STATUSES.has(status)) return [];
+    const products = (Array.isArray(item.products) ? item.products : []).slice(0, 5).flatMap((product) => {
+      if (!product || typeof product !== 'object' || Array.isArray(product)) return [];
+      const company = safeText(product.company, 200);
+      const officialName = safeText(product.officialName, 200);
+      return company && officialName ? [{ company, officialName }] : [];
+    });
+    const answer = status === 'verified' ? safeText(item.answer, 12_000) : '';
+    return [{ status, products, ...(answer ? { answer } : {}) }];
+  });
+}
+
+function normalizeResolvedProducts(value) {
+  return (Array.isArray(value) ? value : []).slice(0, 5).flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const canonicalProductId = safeText(item.canonicalProductId, 200);
+    const company = safeText(item.company, 200);
+    const officialName = safeText(item.officialName, 200);
+    return canonicalProductId && company && officialName
+      ? [{ canonicalProductId, company, officialName }]
+      : [];
+  });
+}
+
+function insuranceEvidence(result, products = []) {
+  const answer = safeText(result?.interaction?.text, 12_000);
+  const certainty = safeText(result?.facts?.certainty, 40);
+  if (result?.provenance?.domainAgent !== 'insurance_expert'
+    || result?.interaction?.type !== 'answer' || !answer
+    || (certainty && certainty !== 'supported')) return null;
+  return {
+    status: 'verified',
+    products: products.map((product) => ({ company: product.company, officialName: product.officialName })),
+    answer,
+  };
+}
 
 function validateContext(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -24,11 +84,17 @@ function validateContext(value) {
     throw new TypeError('sales champion tool is not allowed for intent');
   }
   const trusted = Object.fromEntries(Object.entries(value).filter(([key]) => ALLOWED_CONTEXT_KEYS.has(key)));
+  trusted.question = safeText(value.question, 2_000);
   trusted.history = (Array.isArray(value.history) ? value.history : []).slice(-12).flatMap((message) => {
     const role = String(message?.role || '').trim();
-    const content = String(message?.content || '').trim().slice(0, 4_000);
+    const content = safeText(message?.content, 4_000);
     return ['user', 'assistant'].includes(role) && content ? [{ role, content }] : [];
   });
+  trusted.productMentions = normalizeProductMentions(value.productMentions);
+  trusted.officialFactNeeds = [...new Set((Array.isArray(value.officialFactNeeds) ? value.officialFactNeeds : [])
+    .filter((item) => typeof item === 'string' && QUERY_ASPECTS.has(item)))].slice(0, 8);
+  trusted.insuranceExpertEvidence = normalizeInsuranceEvidence(value.insuranceExpertEvidence);
+  trusted.resolvedProducts = normalizeResolvedProducts(value.resolvedProducts);
   return trusted;
 }
 
@@ -49,7 +115,12 @@ async function withTimeout(operation, timeoutMs) {
   }
 }
 
-export function createSalesChampionTool({ execute, timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+export function createSalesChampionTool({
+  execute,
+  interpretTurn,
+  askInsuranceExpert,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+} = {}) {
   if (typeof execute !== 'function') throw new TypeError('sales champion execute is required');
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
     throw new TypeError('sales champion timeoutMs is invalid');
@@ -58,7 +129,95 @@ export function createSalesChampionTool({ execute, timeoutMs = DEFAULT_TIMEOUT_M
   async function askSalesChampionTool({ context } = {}) {
     const trustedContext = validateContext(context);
     const result = await withTimeout(
-      () => execute(trustedContext.tool || trustedContext.intent, trustedContext),
+      async () => {
+        if (trustedContext.intent !== 'sales_coaching' || typeof interpretTurn !== 'function') {
+          return execute(trustedContext.tool || trustedContext.intent, trustedContext);
+        }
+        const proposal = await interpretTurn({
+          question: trustedContext.question,
+          history: trustedContext.history,
+        });
+        const route = evaluateSalesChampionRoute({
+          proposal,
+          sourceTexts: [trustedContext.question, ...trustedContext.history.map((message) => message.content)],
+        });
+        if (route.status === 'invalid_proposal') {
+          throw Object.assign(new Error('SALES_CHAMPION_INTERPRETER_INVALID_RESPONSE'), {
+            code: 'SALES_CHAMPION_INTERPRETER_INVALID_RESPONSE', status: 502,
+          });
+        }
+
+        const expertEvidence = [...trustedContext.insuranceExpertEvidence];
+        const insuranceNeedResults = [];
+        if (route.status === 'routed'
+          && route.readiness?.insuranceExpertRequired
+          && typeof askInsuranceExpert === 'function') {
+          for (const need of proposal.insuranceNeeds) {
+            if (need.type === 'coverage_gap') {
+              if (!trustedContext.familyId) {
+                insuranceNeedResults.push({ type: need.type, status: 'needs_family_or_policy_evidence' });
+                continue;
+              }
+              const expertResult = await askInsuranceExpert({ context: {
+                internalUserId: trustedContext.internalUserId,
+                intent: 'coverage_report',
+                tool: 'coverage_report',
+                familyId: trustedContext.familyId,
+                question: trustedContext.question,
+              } });
+              const evidence = insuranceEvidence(expertResult);
+              if (evidence) expertEvidence.push(evidence);
+              insuranceNeedResults.push({ type: need.type, status: evidence ? 'verified' : 'unavailable' });
+              continue;
+            }
+
+            const products = trustedContext.resolvedProducts.slice(0, 2);
+            if (!products.length) {
+              insuranceNeedResults.push({ type: need.type, status: 'needs_resolved_product' });
+              continue;
+            }
+            let verified = 0;
+            for (const product of products) {
+              const expertResult = await askInsuranceExpert({ context: {
+                internalUserId: trustedContext.internalUserId,
+                intent: 'insurance_product_knowledge',
+                question: trustedContext.question,
+                resolvedProduct: product,
+                queryAspects: need.queryAspects.length
+                  ? need.queryAspects
+                  : trustedContext.officialFactNeeds,
+              } });
+              const evidence = insuranceEvidence(expertResult, [product]);
+              if (evidence) {
+                expertEvidence.push(evidence);
+                verified += 1;
+              }
+            }
+            insuranceNeedResults.push({
+              type: need.type,
+              status: verified === products.length ? 'verified' : 'unavailable',
+            });
+          }
+        }
+
+        const salesTurn = {
+          proposal,
+          readiness: route.readiness,
+          selection: route.selection,
+          insuranceNeedResults,
+        };
+        const atomicResult = executeSalesChampionAtomicSkill({
+          context: trustedContext,
+          salesTurn,
+        });
+        if (atomicResult) return atomicResult;
+
+        return execute(trustedContext.tool || trustedContext.intent, {
+          ...trustedContext,
+          insuranceExpertEvidence: expertEvidence,
+          salesTurn,
+        });
+      },
       timeoutMs,
     );
     return attachDomainAgentProvenance(result, 'sales_champion');

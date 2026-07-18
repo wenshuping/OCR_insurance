@@ -363,11 +363,110 @@ function confirmedCandidateIdentity(value) {
 }
 
 function productIdentityKey(value) {
-  return `${clean(value?.company)}\u0000${catalogProductIdentity(value?.officialName)}`;
+  return `${companyIdentity(value?.company)}\u0000${catalogProductIdentity(value?.officialName)}`;
 }
 
 function emptyResult(status) {
   return { status, entity: null, candidates: [] };
+}
+
+function onlineMatchCandidate(match) {
+  const company = boundedString(match?.company);
+  const officialName = boundedString(match?.resolvedProductName || match?.productName);
+  if (!company || !officialName) return null;
+  const canonicalProductId = boundedString(match?.canonicalProductId)
+    || canonicalProductIdFromOfficialProduct({ company, productName: officialName });
+  if (!canonicalProductId) return null;
+  return {
+    canonicalProductId,
+    company,
+    officialName,
+    matchType: 'unique_high_confidence',
+    confidence: HEURISTIC_CONFIDENCE_CEILING,
+  };
+}
+
+export async function resolveAgentProductWithResponsibilityMatch({
+  localResolver,
+  matchResponsibilityProducts,
+  input = {},
+} = {}) {
+  if (typeof localResolver?.resolve !== 'function') throw new TypeError('localResolver.resolve is required');
+  const local = localResolver.resolve(input);
+  const productText = mentionText(input.mentions, 'product');
+  const company = mentionText(input.mentions, 'insurer');
+  const revalidateOnlineCandidate = Boolean(input.confirmedCandidate && local?.status === 'not_found');
+  if (input.allowOnline !== true && !revalidateOnlineCandidate) {
+    return local?.status === 'not_found'
+      && productText
+      && typeof matchResponsibilityProducts === 'function'
+      ? { status: 'ambiguous', entity: null, candidates: [] }
+      : local;
+  }
+  if (!productText || typeof matchResponsibilityProducts !== 'function') return local;
+
+  let matched;
+  try {
+    matched = await matchResponsibilityProducts({
+      company,
+      name: productText,
+      limit: 8,
+      minScore: 0.1,
+      includeOnline: true,
+    });
+  } catch {
+    return local;
+  }
+
+  const rejectedCandidates = [
+    ...(input.allowOnline === true && local?.status === 'ambiguous' ? local.candidates : []),
+    ...(input.allowOnline === true && Array.isArray(input.rejectedProductCandidates)
+      ? input.rejectedProductCandidates : []),
+  ];
+  const rejected = new Set(rejectedCandidates
+    .map(productIdentityKey)
+    .filter((key) => !key.startsWith('\u0000') && !key.endsWith('\u0000')));
+  const rejectedNames = new Set(rejectedCandidates
+    .map((candidate) => catalogProductIdentity(candidate?.officialName))
+    .filter(Boolean));
+  const candidates = (Array.isArray(matched?.matches) ? matched.matches : [])
+    .map(onlineMatchCandidate)
+    .filter(Boolean)
+    .filter((candidate) => !rejected.has(productIdentityKey(candidate))
+      && !rejectedNames.has(catalogProductIdentity(candidate.officialName)))
+    .filter((candidate, index, values) => values.findIndex((value) => (
+      productIdentityKey(value) === productIdentityKey(candidate)
+    )) === index)
+    .slice(0, 10);
+  if (!candidates.length) return emptyResult('not_found');
+
+  const confirmedIdentity = confirmedCandidateIdentity(input.confirmedCandidate);
+  const confirmed = confirmedIdentity && candidates.find((candidate) => (
+    candidate.company === confirmedIdentity.company
+    && comparable(candidate.officialName) === comparable(confirmedIdentity.officialName)
+  ));
+  if (confirmed) {
+    return {
+      status: 'resolved',
+      entity: { ...confirmed, matchType: 'confirmed_candidate', confidence: 1 },
+      candidates: [],
+    };
+  }
+  const exactMatch = matched?.status === 'exact'
+    ? matched.matches.find((match) => match?.needsConfirmation === false)
+    : null;
+  const exactCandidate = onlineMatchCandidate(exactMatch);
+  const resolvedExact = exactCandidate && candidates.find((candidate) => (
+    productIdentityKey(candidate) === productIdentityKey(exactCandidate)
+  ));
+  if (resolvedExact) {
+    return {
+      status: 'resolved',
+      entity: { ...resolvedExact, matchType: 'exact_official_name', confidence: 1 },
+      candidates: [],
+    };
+  }
+  return { status: 'ambiguous', entity: null, candidates };
 }
 
 function mentionText(mentions, type) {

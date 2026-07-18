@@ -471,6 +471,48 @@ test('DingTalk gateway renders a responsibility answer with the responsibility a
   assert.match(replies[0].markdown.text, /---/u);
 });
 
+test('DingTalk gateway labels external responsibility leads as incomplete and keeps their citation', async () => {
+  const replies = [];
+  const gateway = createDingtalkAgentGateway({
+    corpId: 'corp-1', hmacSecret: 'test-secret', getDingtalkMobile: async () => '13800138000',
+    interpretQuestion: async ({ question }) => ({
+      intent: 'insurance_product_knowledge', question, confidence: 1, requestedOperation: 'read',
+    }),
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/api/agent/questions/route')) {
+        return { ok: true, json: async () => ({ interaction: {
+          type: 'answer',
+          text: [
+            '测试保险公司《城市惠民保障》：',
+            '> ⚠️ 本结果基于非官方公开资料线索生成。',
+            '### 公开资料责任线索（1项，非完整责任）',
+            '1. **住院医疗费用线索**',
+            '保障范围：符合当地基本医保范围内的住院费用。',
+            '引用：〔1〕',
+            '### 公开资料来源（非官方）',
+            '1. [公开产品介绍](https://reference.test/product)',
+          ].join('\n'),
+        } }) };
+      }
+      replies.push(JSON.parse(options.body));
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+
+  await gateway.handle({
+    senderCorpId: 'corp-1', conversationType: '1', senderStaffId: 'ding-7',
+    sessionWebhook: 'https://api.dingtalk.com/session', msgtype: 'text',
+    text: { content: '城市惠民保障的保险责任' },
+  });
+
+  assert.equal(replies[0].msgtype, 'markdown');
+  assert.match(replies[0].markdown.text, /已找到 \*\*1 项公开资料线索\*\*，不是完整责任清单/u);
+  assert.match(replies[0].markdown.text, /### 公开资料责任线索　1 项（非完整责任）/u);
+  assert.match(replies[0].markdown.text, /> \*\*引用：\*\* 〔1〕/u);
+  assert.match(replies[0].markdown.text, /#### 公开资料来源（非官方）/u);
+  assert.match(replies[0].markdown.text, /\[公开产品介绍\]\(https:\/\/reference\.test\/product\)/u);
+});
+
 test('DingTalk gateway splits long responsibility cards without losing the answer tail', async () => {
   const replies = [];
   const longAnswer = [
@@ -734,6 +776,43 @@ test('DingTalk gateway routes a numbered product choice to the selected exact pr
   assert.equal(interpreted, 1);
   assert.equal(routedCandidates[1].question, '荣耀鑫享智赢版终身寿险保险责任');
   assert.equal(routedCandidates[1].entities.productName, '荣耀鑫享智赢版终身寿险');
+});
+
+test('DingTalk gateway keeps the online-search choice as an action instead of a product name', async () => {
+  const routedCandidates = [];
+  const gateway = createDingtalkAgentGateway({
+    corpId: 'corp-1', hmacSecret: 'test-secret', getDingtalkMobile: async () => '13800138000',
+    interpretQuestion: async ({ question }) => ({
+      intent: question === '3' ? 'chat' : 'insurance_product_knowledge',
+      question,
+      confidence: 1,
+      requestedOperation: 'read',
+      ...(question === '3' ? {} : { entities: { productName: '荣耀鑫享' } }),
+    }),
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/api/agent/questions/route')) {
+        routedCandidates.push(JSON.parse(options.body).candidate);
+        return routedCandidates.length === 1
+          ? { ok: true, json: async () => ({ interaction: { type: 'clarification', text: '请选择：', candidates: [
+            { ref: 'product_1', label: '新华保险《荣耀鑫享赢家版终身寿险》' },
+            { ref: 'product_2', label: '新华保险《荣耀鑫享智赢版终身寿险》' },
+            { ref: 'search_online', label: '以上都不是，联网查询' },
+          ] } }) }
+          : { ok: true, json: async () => ({ interaction: { type: 'answer', text: '正在联网查询。' } }) };
+      }
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  const base = {
+    senderCorpId: 'corp-1', conversationType: '1', senderStaffId: 'ding-7', conversationId: 'online-choice',
+    sessionWebhook: 'https://api.dingtalk.com/session', msgtype: 'text',
+  };
+  await gateway.handle({ ...base, msgId: 'online-choice-1', text: { content: '荣耀鑫享保险责任' } });
+  await gateway.handle({ ...base, msgId: 'online-choice-2', text: { content: '3' } });
+
+  assert.equal(routedCandidates[1].question, '3');
+  assert.equal(routedCandidates[1].intent, 'chat');
+  assert.equal(routedCandidates[1].entities, undefined);
 });
 
 test('unregistered mobile receives only the safe registration link', async () => {

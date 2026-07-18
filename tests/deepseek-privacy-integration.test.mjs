@@ -4,7 +4,7 @@ import test from 'node:test';
 import { generateFamilySalesChatReply } from '../server/family-sales-chat.service.mjs';
 import { buildFamilySalesReviewInput } from '../server/family-sales-review.service.mjs';
 
-test('family sales chat sanitizes new salesperson messages before every DeepSeek request', async () => {
+test('family sales chat sanitizes new salesperson messages in its single DeepSeek request', async () => {
   const familyInput = buildFamilySalesReviewInput({
     family: { id: 1, coreMemberId: 10, status: 'active' },
     members: [{ id: 10, name: '王小明', relationLabel: '本人', relationToCore: 'self', role: 'core', status: 'active' }],
@@ -30,12 +30,12 @@ test('family sales chat sanitizes new salesperson messages before every DeepSeek
     },
   });
 
-  assert.equal(requestBodies.length, 2);
+  assert.equal(requestBodies.length, 1);
   for (const body of requestBodies) {
     const payload = JSON.stringify(body);
     assert.doesNotMatch(payload, /王小明|13812345678|文三路88号/u);
   }
-  const mainPayload = JSON.stringify(requestBodies[1]);
+  const mainPayload = JSON.stringify(requestBodies[0]);
   assert.match(mainPayload, /38岁/u);
   assert.match(mainPayload, /甲状腺结节3级/u);
   assert.match(mainPayload, /预算2万元/u);

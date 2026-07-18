@@ -529,6 +529,199 @@ test('Agent product knowledge gives the expert model the complete enriched C-end
   db.close();
 });
 
+test('Agent product knowledge uses the C-end external-reference mode after an online product is confirmed', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE knowledge_records (id INTEGER, company TEXT, product_name TEXT, url TEXT, payload TEXT);
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  db.prepare('INSERT INTO knowledge_records VALUES (1, ?, ?, ?, ?)').run(
+    '测试联合承保公司',
+    '城市惠民医疗险',
+    'https://reference.test/product',
+    JSON.stringify({
+      evidenceLevel: 'external_reference',
+      referenceOnly: true,
+      official: false,
+      pageText: '城市惠民医疗险公开资料。',
+    }),
+  );
+  db.prepare('INSERT INTO knowledge_records VALUES (2, ?, ?, ?, ?)').run(
+    '测试联合承保公司',
+    '城市惠民医疗险',
+    'https://official.test/product',
+    JSON.stringify({
+      evidenceLevel: 'insurer_official',
+      official: true,
+      pageText: '城市惠民医疗险官方产品介绍。',
+    }),
+  );
+  const calls = [];
+  let summaryCalls = 0;
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    responsibilityQuery: async (input) => {
+      calls.push(input);
+      if (input.name === '测试定期寿险') {
+        return { analysis: {
+          rawAnalysis: { productCategory: 'term_life' },
+          coverageTable: [{
+            coverageType: '身故保险金线索',
+            scenario: '保险期间内被保险人身故。',
+            payout: '按基本保险金额给付。',
+          }],
+          sources: [{
+            title: '定期寿险公开产品介绍',
+            url: 'https://reference.test/term-life',
+            evidenceLevel: 'external_reference',
+            official: false,
+            referenceOnly: true,
+          }],
+        } };
+      }
+      return { analysis: {
+        rawAnalysis: { productCategory: 'medical', generatedBy: 'multi_source_external_analysis' },
+        productOverview: {
+          productType: '城市定制型商业补充医疗保险',
+          purpose: '补充基本医保支付后仍需个人负担的合规医疗费用。',
+          positioning: '在基本医保之上提供补充报销，不替代基本医保。',
+          planOptions: [
+            { name: '基础方案', premium: '150元/年', totalCoverage: '320万元', relationship: '包含基础责任', sourceExcerpt: '资料1：基础方案。' },
+            { name: '升级方案', premium: '300元/年', totalCoverage: '470万元', relationship: '包含基础责任并新增专属责任', sourceExcerpt: '资料1：升级方案。' },
+          ],
+          sourceExcerpt: '资料1：城市惠民医疗险公开资料。',
+        },
+        generalRules: [{
+          title: '断保影响',
+          detail: '中断后重新参保，各档报销比例下降50%。',
+          sourceExcerpt: '资料1：中断后重新参保，各档报销比例下降50%。',
+        }],
+        exclusions: [{
+          title: '非治疗性项目', detail: '美容和体检不予赔付。', sourceExcerpt: '资料1：美容和体检不予赔付。',
+        }],
+        valueAddedServices: [{
+          title: '就医协助', detail: '提供院内陪诊服务。', sourceExcerpt: '资料1：提供院内陪诊服务。',
+        }],
+        coverageTable: [
+          {
+            coverageType: '住院医疗费用线索',
+            scenario: '符合当地基本医保范围内的住院费用。当前位置 登录 免费注册 客服热线。',
+            payout: '具体免赔额和比例待保险公司确认',
+            responsibilityNumber: '1',
+            introducedInPlan: '基础方案',
+            note: '非官方资料待保险公司确认',
+          },
+          {
+            coverageType: '身故保险金线索',
+            triggerCondition: '被保险人身故',
+            payout: '按基本保险金额给付，具体以合同为准',
+            responsibilityNumber: '5',
+            introducedInPlan: '升级方案',
+            note: '非官方资料待保险公司确认',
+          },
+          ...Array.from({ length: 12 }, (_, index) => ({
+            coverageType: `补充责任${index + 3}`,
+            scenario: `符合补充责任${index + 3}的约定保障范围。`,
+            payout: '按公开资料中的约定比例和限额赔付。',
+            sourceExcerpt: '资料1：城市惠民医疗险公开资料。',
+            note: '非官方资料待保险公司确认',
+          })),
+        ],
+        notes: ['本结果基于非官方公开资料线索生成，仅供沟通参考，需以保险公司确认或补发合同条款为准。'],
+        sources: [{
+          title: '公开产品介绍',
+          url: 'http://reference.test/product',
+          evidenceLevel: 'external_reference',
+          official: false,
+          referenceOnly: true,
+        }],
+      } };
+    },
+    responsibilitySummaryQuery: async () => {
+      summaryCalls += 1;
+      return { ok: false };
+    },
+  });
+
+  const result = await knowledge.search({
+    question: '保险责任是什么',
+    product: {
+      canonicalProductId: 'external-test-product',
+      company: '测试联合承保公司',
+      officialName: '城市惠民医疗险',
+    },
+  });
+
+  assert.deepEqual(calls, [{
+    company: '测试联合承保公司',
+    name: '城市惠民医疗险',
+    preferLocalKnowledgeAnswer: false,
+    allowExternalReferences: true,
+  }]);
+  assert.equal(summaryCalls, 0);
+  assert.equal(result.referenceOnly, true);
+  assert.equal(result.sources[0].verified, false);
+  assert.equal(result.sources[0].provenance, 'open_web_reference');
+  assert.equal(result.sources[0].url, 'http://reference.test/product');
+  assert.match(result.answer, /住院医疗费用线索/u);
+  assert.match(result.answer, /### 产品概览/u);
+  assert.match(result.answer, /产品类型：城市定制型商业补充医疗保险/u);
+  assert.match(result.answer, /主要作用：补充基本医保支付后仍需个人负担的合规医疗费用/u);
+  assert.match(result.answer, /### 方案概览/u);
+  assert.match(result.answer, /基础方案.*150元\/年.*320万元/u);
+  assert.match(result.answer, /升级方案.*300元\/年.*470万元/u);
+  assert.match(result.answer, /### 基础方案责任/u);
+  assert.match(result.answer, /责任1：住院医疗费用线索/u);
+  assert.match(result.answer, /### 升级方案责任/u);
+  assert.match(result.answer, /责任5：身故保险金线索/u);
+  assert.match(result.answer, /### 多来源责任汇总（14条明细，含子项，待核实）/u);
+  assert.match(result.answer, /12\. \*\*补充责任14\*\*/u);
+  assert.match(result.answer, /引用：〔1〕/u);
+  assert.match(result.answer, /### 公开资料来源（非官方）/u);
+  assert.match(result.answer, /### 通用重要规则/u);
+  assert.match(result.answer, /断保影响.*各档报销比例下降50%/u);
+  assert.match(result.answer, /### 免责简要/u);
+  assert.match(result.answer, /非治疗性项目.*美容和体检不予赔付/u);
+  assert.match(result.answer, /### 增值服务/u);
+  assert.match(result.answer, /就医协助.*院内陪诊服务/u);
+  assert.match(result.answer, /公开产品介绍：http:\/\/reference\.test\/product/u);
+  assert.match(result.answer, /保障范围：符合当地基本医保范围内的住院费用/u);
+  assert.match(result.answer, /适用条件：被保险人身故/u);
+  assert.match(result.answer, /起付线\/报销比例\/限额：按基本保险金额给付/u);
+  assert.match(result.answer, /非官方公开资料/u);
+  assert.match(result.answer, /待保险公司确认/u);
+  assert.doesNotMatch(result.answer, /当前位置|登录|免费注册|客服热线/u);
+  assert.doesNotMatch(result.answer, /责任说明：|给付方式：/u);
+  assert.ok(result.answer.length < 7_000);
+  assert.equal(result.retrieval.mode, 'external_reference_review');
+
+  db.prepare('INSERT INTO knowledge_records VALUES (2, ?, ?, ?, ?)').run(
+    '测试人寿保险公司',
+    '测试定期寿险',
+    'https://reference.test/term-life',
+    JSON.stringify({
+      evidenceLevel: 'external_reference',
+      referenceOnly: true,
+      official: false,
+      pageText: '测试定期寿险公开资料。',
+    }),
+  );
+  const lifeResult = await knowledge.search({
+    question: '保险责任是什么',
+    product: {
+      canonicalProductId: 'external-term-life',
+      company: '测试人寿保险公司',
+      officialName: '测试定期寿险',
+    },
+  });
+  assert.match(lifeResult.answer, /责任内容：保险期间内被保险人身故/u);
+  assert.match(lifeResult.answer, /给付金额\/计算方式：按基本保险金额给付/u);
+  assert.doesNotMatch(lifeResult.answer, /保障范围：|起付线\/报销比例\/限额：/u);
+  db.close();
+});
+
 test('Agent product knowledge falls back to the complete C-end responsibility set without uploaded additions', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

@@ -5,7 +5,7 @@ import { validateSalesTurnProposal } from './sales-champion-turn.contract.mjs';
 
 const CONTRACT_VERSION = 1;
 
-export function evaluateSalesChampionShadowRoute({
+export function evaluateSalesChampionRoute({
   proposal,
   sourceTexts = [],
   runtimeAvailable = true,

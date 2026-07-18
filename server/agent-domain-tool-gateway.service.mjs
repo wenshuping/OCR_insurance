@@ -11,7 +11,6 @@ const OPERATION_INTENTS = Object.freeze({
     sales_coaching: 'sales_coaching',
   }),
 });
-
 function gatewayError(code, status = 400) {
   return Object.assign(new Error(code), { code, status });
 }
@@ -50,14 +49,20 @@ function resolvedEntities(result) {
 
 function productMentions(names, question) {
   const mentions = [];
+  const compactQuestion = String(question || '').replace(/\s+/gu, '');
   for (const name of names) {
     let split = null;
     let end = name.indexOf('保险');
     while (end >= 0) {
       end += '保险'.length;
       const insurer = name.slice(0, end).trim();
-      const product = name.slice(end).trim();
-      if (insurer && product && question.includes(`${insurer}的${product}`)) {
+      const product = name.slice(end).trim().replace(/^的\s*/u, '').trim();
+      const compactInsurer = insurer.replace(/\s+/gu, '');
+      const compactProduct = product.replace(/\s+/gu, '');
+      if (insurer && product && (
+        compactQuestion.includes(`${compactInsurer}的${compactProduct}`)
+        || compactQuestion.includes(`${compactInsurer}${compactProduct}`)
+      )) {
         split = { insurer, product };
         break;
       }
@@ -65,7 +70,7 @@ function productMentions(names, question) {
     }
     if (split) {
       mentions.push({ type: 'insurer', rawText: split.insurer }, { type: 'product', rawText: split.product });
-    } else if (question.includes(name)) {
+    } else if (compactQuestion.includes(String(name || '').replace(/\s+/gu, ''))) {
       mentions.push({ type: 'product', rawText: name });
     }
   }
@@ -88,11 +93,34 @@ function candidateFor(tool, input, entities = {}) {
 }
 
 function productResolutionMentions(name, question) {
+  const structured = /^([^《》]+)《([^《》]+)》$/u.exec(String(name || '').trim());
+  if (structured) {
+    return [
+      { type: 'insurer', rawText: structured[1].trim() },
+      { type: 'product', rawText: structured[2].trim() },
+    ];
+  }
   const mentions = productMentions([name], question);
-  return mentions.length ? mentions : [{ type: 'product', rawText: name }];
+  if (mentions.length) {
+    const hasInsurer = mentions.some((mention) => mention.type === 'insurer');
+    if (hasInsurer) return mentions;
+    const compactName = String(name || '').replace(/\s+/gu, '');
+    const compactQuestion = String(question || '').replace(/\s+/gu, '');
+    const productIndex = compactQuestion.lastIndexOf(compactName);
+    const insurer = productIndex > 0
+      ? compactQuestion.slice(0, productIndex)
+        .replace(/^(?:请问|帮我查|查询|查一下)/u, '')
+        .replace(/的$/u, '')
+      : '';
+    if (insurer && insurer.length <= 40 && /(?:保险|人寿|财险|养老|健康)$/u.test(insurer)) {
+      return [{ type: 'insurer', rawText: insurer }, ...mentions];
+    }
+    return mentions;
+  }
+  return [{ type: 'product', rawText: name }];
 }
 
-function productClarification(resolutions) {
+function productClarification(resolutions, { onlineAttempted = false } = {}) {
   const candidates = resolutions.flatMap((resolution) => (
     Array.isArray(resolution?.candidates) ? resolution.candidates : []
   )).map(productEntity).filter(Boolean)
@@ -101,45 +129,75 @@ function productClarification(resolutions) {
       && value.company === candidate.company
       && value.officialName === candidate.officialName
     )) === index)
-    .slice(0, 10);
+    .slice(0, onlineAttempted ? 10 : 9);
   return {
     status: 'needs_clarification',
     decision: 'clarify',
     interaction: {
       type: 'clarification',
-      text: candidates.length
-        ? candidates.length === 1
-          ? '你是不是想查询以下产品？请回复 1 确认。'
-          : '找到多个可能的正式产品，请选择一项。'
-        : '我暂时没能确认你说的是哪款产品。请补充保险公司，以及保单或条款上的完整产品名称。',
-      ...(candidates.length ? { candidates: candidates.map((candidate, index) => ({
-        ref: `product_${index + 1}`,
-        label: `${candidate.company ? `${candidate.company}` : ''}《${candidate.officialName}》`,
-      })) } : {}),
+      text: onlineAttempted
+        ? candidates.length
+          ? '联网找到以下可能的正式产品，请选择一项。'
+          : '联网查询后仍未找到可确认的正式产品。请补充承保主体（保险公司），或保单、条款上的完整产品名称。'
+        : candidates.length
+          ? candidates.length === 1
+            ? '你是不是想查询以下产品？请选择；如果不是，请选择“以上都不是，联网查询”。'
+            : '找到多个可能的正式产品，请选择一项；如果都不是，请选择最后一项联网查询。'
+          : '本地产品库暂未找到匹配项，可选择“以上都不是，联网查询”继续查找。',
+      candidates: [
+        ...candidates.map((candidate, index) => ({
+          ref: `product_${index + 1}`,
+          label: `${candidate.company ? `${candidate.company}` : ''}《${candidate.officialName}》`,
+        })),
+        ...(!onlineAttempted ? [{ ref: 'search_online', label: '以上都不是，联网查询' }] : []),
+      ],
     },
   };
 }
 
-async function verifiedProductRouteInput(input, productResolver) {
+function salesProductClarification(resolutions) {
+  const result = productClarification(resolutions);
+  return {
+    ...result,
+    candidateType: 'product',
+    interaction: {
+      ...result.interaction,
+      text: result.interaction.candidates?.length
+        ? '我先确认一下客户购买的具体产品。请选择一项；如果都不是，请选择最后一项联网查询。确认后会由保险专家解析，再继续给出销冠跟进建议。'
+        : result.interaction.text,
+    },
+  };
+}
+
+async function verifiedProductRouteInput(
+  input,
+  productResolver,
+  confirmedProduct = null,
+  { onlineSearchAllowed = false, rejectedProductCandidates = [] } = {},
+) {
   const names = Array.isArray(input.names) ? input.names : [];
+  const searchOnline = input.searchOnline === true && onlineSearchAllowed;
   if (!names.length) return candidateFor('ask_insurance_expert', input);
   if (names.length > 2 || typeof productResolver?.resolve !== 'function') {
-    return { result: productClarification([]) };
+    return { result: productClarification([], { onlineAttempted: searchOnline }) };
   }
   const resolutions = [];
   for (const name of names) {
     resolutions.push(await productResolver.resolve({
       mentions: productResolutionMentions(name, input.question),
       activeProduct: null,
+      ...(searchOnline ? { allowOnline: true } : {}),
+      ...(searchOnline && rejectedProductCandidates.length ? { rejectedProductCandidates } : {}),
+      ...(name === confirmedProduct?.officialName ? { confirmedCandidate: confirmedProduct } : {}),
     }));
   }
   if (resolutions.some((resolution) => resolution?.status !== 'resolved')) {
-    return { result: productClarification(resolutions) };
+    return { result: productClarification(resolutions, { onlineAttempted: searchOnline }) };
   }
   const products = resolutions.map((resolution) => productEntity(resolution.entity));
   if (products.some((product) => !product)
     || (products.length === 2 && products[0].canonicalProductId === products[1].canonicalProductId)) {
-    return { result: productClarification(resolutions) };
+    return { result: productClarification(resolutions, { onlineAttempted: searchOnline }) };
   }
   const queryAspects = Array.isArray(input.queryAspects) ? input.queryAspects : [];
   if (products.length === 1) {
@@ -168,7 +226,53 @@ async function verifiedProductRouteInput(input, productResolver) {
   };
 }
 
-export function createAgentDomainToolGateway({ questionRouter, resolveChannelIdentity, productResolver } = {}) {
+async function salesProductContext(input, productResolver, confirmedProduct = null) {
+  const productMentions = Array.isArray(input.productMentions) ? input.productMentions : [];
+  const officialFactNeeds = Array.isArray(input.officialFactNeeds) ? input.officialFactNeeds : [];
+  if (!productMentions.length) {
+    return officialFactNeeds.length ? { productMentions: [], officialFactNeeds, resolvedProducts: [] } : null;
+  }
+  const resolvedProducts = [];
+  const unresolved = [];
+  if (typeof productResolver?.resolve === 'function') {
+    for (const name of productMentions) {
+      try {
+        const resolution = await productResolver.resolve({
+          mentions: productResolutionMentions(name, input.question),
+          activeProduct: null,
+          ...(name === confirmedProduct?.officialName ? { confirmedCandidate: confirmedProduct } : {}),
+        });
+        const product = resolution?.status === 'resolved' ? productEntity(resolution.entity) : null;
+        if (product && !resolvedProducts.some((candidate) => (
+          candidate.canonicalProductId === product.canonicalProductId
+            && candidate.company === product.company
+            && candidate.officialName === product.officialName
+        ))) resolvedProducts.push(product);
+        if (!product && Array.isArray(resolution?.candidates) && resolution.candidates.length) {
+          unresolved.push(resolution);
+        }
+      } catch {
+        // An unresolved supporting product must not replace the primary sales task.
+      }
+    }
+  }
+  if (unresolved.length && officialFactNeeds.length) {
+    return { result: salesProductClarification(unresolved) };
+  }
+  return {
+    productMentions,
+    officialFactNeeds,
+    resolvedProducts,
+  };
+}
+
+export function createAgentDomainToolGateway({
+  questionRouter,
+  resolveChannelIdentity,
+  productResolver,
+  conversationContext,
+  productContextTtlMinutes = 30,
+} = {}) {
   if (!questionRouter || typeof questionRouter.route !== 'function') {
     throw new TypeError('Agent domain tool questionRouter is required');
   }
@@ -193,10 +297,43 @@ export function createAgentDomainToolGateway({ questionRouter, resolveChannelIde
         interaction: { type: 'denied', text: '当前账号已无权继续访问该数据。' },
       };
     }
+    const hasProductTask = (tool === 'ask_insurance_expert' && input.operation === 'product_knowledge')
+      || (tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
+        && Array.isArray(input.productMentions) && input.productMentions.length > 0);
+    let confirmedProduct = hasProductTask ? productEntity(claims.confirmedProduct) : null;
+    if (hasProductTask
+      && !confirmedProduct
+      && conversationContext && typeof conversationContext.loadContext === 'function') {
+      try {
+        const context = await conversationContext.loadContext({
+          tenantId: claims.tenant,
+          channel: claims.channel,
+          channelUserId: claims.channelUserId,
+          channelConversationId: claims.conversationId,
+          internalUserId: Number(claims.internalUserId),
+          productContextTtlMinutes,
+        });
+        confirmedProduct = productEntity({
+          officialName: context?.product?.productName,
+          company: context?.product?.company,
+          canonicalProductId: context?.product?.canonicalProductId,
+        });
+      } catch {
+        confirmedProduct = null;
+      }
+    }
     const routed = tool === 'ask_insurance_expert' && input.operation === 'product_knowledge'
-      ? await verifiedProductRouteInput(input, productResolver)
+      ? await verifiedProductRouteInput(input, productResolver, confirmedProduct, {
+        onlineSearchAllowed: claims.onlineProductSearchAllowed === true,
+        rejectedProductCandidates: Array.isArray(claims.rejectedProductCandidates)
+          ? claims.rejectedProductCandidates : [],
+      })
       : candidateFor(tool, input);
     if (routed.result) return routed.result;
+    const supportingSalesContext = tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
+      ? await salesProductContext(input, productResolver, confirmedProduct)
+      : null;
+    if (supportingSalesContext?.result) return supportingSalesContext.result;
     const verifiedEntities = routed.verifiedEntities || {};
     const result = await questionRouter.route({
       internalUserId: Number(claims.internalUserId),
@@ -204,6 +341,7 @@ export function createAgentDomainToolGateway({ questionRouter, resolveChannelIde
       conversationId: claims.conversationId,
       candidate: routed.candidate,
       ...(routed.semanticContext ? { semanticContext: routed.semanticContext } : {}),
+      ...(supportingSalesContext ? { salesContext: supportingSalesContext } : {}),
     });
     const interaction = result?.interaction || { type: 'denied', text: '该请求当前不可用。' };
     const preserveExpertAnswer = tool === 'ask_insurance_expert'

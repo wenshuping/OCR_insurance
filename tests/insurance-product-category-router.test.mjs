@@ -3,6 +3,18 @@ import test from 'node:test';
 
 import { routeInsuranceProductCategory } from '../server/insurance-product-category-router.mjs';
 
+test('惠民医疗险责任中提到特定疾病时仍按医疗保险路由', () => {
+  const result = routeInsuranceProductCategory({
+    productName: '城市惠民保',
+    cards: [
+      { title: '国内特定高额药品医疗保障', sourceExcerpt: '确诊特定疾病后，按约定比例报销药品医疗费用。' },
+      { title: '住院医疗费用保障', sourceExcerpt: '医保目录内合规自付费用超过免赔额后报销。' },
+    ],
+  });
+
+  assert.equal(result.productCategory, 'medical');
+});
+
 test('routeInsuranceProductCategory identifies Xinrongyao incremental whole life with compound formula', () => {
   const result = routeInsuranceProductCategory({
     productName: '新华人寿保险股份有限公司鑫荣耀终身寿险',
