@@ -7,6 +7,7 @@ import {
 } from '../server/sales-champion-skill-registry.mjs';
 import { evaluateSalesTurnReadiness } from '../server/sales-champion-readiness.service.mjs';
 import { evaluateSalesChampionRoute } from '../server/sales-champion-router.service.mjs';
+import { getSalesChampionTrainingPacks } from '../server/sales-champion-training-catalog.mjs';
 
 function validProposal(overrides = {}) {
   return {
@@ -129,6 +130,12 @@ test('sales champion router returns a controlled route without producing a custo
   assert.equal(result.selection.primary.key, 'tradeoff_disclosure');
   assert.equal('answer' in result, false);
   assert.equal(result.contractVersion, 1);
+  assert.deepEqual(result.trainingPacks.map((pack) => pack.key), [
+    'facilitate_family_decision',
+    'clarify_liquidity_objection',
+    'exit_mismatched_proposal',
+  ]);
+  assert.equal(result.trainingPacks.every((pack) => pack.source === 'yanli-whole-life-sales-2026-07'), true);
 });
 
 test('sales champion router contains invalid model proposals instead of guessing a route', () => {
@@ -140,4 +147,29 @@ test('sales champion router contains invalid model proposals instead of guessing
   assert.equal(result.readiness, null);
   assert.equal(result.selection, null);
   assert.match(result.error, /unknown field/u);
+});
+
+test('training catalog routes consented referral and privacy skills from the high-client course', () => {
+  const packs = getSalesChampionTrainingPacks(['referral_request'], {
+    stage: 'post_sale',
+    concerns: ['follow_up'],
+  });
+
+  assert.deepEqual(packs.map((pack) => pack.key), [
+    'request_consented_referral',
+    'protect_network_client_privacy',
+  ]);
+  assert.equal(packs.every((pack) => pack.source === 'yuleilei-high-client-sales-2026-07'), true);
+});
+
+test('training catalog routes evidence-based trust skills from the high-client course', () => {
+  const packs = getSalesChampionTrainingPacks(['reputation_objection'], {
+    stage: 'objection',
+    concerns: ['trust'],
+  });
+
+  assert.deepEqual(packs.map((pack) => pack.key), [
+    'position_trusted_advisor',
+    'build_evidence_based_trust',
+  ]);
 });
