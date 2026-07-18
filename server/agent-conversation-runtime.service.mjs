@@ -125,7 +125,7 @@ function authoritativeToolInteraction(toolResults) {
     const result = results[index]?.result;
     const interaction = result?.interaction;
     const text = String(interaction?.text || '').trim();
-    if (!text || !['ok', 'needs_clarification', 'confirmation_required'].includes(result?.status)) continue;
+    if (!text || !['ok', 'needs_clarification', 'confirmation_required', 'forbidden'].includes(result?.status)) continue;
     return {
       decision: result?.decision || (result.status === 'needs_clarification' ? 'clarify' : 'execute'),
       interaction: { ...interaction, text },

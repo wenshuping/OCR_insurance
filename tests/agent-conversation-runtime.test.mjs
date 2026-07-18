@@ -1393,6 +1393,51 @@ test('Agent Loop returns an authoritative tool result without waiting for final 
   }]);
 });
 
+test('Agent Loop returns a denied sales tool result without Hermes fallback advice', async () => {
+  const context = createMemoryContext();
+  let aborted = false;
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_sales_champion',
+    result: {
+      status: 'forbidden', decision: 'deny',
+      interaction: { type: 'denied', text: '该请求当前不可用。' },
+    },
+  }] };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { runTurn({ signal }) {
+      return new Promise((resolve, reject) => {
+        const timer = setImmediate(() => resolve({
+          sessionId: 'unsafe-sales-fallback',
+          finalReply: '销售工具不可用，是否改查保险产品责任？',
+        }));
+        signal.addEventListener('abort', () => {
+          clearImmediate(timer);
+          aborted = true;
+          reject(Object.assign(new Error('aborted'), { code: 'HERMES_ABORTED' }));
+        }, { once: true });
+      });
+    } },
+    toolCapabilityService: {
+      inspect() { return claims; },
+      async waitForResult() { return claims; },
+    },
+    toolGatewayUrl: 'http://127.0.0.1:4207/api/agent/hermes-tools',
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  const result = await runtime.processMessage({
+    ...envelope('ding-a', 'agent-loop-sales-denied', 'loop-sales-denied-1', '这个客户怎么跟进'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.equal(result.decision, 'deny');
+  assert.deepEqual(result.interaction, { type: 'denied', text: '该请求当前不可用。' });
+  assert.equal(aborted, true);
+  assert.equal(context.rows.size, 1);
+  assert.equal([...context.rows.values()][0].history.at(-1).content, '该请求当前不可用。');
+});
+
 test('Agent Loop preserves the original product question after selecting online search', async () => {
   const context = createMemoryContext();
   const originalQuestion = '公开产品保险责任';

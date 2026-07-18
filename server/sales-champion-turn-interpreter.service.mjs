@@ -33,6 +33,23 @@ function parseJson(content = '') {
     .trim());
 }
 
+function dropUngroundedCustomerStatements(proposal, sourceTexts = []) {
+  if (!proposal || typeof proposal !== 'object' || Array.isArray(proposal)
+    || !Array.isArray(proposal.customerStatements) || !proposal.customerStatements.length) return proposal;
+  const sources = sourceTexts.map((item) => text(item).replace(/\s+/gu, '')).filter(Boolean);
+  const grounded = proposal.customerStatements.filter((statement) => {
+    if (!statement || typeof statement !== 'object' || Array.isArray(statement)
+      || Object.keys(statement).length !== 2
+      || !Object.hasOwn(statement, 'text') || !Object.hasOwn(statement, 'source')
+      || !['current_message', 'confirmed_history'].includes(statement.source)) return true;
+    const statementText = text(statement.text);
+    if (!statementText || statementText.length > 500) return true;
+    const normalized = statementText.replace(/\s+/gu, '');
+    return sources.some((source) => source.includes(normalized));
+  });
+  return grounded.length ? { ...proposal, customerStatements: grounded } : proposal;
+}
+
 function boundedHistory(history = []) {
   return (Array.isArray(history) ? history : []).slice(-12).flatMap((message) => {
     const role = text(message?.role);
@@ -125,7 +142,10 @@ export async function interpretSalesChampionTurn({
 
     const firstContent = await complete(messages);
     try {
-      return validateSalesTurnProposal(parseJson(firstContent), { sourceTexts });
+      return validateSalesTurnProposal(
+        dropUngroundedCustomerStatements(parseJson(firstContent), sourceTexts),
+        { sourceTexts },
+      );
     } catch (validationError) {
       const repairedContent = await complete([
         ...messages,
@@ -135,7 +155,10 @@ export async function interpretSalesChampionTurn({
           content: `上一份 JSON 未通过 contract 校验：${text(validationError?.message).slice(0, 300)}。只修正 JSON 结构和枚举值；不得改变原问题含义，不得添加无必要的 insuranceNeeds。仅返回修正后的完整 JSON。`,
         },
       ]);
-      return validateSalesTurnProposal(parseJson(repairedContent), { sourceTexts });
+      return validateSalesTurnProposal(
+        dropUngroundedCustomerStatements(parseJson(repairedContent), sourceTexts),
+        { sourceTexts },
+      );
     }
   } catch (error) {
     if (controller.signal.aborted) {

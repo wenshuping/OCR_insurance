@@ -71,3 +71,26 @@ test('sales champion interpreter rejects ungrounded customer statements', async 
     (error) => error.code === 'SALES_CHAMPION_INTERPRETER_INVALID_RESPONSE',
   );
 });
+
+test('sales champion interpreter drops one ungrounded statement when grounded statements remain', async () => {
+  const question = '客户五十多岁，买过几份保险，比较在意养老，我怎么跟进？';
+  let calls = 0;
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => {
+      calls += 1;
+      return response(proposal(question, {
+        customerStatements: [
+          { text: '客户五十多岁', source: 'current_message' },
+          { text: '客户已经做好养老规划', source: 'current_message' },
+        ],
+      }));
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.deepEqual(interpreted.customerStatements, [
+    { text: '客户五十多岁', source: 'current_message' },
+  ]);
+});
