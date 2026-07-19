@@ -36,6 +36,7 @@ import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
 import { createProductKnowledgeRoutes } from './routes/product-knowledge.routes.mjs';
+import { createProductSlideReconstructionModel } from './product-slide-reconstruction-model.service.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
@@ -67,7 +68,7 @@ import {
   selectedCoverageIndicators,
   publicUser,
 } from './policy-ocr.domain.mjs';
-import { recognizeDocumentTextWithConfiguredRuntime, scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
+import { parseProductPageWithPaddleVl16Runtime, recognizeDocumentTextWithConfiguredRuntime, scanPolicyWithConfiguredRuntime } from './ocr-runtime.mjs';
 import { resolveOcrProviderForScenario } from './ocr-scenario-routing.service.mjs';
 import { buildPolicyOcrVisionContext, enhancePolicyScanWithOcrMapping } from './policy-ocr-mapping.mjs';
 import {
@@ -2523,6 +2524,8 @@ export function createPolicyOcrApp(options = {}) {
     || (options.db ? createProductKnowledgeStore(options.db) : null);
   const productRagService = options.productRagService
     || (productKnowledgeStore ? createProductRagService({ store: productKnowledgeStore }) : null);
+  const reconstructProductSlide = options.reconstructProductSlide
+    || createProductSlideReconstructionModel({ env: process.env, fetchImpl: fetch });
   const routeContext = createRouteContext({
     state,
     persist,
@@ -2570,6 +2573,12 @@ export function createPolicyOcrApp(options = {}) {
       process.env,
       resolveOcrProviderForScenario(state, 'insurance_material'),
     )),
+    parseProductPageVisual: options.parseProductPageVisual || ((input) => parseProductPageWithPaddleVl16Runtime(
+      input,
+      fetch,
+      process.env,
+    )),
+    reconstructProductSlide,
     extractFamilySalesMemories: options.extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: options.generateFamilyPolicyAnalysisReport,
     generateFamilyReportQualityIssues: options.generateFamilyReportQualityIssues || generateFamilyReportQualityIssues,

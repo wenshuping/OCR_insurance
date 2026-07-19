@@ -10,20 +10,14 @@ const ISSUE_TYPES = new Set([
 ]);
 const SEVERITIES = new Set(['high', 'medium', 'low']);
 const OPERATION_FIELDS = new Map([
-  ['edit_ocr_text', new Set(['type', 'elementIds', 'content'])],
+  ['edit_chunk', new Set(['type', 'targetChunkId', 'content'])],
   ['split_chunk', new Set(['type', 'targetChunkId', 'splitAtText'])],
   ['merge_chunks', new Set(['type', 'targetChunkIds'])],
   ['add_source_elements', new Set(['type', 'targetChunkId', 'elementIds'])],
   ['remove_source_elements', new Set(['type', 'targetChunkId', 'elementIds'])],
-  ['reclassify_image', new Set(['type', 'elementIds', 'kind'])],
-  ['exclude_region_current_chunk', new Set(['type', 'targetChunkId', 'elementIds'])],
-  ['exclude_repeated_regions_document', new Set(['type', 'elementIds', 'pageNos'])],
-  ['rebind_product', new Set(['type', 'targetChunkIds', 'productId'])],
-  ['rebind_version', new Set(['type', 'targetChunkIds', 'versionId'])],
+  ['exclude_chunk', new Set(['type', 'targetChunkId'])],
   ['create_relation', new Set(['type', 'targetChunkId', 'relatedChunkId', 'relationType'])],
   ['remove_relation', new Set(['type', 'targetChunkId', 'relatedChunkId', 'relationType'])],
-  ['regenerate_context', new Set(['type', 'targetChunkIds'])],
-  ['regenerate_fact_candidates', new Set(['type', 'targetChunkIds'])],
 ]);
 const RELATION_TYPES = new Set(['previous', 'next', 'parent', 'required_context', 'defines', 'applies_to', 'conflicts_with']);
 
@@ -140,7 +134,33 @@ function validateOperation(candidate, refs, index) {
   return normalized;
 }
 
-function validateIssue(candidate, refs, index) {
+function normalizeCorrectionOperation(operation) {
+  if (!operation || typeof operation !== 'object' || Array.isArray(operation)) return operation;
+  const nested = ['parameters', 'params', 'arguments', 'input']
+    .map((field) => operation[field])
+    .find((value) => value && typeof value === 'object' && !Array.isArray(value));
+  const source = { ...(nested || {}), ...operation };
+  const aliases = {
+    targetChunkId: ['target_chunk_id', 'chunkId', 'chunk_id'],
+    targetChunkIds: ['target_chunk_ids', 'chunkIds', 'chunk_ids'],
+    elementIds: ['element_ids', 'sourceElementIds', 'source_element_ids'],
+    content: ['newContent', 'new_content', 'correctedContent', 'corrected_content'],
+    splitAtText: ['split_at_text'],
+    relatedChunkId: ['related_chunk_id'],
+    relationType: ['relation_type'],
+  };
+  for (const [canonical, candidates] of Object.entries(aliases)) {
+    if (source[canonical] !== undefined) continue;
+    const alias = candidates.find((field) => source[field] !== undefined);
+    if (alias) source[canonical] = source[alias];
+  }
+  const allowedFields = OPERATION_FIELDS.get(text(source.type));
+  return allowedFields
+    ? Object.fromEntries(Object.entries(source).filter(([field]) => allowedFields.has(field)))
+    : source;
+}
+
+function validateIssue(candidate, refs, index, { ignoreInvalidSourceRegions = false } = {}) {
   const issue = plainObject(candidate, 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}`);
   exactFields(issue, new Set([
     'type', 'severity', 'confidence', 'pageNos', 'sourceRegions', 'affectedChunkIds',
@@ -158,14 +178,19 @@ function validateIssue(candidate, refs, index) {
   const affectedChunkIds = strings(issue.affectedChunkIds, `issue ${index}.affectedChunkIds`);
   ensureKnown(affectedChunkIds, refs.chunks, `issue ${index}.affectedChunkIds`);
   if (issue.sourceRegions !== undefined && !Array.isArray(issue.sourceRegions)) throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}.sourceRegions must be an array`);
-  const sourceRegions = (issue.sourceRegions || []).map((candidateRegion, regionIndex) => {
-    const region = plainObject(candidateRegion, 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}.sourceRegions[${regionIndex}]`);
-    exactFields(region, new Set(['pageNo', 'elementIds']), 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}.sourceRegions[${regionIndex}]`);
-    const pageNo = Number(region.pageNo);
-    const elementIds = strings(region.elementIds, `issue ${index}.sourceRegions[${regionIndex}].elementIds`, { required: true });
-    if (!refs.pages.has(pageNo)) throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_REFERENCE', `issue ${index} contains an unknown page`);
-    ensureKnown(elementIds, refs.pageElements.get(pageNo), `issue ${index}.sourceRegions[${regionIndex}].elementIds`);
-    return { pageNo, elementIds };
+  const sourceRegions = (issue.sourceRegions || []).flatMap((candidateRegion, regionIndex) => {
+    try {
+      const region = plainObject(candidateRegion, 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}.sourceRegions[${regionIndex}]`);
+      exactFields(region, new Set(['pageNo', 'elementIds']), 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index}.sourceRegions[${regionIndex}]`);
+      const pageNo = Number(region.pageNo);
+      const elementIds = strings(region.elementIds, `issue ${index}.sourceRegions[${regionIndex}].elementIds`, { required: true });
+      if (!refs.pages.has(pageNo)) throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_REFERENCE', `issue ${index} contains an unknown page`);
+      ensureKnown(elementIds, refs.pageElements.get(pageNo), `issue ${index}.sourceRegions[${regionIndex}].elementIds`);
+      return [{ pageNo, elementIds }];
+    } catch (error) {
+      if (ignoreInvalidSourceRegions) return [];
+      throw error;
+    }
   });
   if (!pageNos.length && !sourceRegions.length && !affectedChunkIds.length) {
     throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', `issue ${index} has no evidence reference`);
@@ -175,11 +200,14 @@ function validateIssue(candidate, refs, index) {
   return {
     type, severity, confidence, pageNos, sourceRegions, affectedChunkIds, reason,
     missingElements,
-    proposedOperations: (issue.proposedOperations || []).map((operation, operationIndex) => validateOperation(operation, refs, `${index}.${operationIndex}`)),
+    proposedOperations: (issue.proposedOperations || []).map((operation, operationIndex) => {
+      const executableOperation = ignoreInvalidSourceRegions ? normalizeCorrectionOperation(operation) : operation;
+      return validateOperation(executableOperation, refs, `${index}.${operationIndex}`);
+    }),
   };
 }
 
-function parseOutput(content, refs) {
+function parseOutput(content, refs, options = {}) {
   let parsed;
   try {
     parsed = JSON.parse(text(content));
@@ -189,14 +217,15 @@ function parseOutput(content, refs) {
   plainObject(parsed, 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', 'response');
   exactFields(parsed, new Set(['issues']), 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', 'response');
   if (!Array.isArray(parsed.issues)) throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_OUTPUT', 'response.issues must be an array');
-  return parsed.issues.map((issue, index) => validateIssue(issue, refs, index));
+  return parsed.issues.map((issue, index) => validateIssue(issue, refs, index, options));
 }
 
-function reviewEvidence(document, pages, chunks) {
+function reviewEvidence(document, pages, chunks, correctionRequest = null) {
   return {
     document: { id: text(document?.id), fileName: text(document?.fileName), productIds: document?.productIds || [], versionIds: document?.versionIds || [] },
     pages: (Array.isArray(pages) ? pages : []).map((page) => ({
       pageNo: Number(page?.pageNo),
+      rawText: text(page?.rawText).slice(0, 12_000),
       elements: (Array.isArray(page?.layout?.elements) ? page.layout.elements : []).map((element) => ({
         id: text(element?.id), kind: text(element?.kind), text: text(element?.text).slice(0, 6_000), caption: text(element?.caption).slice(0, 1_000), bbox: element?.bbox,
       })),
@@ -205,6 +234,14 @@ function reviewEvidence(document, pages, chunks) {
       id: text(chunk?.id), chunkType: text(chunk?.chunkType), pageStart: Number(chunk?.pageStart), pageEnd: Number(chunk?.pageEnd),
       content: text(chunk?.content).slice(0, 8_000), sourceRegions: chunk?.payload?.sourceRegions || [],
     })),
+    correctionRequest: correctionRequest && typeof correctionRequest === 'object' ? {
+      pageNo: Number(correctionRequest.pageNo || 0),
+      reasonCode: text(correctionRequest.reasonCode),
+      note: text(correctionRequest.note).slice(0, 2_000),
+      scope: text(correctionRequest.scope),
+      targetChunkIds: strings(correctionRequest.targetChunkIds || [], 'correctionRequest.targetChunkIds'),
+      sourceElementIds: strings(correctionRequest.sourceElementIds || [], 'correctionRequest.sourceElementIds'),
+    } : null,
   };
 }
 
@@ -215,20 +252,24 @@ function systemPrompt() {
     '不得建议发布、下架、删除数据库、执行 SQL、调用工具或修改正式索引。',
     `问题 type 只能是：${[...ISSUE_TYPES].join(', ')}。severity 只能是 high、medium、low。`,
     `proposedOperations.type 只能是：${[...OPERATION_FIELDS.keys()].join(', ')}。`,
+    '如果 correctionRequest 非空，应结合人工说明、原页文字、来源元素和候选切片提出可以执行的 proposedOperations；不得只复述人工说明。',
+    'edit_chunk 必须返回完整字段 {"type":"edit_chunk","targetChunkId":"输入中的切片ID","content":"修正后的完整切片正文"}；禁止用 description 代替 targetChunkId 或 content。',
+    '修正操作必须限定在人工指定的页面、切片和作用范围内；证据不足时返回空 proposedOperations，禁止猜测或补造保险事实。',
     '所有页码、元素 ID、切片 ID、产品 ID 和版本 ID 必须来自输入证据；没有问题时返回空 issues。',
     '只返回严格 JSON，不要 Markdown：{"issues":[{"type":"semantic_incomplete","severity":"high","confidence":0.9,"pageNos":[1],"sourceRegions":[{"pageNo":1,"elementIds":["el-id"]}],"affectedChunkIds":["chunk-id"],"reason":"...","missingElements":["condition"],"proposedOperations":[]}]}',
   ].join('\n');
 }
 
 export function createProductDocumentReviewModel({ env = process.env, fetchImpl = globalThis.fetch } = {}) {
-  const enabled = text(env.PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED).toLowerCase() === 'true';
   const apiKey = text(env.DEEPSEEK_API_KEY);
+  const enabledSetting = text(env.PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED).toLowerCase();
+  const enabled = enabledSetting ? enabledSetting === 'true' : Boolean(apiKey);
   const baseUrl = text(env.PRODUCT_DOCUMENT_REVIEW_MODEL_BASE_URL || env.DEEPSEEK_BASE_URL) || DEFAULT_BASE_URL;
   const model = text(env.PRODUCT_DOCUMENT_REVIEW_MODEL || env.DEEPSEEK_MODEL) || DEFAULT_MODEL;
   const timeoutCandidate = Number(env.PRODUCT_DOCUMENT_REVIEW_MODEL_TIMEOUT_MS || env.DEEPSEEK_TIMEOUT_MS);
   const timeoutMs = Number.isFinite(timeoutCandidate) && timeoutCandidate > 0 ? timeoutCandidate : DEFAULT_TIMEOUT_MS;
 
-  return async function reviewProductDocument({ document = {}, pages = [], chunks = [] } = {}) {
+  return async function reviewProductDocument({ document = {}, pages = [], chunks = [], correctionRequest = null } = {}) {
     if (!enabled || !apiKey || typeof fetchImpl !== 'function') {
       throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_UNAVAILABLE', 'Product document review model is not configured');
     }
@@ -246,13 +287,15 @@ export function createProductDocumentReviewModel({ env = process.env, fetchImpl 
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: systemPrompt() },
-            { role: 'user', content: `DOCUMENT_EVIDENCE\n${JSON.stringify(reviewEvidence(document, pages, chunks))}` },
+            { role: 'user', content: `DOCUMENT_EVIDENCE\n${JSON.stringify(reviewEvidence(document, pages, chunks, correctionRequest))}` },
           ],
         }),
       });
       if (!response?.ok) throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_UPSTREAM_ERROR', `Review model upstream returned ${response?.status ?? 'unknown'}`);
       const payload = await response.json();
-      const issues = parseOutput(payload?.choices?.[0]?.message?.content, refs);
+      const issues = parseOutput(payload?.choices?.[0]?.message?.content, refs, {
+        ignoreInvalidSourceRegions: Boolean(correctionRequest),
+      });
       return { model, issues };
     } catch (error) {
       if (error?.name === 'AbortError') throw fail('PRODUCT_DOCUMENT_REVIEW_MODEL_TIMEOUT');
@@ -263,4 +306,3 @@ export function createProductDocumentReviewModel({ env = process.env, fetchImpl 
     }
   };
 }
-

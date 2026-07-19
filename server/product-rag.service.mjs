@@ -125,6 +125,7 @@ function rankedChildren(store, input) {
       query: term,
       canonicalProductId: input.canonicalProductId,
       productVersionId: input.productVersionId,
+      asOfDate: input.asOfDate,
       sourceAuthorities: input.sourceAuthorities,
       semanticKinds: input.plan.semanticKinds,
       factKeys: input.factKeys,
@@ -161,6 +162,21 @@ function withRequiredContexts(store, ranked) {
   ];
 }
 
+function parentCanReplaceChild(parent, child) {
+  if (!parent || !child) return false;
+  const childContent = text(child.content);
+  const parentStart = Number(parent.pageStart || 0);
+  const parentEnd = Number(parent.pageEnd || parentStart);
+  const childStart = Number(child.pageStart || 0);
+  const childEnd = Number(child.pageEnd || childStart);
+  return Boolean(childContent)
+    && parentStart > 0
+    && childStart > 0
+    && parentStart <= childStart
+    && parentEnd >= childEnd
+    && text(parent.content).includes(childContent);
+}
+
 function evidenceFromRanked(store, ranked, tokenBudget) {
   const parentIds = [...new Set(ranked.map((item) => text(item.chunk.parentChunkId)).filter(Boolean))];
   const parents = new Map(store.getChunksByIds({
@@ -173,11 +189,12 @@ function evidenceFromRanked(store, ranked, tokenBudget) {
   for (const item of ranked) {
     const child = item.chunk;
     const parent = parents.get(child.parentChunkId);
-    if (parent && usedParents.has(parent.id)) continue;
+    const eligibleParent = parentCanReplaceChild(parent, child) ? parent : null;
+    if (eligibleParent && usedParents.has(eligibleParent.id)) continue;
     const preferred = child.chunkType === 'table'
       ? child
-      : parent && parent.tokenCount <= remaining
-        ? parent
+      : eligibleParent && eligibleParent.tokenCount <= remaining
+        ? eligibleParent
         : child;
     if (preferred.tokenCount > remaining && evidence.length) continue;
     const allowedTokens = Math.max(1, Math.min(preferred.tokenCount || 1, remaining));
@@ -210,7 +227,7 @@ function evidenceFromRanked(store, ranked, tokenBudget) {
         reviewStatus: child.reviewStatus,
       },
     });
-    if (parent && preferred.id === parent.id) usedParents.add(parent.id);
+    if (eligibleParent && preferred.id === eligibleParent.id) usedParents.add(eligibleParent.id);
     remaining -= allowedTokens;
     if (remaining <= 0) break;
   }

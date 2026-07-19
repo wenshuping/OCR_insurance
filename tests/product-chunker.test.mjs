@@ -51,6 +51,14 @@ test('product chunker keeps numbered sections and cross-page continuation togeth
   assert.equal(death.pageStart, 1);
   assert.equal(death.pageEnd, 2);
   assert.match(death.content, /给付后本合同终止/u);
+  const deathParent = chunks.find((chunk) => chunk.id === death.parentChunkId);
+  assert.ok(deathParent);
+  assert.equal(deathParent.chunkType, 'parent');
+  assert.equal(deathParent.pageStart, 1);
+  assert.equal(deathParent.pageEnd, 2);
+  assert.match(deathParent.content, /被保险人身故/u);
+  assert.match(deathParent.content, /给付后本合同终止/u);
+  assert.equal(deathParent.payload.isSectionParent, true);
   assert.ok(death.payload.boundaryConfidence >= 0.8);
   assert.ok(death.payload.boundaryReasons.includes('中文序号标题'));
 
@@ -100,6 +108,33 @@ test('product chunker keeps table rows structured without indexing flattened pag
   assert.match(parent.content, /服务类别 \| 服务项目 \| 服务次数 \| 计划一/u);
   assert.match(table.content, /就医服务 \| 电话咨询 \| 1次\/年 \| √/u);
   assert.doesNotMatch(parent.content, /服务类别\n服务项目\n服务次数/u);
+});
+
+test('table pages keep narrative elements in a child chunk without duplicating structured table cells', () => {
+  const chunks = chunkProductDocument({
+    document: { id: 'doc_table_narrative', fileName: '医疗险课件.pptx', documentType: 'training_deck', sourceAuthority: 'company_material', payload: {} },
+    product: { company: '测试保险公司', productName: '测试医疗险' },
+    pages: [{
+      pageNo: 17,
+      rawText: '测试医疗险\n三档保障计划的3点区别\n年度免赔额不同\n计划一1万元',
+      headings: [],
+      layout: { elements: [
+        { kind: 'text', text: '测试医疗险' },
+        { kind: 'text', text: '三档保障计划的3点区别' },
+        { kind: 'text', text: '年度免赔额不同' },
+        { kind: 'text', text: '计划一1万元' },
+      ] },
+      tables: [{ rows: [['保障项目', '计划一'], ['年度免赔额不同', '计划一1万元']] }],
+    }],
+  });
+
+  const child = chunks.find((chunk) => chunk.chunkType === 'child');
+  const table = chunks.find((chunk) => chunk.chunkType === 'table');
+  assert.ok(child);
+  assert.match(child.content, /测试医疗险/u);
+  assert.match(child.content, /三档保障计划的3点区别/u);
+  assert.doesNotMatch(child.content, /年度免赔额不同/u);
+  assert.match(table.content, /年度免赔额不同 \| 计划一1万元/u);
 });
 
 test('training deck chunks stay page-local and carry business topics', () => {

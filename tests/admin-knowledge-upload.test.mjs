@@ -199,6 +199,15 @@ test('admin pre-reviews candidate chunks, previews a controlled correction, and 
           }],
         };
       },
+      async planCorrection(input) {
+        return {
+          model: 'injected-correction-model', correctionVersion: 'test-correction-v1', issues: [],
+          operations: [{
+            type: 'edit_chunk', targetChunkId: input.request.targetChunkIds[0],
+            content: '未经基本医疗保险结算的，给付比例为60%。',
+          }],
+        };
+      },
     },
   });
   try {
@@ -231,6 +240,18 @@ test('admin pre-reviews candidate chunks, previews a controlled correction, and 
     assert.equal(workspace.payload.issues[0].runId, workspace.payload.reviewRuns[0].id);
     assert.equal(workspace.payload.pages.length, 1);
     assert.equal(workspace.payload.indexReview.candidateChunks.length > 0, true);
+    const targetChunkId = workspace.payload.indexReview.candidateChunks.find((chunk) => chunk.chunkType !== 'parent').id;
+
+    const correctionNote = '对应年度免赔额与50%赔付条件未解析完整';
+    const needsCorrection = await request(app, `/api/admin/product-knowledge/documents/${documentId}/pages/1/review`, {
+      status: 'needs_correction',
+      note: correctionNote,
+      indexVersion: workspace.payload.indexReview.candidateIndexVersion,
+    });
+    assert.equal(needsCorrection.response.status, 200);
+    assert.equal(needsCorrection.payload.review.note, correctionNote);
+    const notedWorkspace = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review-workspace`);
+    assert.equal(notedWorkspace.payload.pageReviews[0].note, correctionNote);
 
     const pageReviewed = await request(app, `/api/admin/product-knowledge/documents/${documentId}/pages/1/review`, {
       status: 'passed',
@@ -238,11 +259,54 @@ test('admin pre-reviews candidate chunks, previews a controlled correction, and 
     });
     assert.equal(pageReviewed.response.status, 200);
     assert.equal(pageReviewed.payload.review.status, 'passed');
+    assert.equal(pageReviewed.payload.publishedChunkCount > 0, true);
+    assert.equal(app.db.prepare(`
+      SELECT count(*) AS count FROM knowledge_chunks
+      WHERE document_id = ? AND chunk_type != 'parent' AND review_status = 'published'
+    `).get(documentId).count > 0, true);
     const reviewedWorkspace = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review-workspace`);
     assert.equal(reviewedWorkspace.payload.pageReviews.length, 1);
     assert.equal(reviewedWorkspace.payload.pageReviews[0].pageNo, 1);
 
-    const targetChunkId = workspace.payload.indexReview.candidateChunks.find((chunk) => chunk.chunkType !== 'parent').id;
+    const excluded = await request(app, `/api/admin/product-knowledge/documents/${documentId}/pages/1/review`, {
+      status: 'excluded',
+      note: '封面不参与检索',
+      indexVersion: workspace.payload.indexReview.candidateIndexVersion,
+    });
+    assert.equal(excluded.response.status, 200);
+    assert.equal(excluded.payload.review.status, 'excluded');
+    assert.equal(app.db.prepare(`
+      SELECT count(*) AS count FROM knowledge_chunks
+      WHERE document_id = ? AND review_status = 'published'
+    `).get(documentId).count, 0);
+    const excludedWorkspace = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review-workspace`);
+    assert.equal(excludedWorkspace.payload.pageReviews[0].note, '封面不参与检索');
+    assert.equal(excludedWorkspace.payload.indexReview.candidateChunks
+      .filter((chunk) => chunk.pageStart <= 1 && chunk.pageEnd >= 1)
+      .every((chunk) => chunk.indexStatus === 'blocked'), true);
+    assert.deepEqual(excludedWorkspace.payload.indexReview.candidateChunks
+      .find((chunk) => chunk.id === targetChunkId).payload.pageExclusion.pageNos, [1]);
+
+    const restored = await request(app, `/api/admin/product-knowledge/documents/${documentId}/pages/1/review`, {
+      status: 'passed',
+      indexVersion: workspace.payload.indexReview.candidateIndexVersion,
+    });
+    assert.equal(restored.response.status, 200);
+    assert.equal(restored.payload.publishedChunkCount > 0, true);
+    const restoredWorkspace = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review-workspace`);
+    assert.equal(restoredWorkspace.payload.indexReview.candidateChunks
+      .find((chunk) => chunk.id === targetChunkId).indexStatus, 'ready');
+    assert.equal(restoredWorkspace.payload.indexReview.candidateChunks
+      .find((chunk) => chunk.id === targetChunkId).payload.pageExclusion, undefined);
+
+    const aiPlanned = await request(app, `/api/admin/product-knowledge/documents/${documentId}/corrections/plan`, {
+      pageNo: 1, reasonCode: 'semantic_incomplete', note: '自动补全给付比例的适用条件',
+      scope: 'current_chunk', targetChunkIds: [targetChunkId],
+    });
+    assert.equal(aiPlanned.response.status, 200);
+    assert.equal(aiPlanned.payload.plan.model, 'injected-correction-model');
+    assert.equal(aiPlanned.payload.plan.operations[0].type, 'edit_chunk');
+
     const planned = await request(app, `/api/admin/product-knowledge/documents/${documentId}/corrections/plan`, {
       reasonCode: 'semantic_incomplete',
       note: '把适用条件保留在比例切片中',
@@ -258,6 +322,7 @@ test('admin pre-reviews candidate chunks, previews a controlled correction, and 
 
     const confirmed = await request(app, `/api/admin/product-knowledge/documents/${documentId}/corrections/confirm`, {
       sourceIssueId: workspace.payload.issues[0].id,
+      pageNo: 1,
       plan: planned.payload.plan,
     });
     assert.equal(confirmed.response.status, 200);
@@ -268,6 +333,7 @@ test('admin pre-reviews candidate chunks, previews a controlled correction, and 
     const refreshed = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review-workspace`);
     assert.equal(refreshed.payload.corrections.length, 1);
     assert.equal(refreshed.payload.issues.find((issue) => issue.id === workspace.payload.issues[0].id).status, 'correction_planned');
+    assert.equal(refreshed.payload.pageReviews[0].status, 'pending_confirmation');
 
     const rejected = await request(app, `/api/admin/product-knowledge/documents/${documentId}/review`, {
       action: 'reject',

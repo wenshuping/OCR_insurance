@@ -190,10 +190,21 @@ function documentSections(pages = [], options = {}) {
       closeCurrent();
       headingStack.length = 0;
     }
-    if (Array.isArray(page?.tables) && page.tables.length) continue;
     const pageNo = Number(page?.pageNo) || 1;
     const declaredHeadings = (Array.isArray(page?.headings) ? page.headings : []).map(text).filter(Boolean);
-    const lines = text(page?.rawText).split('\n').map(text).filter(Boolean);
+    const tables = Array.isArray(page?.tables) ? page.tables : [];
+    const tableContent = tables.map(structuredTableContent).filter(Boolean).join('\n');
+    const tableKey = text(tableContent).replace(/\s+/gu, '');
+    const layoutText = Array.isArray(page?.layout?.elements)
+      ? page.layout.elements.filter((element) => text(element?.kind) === 'text').map((element) => text(element?.text)).filter(Boolean)
+      : [];
+    const narrativeText = tables.length
+      ? layoutText.filter((content) => {
+        const key = content.replace(/\s+/gu, '');
+        return key && !(tableKey.includes(key) || key.includes(tableKey));
+      }).join('\n')
+      : text(page?.rawText);
+    const lines = text(narrativeText).split('\n').map(text).filter(Boolean);
     lines.forEach((line, index) => {
       const unit = { id: `p${pageNo}-l${index + 1}`, pageNo, text: line };
       const heading = detectHeading(line, declaredHeadings);
@@ -242,6 +253,8 @@ function chunkRecord({ id, document, product, page, pageEnd = null, headingPath,
     documentId: text(document.id),
     canonicalProductId: text(product?.canonicalProductId),
     productVersionId: text(product?.productVersionId),
+    validFrom: text(product?.effectiveFrom),
+    validTo: text(product?.effectiveTo),
     parentChunkId,
     chunkType,
     headingPath,
@@ -309,7 +322,29 @@ export function chunkProductDocument(input = {}) {
   const childChunks = [];
   documentSections(pages, { keepCrossPageSections: document.documentType === 'terms' }).forEach((section, sectionIndex) => {
     const sourcePage = pages.find((page) => Number(page?.pageNo) === section.pageStart) || { pageNo: section.pageStart };
-    const parts = packUnits(sentenceUnits(section.units.map((unit) => unit.text).join('\n')), maxTokens);
+    const sectionContent = section.units.map((unit) => unit.text).join('\n');
+    let parentChunkId = parentIdsByPage.get(section.pageStart) || '';
+    if (document.documentType === 'terms' && section.pageEnd > section.pageStart) {
+      parentChunkId = stableId(document.id, section.pageStart, section.pageEnd, 'section-parent', sectionIndex, sectionContent);
+      chunks.push(chunkRecord({
+        id: parentChunkId,
+        document,
+        product,
+        page: sourcePage,
+        pageEnd: section.pageEnd,
+        headingPath: section.headingPath,
+        chunkType: 'parent',
+        content: sectionContent,
+        payload: {
+          sourceLabel: text(sourcePage.sourceLabel) || `第 ${section.pageStart} 页`,
+          isParent: true,
+          isSectionParent: true,
+          sectionIndex,
+          sourceUnitIds: section.units.map((unit) => unit.id),
+        },
+      }));
+    }
+    const parts = packUnits(sentenceUnits(sectionContent), maxTokens);
     parts.forEach((part, partIndex) => childChunks.push(chunkRecord({
       id: stableId(document.id, section.pageStart, section.pageEnd, 'child', sectionIndex, partIndex, part),
       document,
@@ -319,7 +354,7 @@ export function chunkProductDocument(input = {}) {
       headingPath: section.headingPath,
       chunkType: 'child',
       content: part,
-      parentChunkId: parentIdsByPage.get(section.pageStart) || '',
+      parentChunkId,
       payload: {
         sourceLabel: text(sourcePage.sourceLabel) || `第 ${section.pageStart} 页`,
         sequence: childChunks.length,
