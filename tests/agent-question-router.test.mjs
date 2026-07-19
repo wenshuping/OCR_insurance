@@ -99,6 +99,30 @@ test('open sales coaching reaches sales champion without family selection', asyn
   assert.deepEqual(harness.calls.audits[0].authorizedResourceIds, []);
 });
 
+test('question router preserves the internal sales KYC update', async () => {
+  const salesKyc = {
+    caseVersion: 1,
+    knownSlots: ['customer_relationship_origin'],
+    unknownSlots: [],
+    facts: [{ key: 'relationship_origin', value: '公司转交', source: 'advisor_fact' }],
+    labels: [{ dimension: 'source', value: 'SRC8', status: 'confirmed' }],
+  };
+  const harness = createHarness({
+    handlers: {
+      sales_champion: async () => ({
+        interaction: { type: 'answer', text: '已记录客户来源。' },
+        agentContextUpdate: { salesKyc },
+      }),
+    },
+  });
+
+  const result = await harness.router.route(routeInput({
+    intent: 'sales_coaching', question: '客户是公司转交的老客户', entities: {}, confidence: 1,
+  }));
+
+  assert.deepEqual(result.agentContextUpdate, { salesKyc });
+});
+
 test('customer follow-up remains a sales answer even when the story names an insurance product', async () => {
   const harness = createHarness({
     handlers: {

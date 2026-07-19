@@ -23,7 +23,7 @@ export const AGENT_QUESTION_POLICY_HANDLER_TOOLS = Object.freeze({
   sales_champion: Object.freeze(['sales_report', 'propose_memory']),
 });
 export const DEFAULT_AGENT_RUNTIME_SETTINGS = Object.freeze({
-  fallbackHistoryMessageLimit: 6,
+  fallbackHistoryMessageLimit: 40,
   productContextTtlMinutes: 30,
 });
 

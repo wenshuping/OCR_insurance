@@ -97,6 +97,78 @@ test('domain gateway rechecks the current account before every tool execution', 
   assert.equal(routeCalls, 0);
 });
 
+test('domain gateway preserves the sales KYC update for conversation persistence', async () => {
+  const salesKyc = {
+    caseVersion: 1,
+    knownSlots: ['customer_relationship_origin'],
+    unknownSlots: [],
+    facts: [{ key: 'relationship_origin', value: '公司转交', source: 'advisor_fact' }],
+    labels: [{ dimension: 'source', value: 'SRC8', status: 'confirmed' }],
+  };
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    questionRouter: { async route() {
+      return {
+        decision: 'execute',
+        interaction: { type: 'answer', text: '销售建议' },
+        agentContextUpdate: { salesKyc },
+      };
+    } },
+  });
+
+  const output = await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: { question: '这个客户怎么跟进', operation: 'sales_coaching' },
+    claims: claims(),
+  });
+
+  assert.deepEqual(output.agentContextUpdate, { salesKyc });
+});
+
+test('domain gateway restores sales history and KYC before the next Agent Loop tool call', async () => {
+  const routed = [];
+  const storedKyc = {
+    caseVersion: 2,
+    knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+    unknownSlots: [],
+    facts: [
+      { key: 'relationship_origin', value: '公司转交的老保单客户', source: 'advisor_fact' },
+      { key: 'service_request', value: '整理保单', source: 'advisor_fact' },
+    ],
+    labels: [{ dimension: 'source', value: 'SRC8', status: 'confirmed' }],
+  };
+  const gateway = createAgentDomainToolGateway({
+    async resolveChannelIdentity() { return { internalUserId: 7 }; },
+    conversationContext: { async loadContext() {
+      return {
+        history: [
+          { role: 'user', content: '客户是公司转交的老保单客户' },
+          { role: 'assistant', content: '客户希望你帮他办什么？' },
+          { role: 'user', content: '客户让我整理保单' },
+        ],
+        factBlock: { salesKyc: storedKyc },
+      };
+    } },
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return { decision: 'execute', interaction: { type: 'answer', text: '继续跟进建议' } };
+    } },
+  });
+
+  await gateway.execute({
+    tool: 'ask_sales_champion',
+    input: { question: '他最近还是很忙', operation: 'sales_coaching' },
+    claims: claims(),
+  });
+
+  assert.deepEqual(routed[0].conversationHistory.map((message) => message.content), [
+    '客户是公司转交的老保单客户',
+    '客户希望你帮他办什么？',
+    '客户让我整理保单',
+  ]);
+  assert.deepEqual(routed[0].salesContext.salesKycState, storedKyc);
+});
+
 test('domain gateway preserves a product advantage query instead of turning it into responsibilities', async () => {
   const routed = [];
   const gateway = createAgentDomainToolGateway({

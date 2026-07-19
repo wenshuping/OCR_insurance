@@ -191,6 +191,37 @@ test('does not preserve candidates from the sales champion tool', () => {
   assert.equal(service.inspect(issued.token).toolResults[0].result.interaction.candidates, undefined);
 });
 
+test('preserves the bounded sales KYC update for the next conversation turn', () => {
+  const service = createAgentToolCapabilityService({
+    clock: () => 2_650,
+    createToken: () => 'opaque-token-sales-kyc',
+  });
+  const issued = service.issue(request());
+  const salesKyc = {
+    caseVersion: 3,
+    knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+    unknownSlots: [],
+    facts: [{ key: 'relationship_origin', value: '公司转交', source: 'advisor_fact' }],
+    labels: [{ dimension: 'source', value: 'SRC8', status: 'confirmed' }],
+  };
+
+  service.recordResult({
+    token: issued.token,
+    tool: 'ask_sales_champion',
+    result: {
+      status: 'ok',
+      decision: 'execute',
+      interaction: { type: 'answer', text: '已记录客户情况。' },
+      agentContextUpdate: { salesKyc, unrelated: 'drop' },
+    },
+  });
+
+  assert.deepEqual(
+    service.inspect(issued.token).toolResults[0].result.agentContextUpdate,
+    { salesKyc },
+  );
+});
+
 test('preserves only explicitly typed product candidates from the sales champion continuation', () => {
   const service = createAgentToolCapabilityService({ clock: () => 2_700, createToken: () => 'opaque-token-sales-product' });
   const issued = service.issue(request());

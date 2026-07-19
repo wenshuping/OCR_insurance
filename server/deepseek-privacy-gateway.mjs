@@ -36,8 +36,7 @@ export function redactDeepSeekDirectIdentifiers(value = '', options = {}) {
     .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/giu, '[邮箱已脱敏]')
     .replace(/((?:保单号|合同号|保险合同号)\s*[：:]?\s*)[A-Z0-9_-]{6,40}/giu, '$1[已脱敏]')
     .replace(/((?:微信号|微信|WeChat)\s*[：:]\s*)[A-Z][-_A-Z0-9]{5,19}/giu, '$1[已脱敏]')
-    .replace(/((?:家庭地址|居住地址|联系地址|住址|地址)\s*[：:]?\s*)([^\n，,。；;]{3,100})/gu, (_match, label, address) => `${label}${retainedRegion(address)}`)
-    .replace(/(^|客户|联系人|投保人|被保险人|[\s，,。；;])([\u4e00-\u9fff]{1,4})(先生|女士|老师|总)/gu, '$1[客户称谓已脱敏]');
+    .replace(/((?:家庭地址|居住地址|联系地址|住址|地址)\s*[：:]?\s*)([^\n，,。；;]{3,100})/gu, (_match, label, address) => `${label}${retainedRegion(address)}`);
   return result;
 }
 
