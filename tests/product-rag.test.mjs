@@ -32,6 +32,32 @@ test('product RAG forwards product version and as-of date as hard search filters
   assert.equal(searchInputs.every((input) => input.asOfDate === '2026-07-18'), true);
 });
 
+test('product RAG forwards product version and as-of date as hard search filters', () => {
+  const searchInputs = [];
+  const service = createProductRagService({
+    store: {
+      searchChunks(input) {
+        searchInputs.push(input);
+        return [];
+      },
+      getChunksByIds() { return []; },
+      listProductFacts() { return []; },
+    },
+  });
+
+  service.retrieve({
+    tenantId: 'default',
+    query: '等待期多久',
+    canonicalProductId: 'product-1',
+    productVersionId: 'version-2026',
+    asOfDate: '2026-07-18',
+  });
+
+  assert.ok(searchInputs.length > 0);
+  assert.equal(searchInputs.every((input) => input.productVersionId === 'version-2026'), true);
+  assert.equal(searchInputs.every((input) => input.asOfDate === '2026-07-18'), true);
+});
+
 test('product RAG preserves a matched table instead of replacing it with flattened parent text', () => {
   const table = {
     id: 'table-1',
