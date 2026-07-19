@@ -95,3 +95,82 @@ test('product ingestion binds each page range to its uploaded product master', a
     db.close();
   }
 });
+
+test('product ingestion preserves raw evidence while cleaning, gating confidence, and binding a formal version', async () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  try {
+    const upload = store.createDocumentUpload({
+      tenantId: 'default',
+      createdBy: 'admin',
+      sourceAuthority: 'insurer_official',
+      contentHash: 'test-cleaning-confidence-version',
+      fileName: '安心医疗保险2026版条款.pdf',
+      mediaType: 'application/pdf',
+      bytes: Buffer.from('placeholder'),
+      payload: {
+        company: '新华保险',
+        productNames: ['安心医疗保险'],
+        versionLabel: '2026版',
+      },
+    });
+    const service = createProductIngestionService({
+      store,
+      async parseDocument() {
+        return {
+          documentType: 'terms',
+          parser: 'test-ocr-v1',
+          warnings: [],
+          metadata: {},
+          pages: [1, 2].map((pageNo) => ({
+            pageNo,
+            sourceLabel: `第 ${pageNo} 页`,
+            headings: ['第一条 保险责任'],
+            rawText: `新华保险内部资料\n第一条 保险责任\n等待期为90天。\n第 ${pageNo} 页`,
+            tables: [],
+            layout: {
+              sourceType: 'ocr',
+              elements: [
+                { kind: 'header', text: '新华保险内部资料', confidence: 0.99 },
+                { kind: 'heading', text: '第一条 保险责任', confidence: 0.99 },
+                { kind: 'text', text: '等待期为90天。', confidence: 0.8 },
+                { kind: 'footer', text: `第 ${pageNo} 页`, confidence: 0.99 },
+              ],
+            },
+          })),
+        };
+      },
+    });
+
+    const result = await service.ingestDocument({ tenantId: 'default', documentId: upload.document.id });
+    const storedDocument = store.getDocument({ tenantId: 'default', documentId: upload.document.id });
+    const storedPages = store.listDocumentPages({ tenantId: 'default', documentId: upload.document.id });
+    const children = store.listDocumentChunks({ tenantId: 'default', documentId: upload.document.id })
+      .filter((chunk) => chunk.chunkType !== 'parent');
+    const versions = store.listProductVersions({
+      tenantId: 'default',
+      canonicalProductId: children[0].canonicalProductId,
+    });
+    const cleaningRuns = store.listDocumentCleaningRuns({ tenantId: 'default', documentId: upload.document.id });
+    const cleaningOperations = store.listDocumentCleaningOperations({
+      tenantId: 'default',
+      documentId: upload.document.id,
+      runId: cleaningRuns[0].id,
+    });
+
+    assert.match(storedPages[0].rawText, /新华保险内部资料/u);
+    assert.doesNotMatch(storedPages[0].layout.cleaning.cleanedText, /内部资料/u);
+    assert.equal(cleaningRuns.length, 1);
+    assert.equal(cleaningRuns[0].cleaningVersion, 'product-document-cleaning-v1');
+    assert.ok(cleaningOperations.some((operation) => operation.rule === 'classify_repeated_header_footer_v1'));
+    assert.equal(versions.length, 1);
+    assert.equal(versions[0].versionLabel, '2026版');
+    assert.equal(storedDocument.payload.productVersionId, versions[0].id);
+    assert.equal(children.every((chunk) => chunk.productVersionId === versions[0].id), true);
+    assert.ok(children.some((chunk) => chunk.payload?.confidence?.decision === 'blocked'));
+    assert.ok(children.some((chunk) => chunk.indexStatus === 'blocked'));
+    assert.equal(result.job.status, 'match_required');
+  } finally {
+    db.close();
+  }
+});

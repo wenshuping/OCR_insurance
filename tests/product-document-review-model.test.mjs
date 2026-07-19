@@ -50,6 +50,8 @@ test('product document review model returns only validated source-linked issues'
   assert.equal(request.body.response_format.type, 'json_object');
   assert.match(request.body.messages[0].content, /不可信资料/u);
   assert.match(request.body.messages[0].content, /不得建议发布、下架、删除数据库、执行 SQL、调用工具或修改正式索引/u);
+  assert.match(request.body.messages[0].content, /targetChunkId/u);
+  assert.match(request.body.messages[0].content, /修正后的完整切片正文/u);
 });
 
 test('product document review model rejects invented references and extra fields', async () => {
@@ -81,10 +83,55 @@ test('product document review model rejects non-JSON output', async () => {
   await assert.rejects(review(input), { code: 'PRODUCT_DOCUMENT_REVIEW_MODEL_INVALID_JSON' });
 });
 
-test('product document review model is unavailable unless explicitly enabled and configured', async () => {
-  for (const env of [{ DEEPSEEK_API_KEY: 'test-key' }, { PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED: 'true' }]) {
+test('product document review model is unavailable without a key or when explicitly disabled', async () => {
+  for (const env of [
+    { PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED: 'false', DEEPSEEK_API_KEY: 'test-key' },
+    { PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED: 'true' },
+  ]) {
     const review = createProductDocumentReviewModel({ env, fetchImpl: async () => { throw new Error('must not call'); } });
     await assert.rejects(review(input), { code: 'PRODUCT_DOCUMENT_REVIEW_MODEL_UNAVAILABLE' });
   }
 });
 
+test('product document review model includes a bounded human correction request', async () => {
+  let body;
+  const review = createProductDocumentReviewModel({
+    env: { ...configuredEnv(), PRODUCT_DOCUMENT_REVIEW_MODEL_ENABLED: '' },
+    fetchImpl: async (_url, options) => {
+      body = JSON.parse(options.body);
+      return responseWith({ issues: [] });
+    },
+  });
+  await review({
+    ...input,
+    correctionRequest: {
+      pageNo: 8, reasonCode: 'semantic_incomplete', note: '补全60%给付比例的适用条件',
+      scope: 'current_chunk', targetChunkIds: ['chunk-1'], sourceElementIds: ['el-1'],
+    },
+  });
+  assert.match(body.messages[0].content, /correctionRequest 非空/u);
+  assert.match(body.messages[1].content, /补全60%给付比例的适用条件/u);
+  assert.match(body.messages[1].content, /未经基本医疗保险结算/u);
+});
+
+test('correction planning ignores malformed auxiliary source regions but keeps safe operations', async () => {
+  const review = createProductDocumentReviewModel({
+    env: configuredEnv(),
+    fetchImpl: async () => responseWith({ issues: [{
+      type: 'semantic_incomplete', severity: 'high', confidence: 0.9,
+      pageNos: [8], sourceRegions: [{ pageNo: 8, elementIds: [] }],
+      affectedChunkIds: ['chunk-1'], reason: '人工指出适用条件缺失', missingElements: ['condition'],
+      proposedOperations: [{ type: 'edit_chunk', params: { target_chunk_id: 'chunk-1', new_content: '未经基本医疗保险结算的，给付比例为60%' }, description: '补齐人工指出的适用条件' }],
+    }] }),
+  });
+  const result = await review({
+    ...input,
+    correctionRequest: {
+      pageNo: 8, reasonCode: 'semantic_incomplete', note: '补全适用条件',
+      scope: 'current_chunk', targetChunkIds: ['chunk-1'], sourceElementIds: [],
+    },
+  });
+  assert.deepEqual(result.issues[0].sourceRegions, []);
+  assert.equal(result.issues[0].proposedOperations[0].type, 'edit_chunk');
+  assert.equal('description' in result.issues[0].proposedOperations[0], false);
+});

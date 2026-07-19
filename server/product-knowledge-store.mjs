@@ -90,6 +90,42 @@ function pageFromRow(row) {
   };
 }
 
+function cleaningRunFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    documentId: text(row.document_id),
+    sourceParseVersion: text(row.source_parse_version),
+    cleaningVersion: text(row.cleaning_version),
+    status: text(row.status),
+    startedAt: text(row.started_at),
+    completedAt: text(row.completed_at),
+    summary: parseJson(row.summary_json, {}),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function cleaningOperationFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    runId: text(row.run_id),
+    documentId: text(row.document_id),
+    pageNo: Number(row.page_no || 0),
+    rule: text(row.rule_code),
+    elementIds: parseJsonValue(row.element_ids_json, []),
+    before: String(row.before_text ?? ''),
+    after: String(row.after_text ?? ''),
+    beforeHash: text(row.before_hash),
+    afterHash: text(row.after_hash),
+    decision: text(row.decision),
+    createdAt: text(row.created_at),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
 function chunkFromRow(row) {
   if (!row) return null;
   let headingPath = [];
@@ -160,6 +196,24 @@ function productFactFromRow(row) {
     confidence: row.confidence == null ? null : Number(row.confidence),
     validFrom: text(row.valid_from),
     validTo: text(row.valid_to),
+    createdAt: text(row.created_at),
+    updatedAt: text(row.updated_at),
+    payload: parseJson(row.payload, {}),
+  };
+}
+
+function productVersionFromRow(row) {
+  if (!row) return null;
+  return {
+    id: text(row.id),
+    tenantId: text(row.tenant_id),
+    canonicalProductId: text(row.canonical_product_id),
+    versionLabel: text(row.version_label),
+    filingCode: text(row.filing_code),
+    effectiveFrom: text(row.effective_from),
+    effectiveTo: text(row.effective_to),
+    saleStatus: text(row.sale_status) || 'unknown',
+    reviewStatus: text(row.review_status) || 'pending',
     createdAt: text(row.created_at),
     updatedAt: text(row.updated_at),
     payload: parseJson(row.payload, {}),
@@ -310,7 +364,6 @@ export function ensureProductKnowledgeTables(db) {
       payload TEXT NOT NULL DEFAULT '{}',
       FOREIGN KEY (canonical_product_id) REFERENCES insurance_products(canonical_product_id)
     );
-
     CREATE TABLE IF NOT EXISTS product_document_links (
       id TEXT PRIMARY KEY,
       tenant_id TEXT NOT NULL,
@@ -342,6 +395,43 @@ export function ensureProductKnowledgeTables(db) {
       FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE,
       UNIQUE (document_id, page_no)
     );
+
+    CREATE TABLE IF NOT EXISTS product_document_cleaning_runs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      source_parse_version TEXT,
+      cleaning_version TEXT NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      summary_json TEXT NOT NULL DEFAULT '{}',
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_document_cleaning_runs_document
+      ON product_document_cleaning_runs(tenant_id, document_id, started_at);
+
+    CREATE TABLE IF NOT EXISTS product_document_cleaning_operations (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      document_id TEXT NOT NULL,
+      page_no INTEGER,
+      rule_code TEXT NOT NULL,
+      element_ids_json TEXT NOT NULL DEFAULT '[]',
+      before_text TEXT NOT NULL DEFAULT '',
+      after_text TEXT NOT NULL DEFAULT '',
+      before_hash TEXT,
+      after_hash TEXT,
+      decision TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL DEFAULT '{}',
+      FOREIGN KEY (run_id) REFERENCES product_document_cleaning_runs(id) ON DELETE CASCADE,
+      FOREIGN KEY (document_id) REFERENCES product_documents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_document_cleaning_operations_run
+      ON product_document_cleaning_operations(tenant_id, run_id, page_no);
 
     CREATE TABLE IF NOT EXISTS product_facts (
       id TEXT PRIMARY KEY,
@@ -706,7 +796,7 @@ export function createProductKnowledgeStore(db) {
     const document = getDocument({ tenantId, documentId });
     const pageNo = Math.trunc(Number(input.pageNo || 0));
     const status = text(input.status);
-    if (!document || pageNo < 1 || !['passed', 'needs_correction'].includes(status)) return null;
+    if (!document || pageNo < 1 || !['passed', 'needs_correction', 'excluded', 'pending_confirmation'].includes(status)) return null;
     const candidateIndexVersion = text(document.payload?.candidateIndexVersion);
     const indexVersion = text(input.indexVersion) || candidateIndexVersion;
     if (!indexVersion || indexVersion !== candidateIndexVersion) return null;
@@ -721,12 +811,84 @@ export function createProductKnowledgeStore(db) {
       reviewer: text(input.reviewer).slice(0, 200),
       reviewedAt: now,
     };
-    updateDocumentState({
-      tenantId,
-      documentId,
-      now,
-      payload: { pageReviews: { ...pageReviews, [`${indexVersion}:${pageNo}`]: review } },
-    });
+    const nextDocumentPayload = {
+      ...document.payload,
+      pageReviews: { ...pageReviews, [`${indexVersion}:${pageNo}`]: review },
+    };
+    const reviewStatusByPage = new Map(Object.values(nextDocumentPayload.pageReviews)
+      .filter((item) => text(item?.indexVersion) === indexVersion)
+      .map((item) => [Math.trunc(Number(item?.pageNo || 0)), text(item?.status)]));
+    const candidateChunks = db.prepare(`
+      SELECT * FROM knowledge_chunks
+      WHERE tenant_id = ? AND document_id = ?
+        AND json_extract(payload, '$.indexVersion') = ?
+        AND page_start <= ? AND page_end >= ?
+    `).all(tenantId, documentId, indexVersion, pageNo, pageNo);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const chunk of candidateChunks) {
+        const chunkPayload = parseJson(chunk.payload, {});
+        const currentExclusion = chunkPayload.pageExclusion && typeof chunkPayload.pageExclusion === 'object'
+          ? chunkPayload.pageExclusion
+          : {};
+        const currentPageNos = [...new Set((Array.isArray(currentExclusion.pageNos) ? currentExclusion.pageNos : [])
+          .map((value) => Math.trunc(Number(value || 0))).filter((value) => value > 0))];
+        const nextPageNos = status === 'excluded'
+          ? [...new Set([...currentPageNos, pageNo])].sort((left, right) => left - right)
+          : currentPageNos.filter((value) => value !== pageNo);
+        const baseIndexStatus = text(currentExclusion.baseIndexStatus) || text(chunk.index_status) || 'ready';
+        const reasons = currentExclusion.reasons && typeof currentExclusion.reasons === 'object'
+          ? { ...currentExclusion.reasons }
+          : {};
+        if (status === 'excluded') reasons[String(pageNo)] = review.note || '人工确认本页不参与知识库检索';
+        else delete reasons[String(pageNo)];
+        const nextPayload = { ...chunkPayload };
+        if (nextPageNos.length) {
+          nextPayload.pageExclusion = {
+            pageNos: nextPageNos,
+            reasons,
+            baseIndexStatus,
+            reviewer: review.reviewer,
+            updatedAt: now,
+          };
+        } else {
+          delete nextPayload.pageExclusion;
+        }
+        const nextIndexStatus = nextPageNos.length ? 'blocked' : baseIndexStatus;
+        const pageStart = Math.trunc(Number(chunk.page_start || 0));
+        const pageEnd = Math.trunc(Number(chunk.page_end || pageStart));
+        const everyCoveredPagePassed = pageStart > 0 && pageEnd >= pageStart
+          && Array.from({ length: pageEnd - pageStart + 1 }, (_, offset) => pageStart + offset)
+            .every((coveredPageNo) => reviewStatusByPage.get(coveredPageNo) === 'passed');
+        const publishNow = text(chunk.chunk_type) !== 'parent'
+          && nextIndexStatus === 'ready'
+          && Boolean(text(chunk.canonical_product_id))
+          && everyCoveredPagePassed;
+        const nextReviewStatus = publishNow
+          ? 'published'
+          : text(chunk.review_status) === 'published' ? 'pending' : text(chunk.review_status) || 'pending';
+        db.prepare(`
+          UPDATE knowledge_chunks
+          SET index_status = ?, review_status = ?, updated_at = ?, payload = ?
+          WHERE id = ?
+        `).run(nextIndexStatus, nextReviewStatus, now, jsonPayload(nextPayload), chunk.id);
+        db.prepare('DELETE FROM knowledge_chunks_fts WHERE chunk_id = ?').run(chunk.id);
+        if (text(chunk.chunk_type) !== 'parent' && nextIndexStatus !== 'blocked') {
+          db.prepare(`
+            INSERT INTO knowledge_chunks_fts (chunk_id, tenant_id, document_id, content, contextual_prefix)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(chunk.id, tenantId, documentId, text(chunk.content), text(chunk.contextual_prefix));
+        }
+      }
+      db.prepare(`
+        UPDATE product_documents SET updated_at = ?, payload = ?
+        WHERE tenant_id = ? AND id = ?
+      `).run(now, jsonPayload(nextDocumentPayload), tenantId, documentId);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
     return review;
   }
 
@@ -782,6 +944,56 @@ export function createProductKnowledgeStore(db) {
         }
       }
 
+      const cleaning = input.cleaning && typeof input.cleaning === 'object' && !Array.isArray(input.cleaning)
+        ? input.cleaning
+        : null;
+      if (cleaning && text(cleaning.cleaningVersion)) {
+        const cleaningRunId = `pclean_${crypto.randomUUID()}`;
+        const operations = Array.isArray(cleaning.operations) ? cleaning.operations : [];
+        const summary = cleaning.summary && typeof cleaning.summary === 'object' && !Array.isArray(cleaning.summary)
+          ? cleaning.summary
+          : { operationCount: operations.length };
+        db.prepare(`
+          INSERT INTO product_document_cleaning_runs (
+            id, tenant_id, document_id, source_parse_version, cleaning_version,
+            status, started_at, completed_at, summary_json, payload
+          ) VALUES (?, ?, ?, ?, ?, 'completed', ?, ?, ?, '{}')
+        `).run(
+          cleaningRunId,
+          tenantId,
+          documentId,
+          text(cleaning.sourceParseVersion),
+          text(cleaning.cleaningVersion),
+          now,
+          now,
+          jsonPayload(summary),
+        );
+        const insertCleaningOperation = db.prepare(`
+          INSERT INTO product_document_cleaning_operations (
+            id, tenant_id, run_id, document_id, page_no, rule_code,
+            element_ids_json, before_text, after_text, before_hash, after_hash,
+            decision, created_at, payload
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}')
+        `);
+        for (const operation of operations) {
+          insertCleaningOperation.run(
+            `pcleanop_${crypto.randomUUID()}`,
+            tenantId,
+            cleaningRunId,
+            documentId,
+            Number(operation?.pageNo || 0) || null,
+            text(operation?.rule) || 'unknown',
+            JSON.stringify(Array.isArray(operation?.elementIds) ? operation.elementIds.map(text).filter(Boolean) : []),
+            String(operation?.before ?? ''),
+            String(operation?.after ?? ''),
+            text(operation?.beforeHash) || null,
+            text(operation?.afterHash) || null,
+            text(operation?.decision) || 'auto_applied',
+            now,
+          );
+        }
+      }
+
       const insertPage = db.prepare(`
         INSERT INTO product_document_pages (
           id, tenant_id, document_id, page_no, raw_text, layout_json, tables_json,
@@ -801,7 +1013,7 @@ export function createProductKnowledgeStore(db) {
           tenantId,
           documentId,
           pageNo,
-          text(page?.rawText),
+          text(page?.originalRawText ?? page?.rawText),
           jsonPayload(layout),
           JSON.stringify(Array.isArray(page?.tables) ? page.tables : []),
           page?.ocrConfidence == null ? null : Number(page.ocrConfidence),
@@ -970,6 +1182,28 @@ export function createProductKnowledgeStore(db) {
       WHERE tenant_id = ? AND document_id = ?
       ORDER BY page_no ASC
     `).all(text(tenantId), text(documentId)).map(pageFromRow);
+  }
+
+  function listDocumentCleaningRuns({ tenantId, documentId } = {}) {
+    return db.prepare(`
+      SELECT * FROM product_document_cleaning_runs
+      WHERE tenant_id = ? AND document_id = ?
+      ORDER BY started_at DESC, id DESC
+    `).all(text(tenantId), text(documentId)).map(cleaningRunFromRow);
+  }
+
+  function listDocumentCleaningOperations({ tenantId, documentId, runId = '' } = {}) {
+    const conditions = ['tenant_id = ?', 'document_id = ?'];
+    const params = [text(tenantId), text(documentId)];
+    if (text(runId)) {
+      conditions.push('run_id = ?');
+      params.push(text(runId));
+    }
+    return db.prepare(`
+      SELECT * FROM product_document_cleaning_operations
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY page_no ASC, created_at ASC, id ASC
+    `).all(...params).map(cleaningOperationFromRow);
   }
 
   function listDocumentChunks({ tenantId, documentId, indexVersion = '' } = {}) {
@@ -1164,6 +1398,18 @@ export function createProductKnowledgeStore(db) {
     }));
   }
 
+  function listProductVersions({ tenantId, canonicalProductId } = {}) {
+    const tenant = text(tenantId);
+    const productId = text(canonicalProductId);
+    if (!tenant || !productId) return [];
+    return db.prepare(`
+      SELECT *
+      FROM insurance_product_versions
+      WHERE tenant_id = ? AND canonical_product_id = ?
+      ORDER BY effective_from ASC, version_label ASC, id ASC
+    `).all(tenant, productId).map(productVersionFromRow);
+  }
+
   function listProductFacts(input = {}) {
     const tenantId = text(input.tenantId);
     if (!tenantId) return [];
@@ -1247,6 +1493,61 @@ export function createProductKnowledgeStore(db) {
       status: text(row.status),
       payload: parseJson(row.payload, {}),
     }));
+  }
+
+  function ensureProductVersions(input = {}) {
+    const tenantId = text(input.tenantId);
+    const versionLabel = text(input.versionLabel);
+    const products = (Array.isArray(input.products) ? input.products : [])
+      .filter((product) => text(product?.canonicalProductId));
+    if (!tenantId || !versionLabel || !products.length) return [];
+    const now = text(input.now) || new Date().toISOString();
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO insurance_product_versions (
+        id, tenant_id, canonical_product_id, version_label, filing_code,
+        effective_from, effective_to, sale_status, review_status,
+        created_at, updated_at, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+    `);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const product of products) {
+        const canonicalProductId = text(product.canonicalProductId);
+        const existing = db.prepare(`
+          SELECT id FROM insurance_product_versions
+          WHERE tenant_id = ? AND canonical_product_id = ? AND version_label = ?
+          LIMIT 1
+        `).get(tenantId, canonicalProductId, versionLabel);
+        if (existing) continue;
+        const identity = `${tenantId}\n${canonicalProductId}\n${versionLabel}`;
+        const versionId = `pver_${crypto.createHash('sha256').update(identity).digest('hex').slice(0, 24)}`;
+        insert.run(
+          versionId,
+          tenantId,
+          canonicalProductId,
+          versionLabel,
+          text(input.filingCode) || null,
+          text(input.effectiveFrom) || null,
+          text(input.effectiveTo) || null,
+          text(input.saleStatus) || 'unknown',
+          now,
+          now,
+          jsonPayload(input.payload),
+        );
+      }
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+    const productIds = products.map((product) => text(product.canonicalProductId));
+    const placeholders = productIds.map(() => '?').join(', ');
+    return db.prepare(`
+      SELECT * FROM insurance_product_versions
+      WHERE tenant_id = ? AND version_label = ?
+        AND canonical_product_id IN (${placeholders})
+      ORDER BY canonical_product_id ASC, id ASC
+    `).all(tenantId, versionLabel, ...productIds).map(productVersionFromRow);
   }
 
   function listDocumentReviewRuns({ tenantId, documentId, limit = 20 } = {}) {
@@ -1576,6 +1877,16 @@ export function createProductKnowledgeStore(db) {
       conditions.push('chunks.product_version_id = ?');
       params.push(text(input.productVersionId));
     }
+    if (text(input.asOfDate)) {
+      const asOfDate = text(input.asOfDate);
+      if (!/^\d{4}-\d{2}-\d{2}$/u.test(asOfDate)) {
+        throw new TypeError('searchChunks asOfDate must use YYYY-MM-DD');
+      }
+      conditions.push("(chunks.valid_from IS NULL OR chunks.valid_from = '' OR chunks.valid_from <= ?)");
+      params.push(asOfDate);
+      conditions.push("(chunks.valid_to IS NULL OR chunks.valid_to = '' OR chunks.valid_to >= ?)");
+      params.push(asOfDate);
+    }
     const sourceAuthorities = [...new Set((Array.isArray(input.sourceAuthorities) ? input.sourceAuthorities : []).map(text).filter(Boolean))];
     if (sourceAuthorities.length) {
       conditions.push(`chunks.source_authority IN (${sourceAuthorities.map(() => '?').join(', ')})`);
@@ -1633,6 +1944,9 @@ export function createProductKnowledgeStore(db) {
     getDocumentIndexReview,
     getIngestionJob,
     ensureProducts,
+    ensureProductVersions,
+    listDocumentCleaningOperations,
+    listDocumentCleaningRuns,
     listDocumentCorrections,
     listDocumentPageReviews,
     listDocumentChunks,
@@ -1642,6 +1956,7 @@ export function createProductKnowledgeStore(db) {
     listDocumentReviewRuns,
     listDocuments,
     listProductFacts,
+    listProductVersions,
     listProducts,
     replaceParsedArtifacts,
     reviewDocument,

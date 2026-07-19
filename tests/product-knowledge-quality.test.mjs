@@ -115,6 +115,23 @@ test('chunk quality blocks later duplicate without discarding the first copy', (
   assert.equal(quality.chunks[1].indexStatus, 'blocked');
 });
 
+test('chunk quality enforces aggregated evidence confidence decisions', () => {
+  const base = {
+    chunkType: 'child', pageStart: 1, pageEnd: 1, content: '给付比例为60%。',
+    tokenCount: 8, contentHash: 'confidence-hash', indexStatus: 'ready',
+  };
+  const quality = assessProductChunksQuality([
+    { ...base, id: 'critical', payload: { confidence: { decision: 'blocked' } } },
+    { ...base, id: 'review', contentHash: 'confidence-review', payload: { confidence: { decision: 'review_required' } } },
+  ]);
+
+  assert.equal(quality.chunks[0].indexStatus, 'blocked');
+  assert.ok(quality.chunks[0].payload.quality.checks.some((item) => item.code === 'low_critical_fact_confidence'));
+  assert.equal(quality.chunks[1].indexStatus, 'ready');
+  assert.equal(quality.chunks[1].payload.quality.decision, 'review_required');
+  assert.equal(quality.qualityRuleVersion, 'product-chunk-quality-v2');
+});
+
 test('publish readiness requires a bound usable chunk and isolates unbound siblings', () => {
   const base = {
     chunkType: 'child', indexStatus: 'ready', pageStart: 1, pageEnd: 1,
@@ -155,4 +172,30 @@ test('publish readiness requires a bound usable chunk and isolates unbound sibli
   });
   assert.equal(ambiguous.decision, 'blocked');
   assert.ok(ambiguous.blockingReasons.some((item) => item.code === 'product_boundary_ambiguous'));
+
+  const unresolvedVersion = assessProductPublishReadiness({
+    document: { payload: { versionLabel: '2026版' } },
+    links: [{ canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 }],
+    chunks: [base],
+  });
+  assert.equal(unresolvedVersion.decision, 'blocked');
+  assert.ok(unresolvedVersion.blockingReasons.some((item) => item.code === 'product_version_resolution_missing'));
+
+  const boundVersion = assessProductPublishReadiness({
+    document: { payload: { versionLabel: '2026版', productVersionId: 'version-2026' } },
+    links: [{ canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 }],
+    chunks: [{ ...base, productVersionId: 'version-2026' }],
+  });
+  assert.equal(boundVersion.decision, 'pass');
+
+  const awaitingCorrectionConfirmation = assessProductPublishReadiness({
+    document: { payload: {
+      candidateIndexVersion: 'candidate-v2',
+      pageReviews: { 'candidate-v2:1': { pageNo: 1, indexVersion: 'candidate-v2', status: 'pending_confirmation' } },
+    } },
+    links: [{ canonicalProductId: 'product-1', pageStart: 1, pageEnd: 1 }],
+    chunks: [base],
+  });
+  assert.equal(awaitingCorrectionConfirmation.decision, 'blocked');
+  assert.ok(awaitingCorrectionConfirmation.blockingReasons.some((item) => item.code === 'page_correction_unconfirmed'));
 });

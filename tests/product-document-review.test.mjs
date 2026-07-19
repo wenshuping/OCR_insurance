@@ -100,6 +100,70 @@ test('AI pre-review keeps valid source-linked issues and rejects invented refere
   assert.equal(result.summary.highRiskCount > 0, true);
 });
 
+test('deterministic review ignores intentionally excluded noise and groups missing elements by page', async () => {
+  const pages = [{
+    pageNo: 8,
+    excludedElementIds: ['footer-page'],
+    layout: { elements: [
+      { id: 'covered', kind: 'text', text: '附加长期护理' },
+      { id: 'missing-amount', kind: 'text', text: '45192' },
+      { id: 'missing-unit', kind: 'text', text: '元' },
+      { id: 'footer-page', kind: 'text', text: '8' },
+    ] },
+  }];
+  const chunks = [{
+    id: 'chunk-8', chunkType: 'child', indexStatus: 'ready', pageStart: 8, pageEnd: 8,
+    content: '附加长期护理', payload: { sourceRegions: [{ pageNo: 8, elementIds: ['covered'] }] },
+  }];
+
+  const result = await createProductDocumentReviewService().reviewDocument({ pages, chunks });
+
+  assert.equal(result.issues.length, 1);
+  assert.equal(result.issues[0].type, 'missing_content');
+  assert.deepEqual(result.issues[0].sourceRegions, [{ pageNo: 8, elementIds: ['missing-amount', 'missing-unit'] }]);
+  assert.deepEqual(result.issues[0].missingElements, ['45192', '元']);
+  assert.equal(result.issues[0].sourceRegions[0].elementIds.includes('footer-page'), false);
+});
+
+test('AI correction planning returns only operations inside the requested chunk scope', async () => {
+  const pages = annotatePagesWithSourceElements([{
+    pageNo: 1, rawText: '未经基本医疗保险结算的，给付比例为60%。', layout: {},
+  }]);
+  const elementId = pages[0].layout.elements[0].id;
+  const chunks = [
+    { id: 'chunk-1', pageStart: 1, pageEnd: 1, content: '给付比例为60%。', payload: {} },
+    { id: 'chunk-2', pageStart: 2, pageEnd: 2, content: '其他责任', payload: {} },
+  ];
+  const service = createProductDocumentReviewService({
+    reviewModel: async (input) => {
+      assert.equal(input.correctionRequest.note, '补全给付比例的适用条件');
+      return {
+        model: 'test-correction-model',
+        issues: [{
+          type: 'semantic_incomplete', severity: 'high', confidence: 0.95,
+          pageNos: [1], sourceRegions: [{ pageNo: 1, elementIds: [elementId] }],
+          affectedChunkIds: ['chunk-1'], reason: '给付条件缺失',
+          proposedOperations: [
+            { type: 'add_source_elements', targetChunkId: 'chunk-1', elementIds: [elementId] },
+            { type: 'exclude_chunk', targetChunkId: 'chunk-2' },
+          ],
+        }],
+      };
+    },
+  });
+  const result = await service.planCorrection({
+    document: { id: 'doc-1' }, pages, chunks,
+    request: {
+      pageNo: 1, reasonCode: 'semantic_incomplete', note: '补全给付比例的适用条件',
+      scope: 'current_chunk', targetChunkIds: ['chunk-1'], sourceElementIds: [elementId],
+    },
+  });
+  assert.equal(result.model, 'test-correction-model');
+  assert.deepEqual(result.operations, [
+    { type: 'add_source_elements', targetChunkId: 'chunk-1', elementIds: [elementId] },
+  ]);
+});
+
 test('correction instructions become allowlisted operations and can create corrected chunks', () => {
   const plan = buildProductDocumentCorrectionPlan({
     reasonCode: 'semantic_incomplete',
@@ -197,4 +261,3 @@ test('approved corrections rebuild a candidate version without replacing the act
   assert.equal(correction.status, 'approved');
   db.close();
 });
-
