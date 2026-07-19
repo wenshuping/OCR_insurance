@@ -378,6 +378,9 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.match(prompt, /sourceUpdated=true/);
   assert.match(prompt, /客户说预算不够怎么办/);
   assert.match(prompt, /帮我改成微信话术/);
+  assert.match(prompt, /信息不完整.*直说下一步怎么跟.*可立即执行的动作或话术/u);
+  assert.match(prompt, /补充信息只能放在已有建议之后.*navigation\.questionPlan.*多个低成本短事实可以合并/u);
+  assert.match(prompt, /不得只输出问题清单、资料清单/u);
   assert.doesNotMatch(prompt, /张三|李四|张三家庭|110101198606141234|110101198812016543/);
   assert.match(prompt, /\{\{member_1\}\}/);
   assert.match(prompt, /\{\{id_number_1\}\}/);
@@ -410,7 +413,7 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.equal(requestBodies.length, 1);
   assert.equal(requestBodies[0].model, 'deepseek-v4-pro');
   assert.deepEqual(requestBodies[0].thinking, { type: 'enabled' });
-  assert.match(JSON.stringify(requestBodies[0]), /通用销售澄清能力/u);
+  assert.match(JSON.stringify(requestBodies[0]), /本轮没有结构化销售 turn/u);
   assert.doesNotMatch(JSON.stringify(requestBodies[0]), /agent-skill-router|智能 skill router/u);
   assert.doesNotMatch(JSON.stringify(requestBodies[0]), /张三|李四|张三家庭|110101198606141234|110101198812016543/);
   assert.match(reply.content, /保险营销专家/);
@@ -439,7 +442,152 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
 });
 
-test('open sales coaching keeps the full customer narrative and requires a complete customer profile', () => {
+test('family sales chat replaces speculative objection choices with the controlled open question', async () => {
+  const reply = await generateFamilySalesChatReply({
+    context: {
+      consultationScope: 'open',
+      familyInput: {},
+      salesTurn: {
+        informationFollowUp: {
+          maxQuestions: 2,
+          questions: [{
+            key: 'objection_reason', owner: 'sales_champion',
+            askAdvisor: '客户有没有讲具体卡在哪儿？',
+            askCustomerIfUnknown: '您刚才提到这个顾虑，具体最卡您的是哪一点？您按真实想法说就行。',
+            impact: '避免猜原因。',
+          }, {
+            key: 'customer_goal', owner: 'sales_champion',
+            askAdvisor: '这个客户这次最想解决什么？',
+            askCustomerIfUnknown: '您这次最想先解决哪件事？',
+            impact: '确定下一步目标。',
+          }],
+        },
+      },
+    },
+    question: '客户觉得缴费期太长，我怎么跟？',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        model: 'deepseek-v4-pro',
+        choices: [{ message: { content: '王哥，您是怕用钱不方便，还是家人不同意？如果他说怕用钱，就这样处理。' } }],
+      }),
+    }),
+  });
+
+  assert.match(reply.content, /具体最卡您的是哪一点？您按真实想法说就行/u);
+  assert.match(reply.content, /这个客户这次最想解决什么/u);
+  assert.match(reply.content, /保险专家核验/u);
+  assert.doesNotMatch(reply.content, /王哥|还是家人不同意|如果他说/u);
+});
+
+test('family sales chat treats an advisor correction as newer context instead of reusing the objection template', async () => {
+  let requestBody;
+  const reply = await generateFamilySalesChatReply({
+    context: {
+      consultationScope: 'open',
+      familyInput: {},
+      salesTurn: {
+        proposal: {
+          contractVersion: 1,
+          turnRelation: { value: 'correction', confidence: 1 },
+          customerStatements: [],
+          stage: { value: 'contact', confidence: 0.9 },
+          concerns: [{ type: 'affordability', priority: 'primary', confidence: 0.8 }],
+          signals: { explicitRefusal: false, stopContact: false, factSensitive: false },
+          missingInformation: ['budget', 'objection_reason'],
+          proposedCapabilities: ['needs_discovery'],
+          insuranceNeeds: [],
+          situations: ['event_follow_up', 'retirement_planning'],
+        },
+        informationFollowUp: {
+          maxQuestions: 2,
+          questions: [{
+            key: 'objection_reason', owner: 'sales_champion',
+            askAdvisor: '客户具体卡在哪里？',
+            askCustomerIfUnknown: '您具体最卡哪一点？',
+            impact: '确认异议。',
+          }, {
+            key: 'budget', owner: 'sales_champion',
+            askAdvisor: '客户预算多少？',
+            askCustomerIfUnknown: '每年拿出多少不影响生活？',
+            impact: '确认预算。',
+          }],
+        },
+      },
+    },
+    history: [
+      { role: 'user', content: '我前面还讲过另一个客户情况。' },
+      { role: 'assistant', content: '客户对养老有主动需求。' },
+    ],
+    question: '他对养老感兴趣也是我沟通出来的，人家没有说要了解养老。今天有国内游可以叫他。',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return {
+        ok: true,
+        json: async () => ({
+          model: 'deepseek-v4-pro',
+          choices: [{ message: { content: '你这个补充很关键：养老不是客户主动提出的。国内游可以作为一次单纯的活动邀请。' } }],
+        }),
+      };
+    },
+  });
+
+  const prompt = requestBody.messages.map((message) => message.content).join('\n');
+  assert.match(reply.content, /养老不是客户主动提出的/u);
+  assert.match(reply.content, /单纯的活动邀请/u);
+  assert.doesNotMatch(reply.content, /具体最卡|每年拿出多少/u);
+  assert.equal(requestBody.response_format, undefined);
+  assert.match(prompt, /你是与保险顾问复盘客户的销冠/u);
+  assert.match(prompt, /所有 user 消息的说话人都是保险顾问，不是客户/u);
+  assert.match(prompt, /不能改写成客户原话、异议、态度、购买信号或拒绝信号/u);
+  assert.match(prompt, /不要生成跟进方案、客户话术、追问或产品建议/u);
+  assert.doesNotMatch(prompt, /问顾问：客户预算多少/u);
+  assert.doesNotMatch(prompt, /"askAdvisor":"?客户预算多少/u);
+  assert.match(prompt, /客户对养老有主动需求/u);
+  assert.match(prompt, /我前面还讲过另一个客户情况/u);
+});
+
+test('family sales chat recognizes a direct challenge to the prior answer as advisor correction', () => {
+  const messages = buildFamilySalesChatMessages({
+    context: {
+      consultationScope: 'open',
+      salesTurn: { proposal: { turnRelation: { value: 'new_request', confidence: 0.8 } } },
+    },
+    history: [{ role: 'assistant', content: '我把两件事关联起来了。' }],
+    question: '高端医疗跟保单什么关系，保单可以替换高端医疗？你这啥逻辑',
+  });
+
+  const prompt = messages.map((message) => message.content).join('\n');
+  assert.match(prompt, /本轮顾问正在纠正你对前文的理解/u);
+  assert.match(prompt, /所有 user 消息的说话人都是保险顾问，不是客户/u);
+  assert.doesNotMatch(prompt, /本轮受控补充问题/u);
+});
+
+test('family sales chat keeps the sales champion agent as the final correction responder', async () => {
+  const reply = await generateFamilySalesChatReply({
+    context: {
+      consultationScope: 'open',
+      salesTurn: { proposal: { turnRelation: { value: 'correction', confidence: 1 } } },
+    },
+    question: '人家平安不是有20多万的养老保险吗',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        model: 'deepseek-v4-pro',
+        choices: [{ message: { content: '对，是我前面理解错了。客户在平安已经有20多万的养老保险，所以不能再把这件事当成客户主动比较产品。' } }],
+      }),
+    }),
+  });
+
+  assert.match(reply.content, /是我前面理解错了/u);
+  assert.match(reply.content, /客户在平安已经有20多万的养老保险/u);
+  assert.doesNotMatch(reply.content, /补充／纠正的是|这属于你提供的客户背景/u);
+});
+
+test('open sales coaching keeps the full narrative without forcing an exhaustive customer profile', () => {
   const question = '客户五十多岁，是普通职员，估计月收入七八千，夫妻分居，在杭州租房且没有孩子，已有新华保险康建华尊和平安年金险或增额终身寿险，比较在意养老，我怎么跟进？';
   const messages = buildFamilySalesChatMessages({
     context: { consultationScope: 'open', familyInput: {} },
@@ -448,13 +596,13 @@ test('open sales coaching keeps the full customer narrative and requires a compl
   const prompt = messages.map((message) => message.content).join('\n');
 
   assert.equal(messages.at(-1).content, question);
-  assert.match(prompt, /年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标/u);
+  assert.match(prompt, /只讨论与当前流程和 Skill 有关的画像/u);
   assert.match(prompt, /严格区分客户事实、顾问估计和待核实项/u);
-  assert.match(prompt, /不得因产品名称模糊而忽略其余客户信息/u);
+  assert.match(prompt, /不得为了完整而逐项盘问年龄、收入、家庭、房产、健康和全部保单/u);
   assert.match(prompt, /五十多岁.*月收入七八千.*夫妻分居.*杭州租房.*没有孩子.*在意养老/u);
 });
 
-test('family sales chat consumes the structured sales turn instead of routing raw keywords', () => {
+test('family sales chat treats retrieved skills as optional references for the final responder', () => {
   const question = '客户比较在意养老，我怎么跟进？';
   const prompt = buildFamilySalesChatMessages({
     context: {
@@ -473,16 +621,164 @@ test('family sales chat consumes the structured sales turn instead of routing ra
         },
         readiness: { decision: 'execute', reason: 'ready', officialFactsRequired: false, insuranceExpertRequired: false },
         selection: { primary: { key: 'needs_discovery', version: 1 }, supporting: [] },
+        trainingPacks: [{
+          key: 'advance_relationship_by_stage',
+          promptRules: ['说人话，先给一个今天就能做的跟进动作，再补问最多两项。'],
+        }, {
+          key: 'diagnose_problem_before_product',
+          promptRules: ['先判断客户真正卡住的问题。'],
+        }],
+        executionPlan: {
+          primary: {
+            key: 'advance_relationship_by_stage',
+            promptRules: ['说人话，先给一个今天就能做的跟进动作，再补问最多两项。'],
+          },
+          supporting: [{
+            key: 'diagnose_problem_before_product',
+            promptRules: ['先判断客户真正卡住的问题。'],
+          }],
+          fallbackUsed: false,
+        },
+        informationFollowUp: {
+          maxQuestions: 2,
+          questions: [{
+            key: 'customer_goal',
+            owner: 'sales_champion',
+            askAdvisor: '这个客户这次最想解决什么？',
+            askCustomerIfUnknown: '您这次最想先解决哪件事？',
+            impact: '决定下一次先聊什么。',
+          }, {
+            key: 'existing_coverage',
+            owner: 'insurance_expert',
+            askAdvisor: '客户现有保单资料齐不齐？',
+            askCustomerIfUnknown: '您方便把现有保单发我看一下吗？',
+            impact: '没有资料不能判断保障缺口。',
+          }],
+        },
         insuranceNeedResults: [],
       },
     },
     question,
   }).map((message) => message.content).join('\n');
 
-  assert.match(prompt, /结构化 turn contract 校验/u);
+  assert.match(prompt, /结构化层只提供候选理解和参考 Skills/u);
   assert.match(prompt, /needs_discovery/u);
-  assert.match(prompt, /不得重新按关键词判断意图或 Skill/u);
+  assert.match(prompt, /本轮检索到的销售 Skills 参考材料/u);
+  assert.match(prompt, /advance_relationship_by_stage/u);
+  assert.match(prompt, /diagnose_problem_before_product/u);
+  assert.match(prompt, /可以采用、合并或忽略/u);
+  assert.doesNotMatch(prompt, /只能由主培训 Skill组织/u);
+  assert.match(prompt, /说人话，先给一个今天就能做的跟进动作/u);
+  assert.match(prompt, /不得使用“客户理解、当前阶段、优先确认、建议进一步/u);
+  assert.match(prompt, /至少给一段可直接发给客户的原话/u);
+  assert.match(prompt, /本轮受控补充问题（已合并重复项并控制回答负担）/u);
+  assert.match(prompt, /问顾问：这个客户这次最想解决什么/u);
+  assert.match(prompt, /顾问不知道时，可让他问客户/u);
+  assert.match(prompt, /需要保险专家按资料核验/u);
+  assert.match(prompt, /不能因多个辅助 Skill 增加问题数量/u);
+  assert.match(prompt, /不得在追问前把未确认项写成“可能原因”/u);
+  assert.match(prompt, /不得给客户添加受控问题中没有的选项、例子或暗示/u);
+  assert.match(prompt, /客户话术必须原样使用对应的客户询问原话，不得改写成选择题/u);
+  assert.match(prompt, /必须先结合完整对话确认业务员本轮真正要解决什么/u);
+  assert.match(prompt, /普通业务关系就用普通业务口吻/u);
+  assert.match(prompt, /只说真实来意、具体事项和一个低负担动作/u);
+  assert.match(prompt, /不得带上级对下级、教育、管理或安抚口吻/u);
+  assert.match(prompt, /面对长辈、老师或资深客户/u);
   assert.doesNotMatch(prompt, /产品比对与替换评估|智能 skill router/u);
+});
+
+test('family sales chat reviews unsupported customer psychology before returning the answer', async () => {
+  let calls = 0;
+  let reviewPrompt = '';
+  const reply = await generateFamilySalesChatReply({
+    context: {
+      consultationScope: 'open',
+      familyInput: {},
+      salesTurn: {
+        proposal: {
+          customerStatements: [{ text: '礼物是你自己的钱买的不要', source: 'current_message' }],
+          kycFacts: [{
+            key: 'occupation', value: '企业主', source: 'advisor_fact', evidence: '企业主',
+          }],
+          stage: { value: 'contact', confidence: 0.9 },
+          turnRelation: { value: 'new_request', confidence: 0.9 },
+        },
+        navigation: {
+          questionPlan: [{
+            slot: 'customer_relationship_origin',
+            question: '这个客户是你自己开发、别人转介绍的，还是公司转交的老保单客户？',
+          }],
+        },
+      },
+    },
+    question: '这个客户一直很忙，我怎么经营？',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async (_url, options) => {
+      calls += 1;
+      if (calls === 2) reviewPrompt = JSON.parse(options.body).messages[0].content;
+      return {
+        ok: true,
+        json: async () => ({
+          model: 'deepseek-v4-pro',
+          choices: [{ message: { content: calls === 1
+            ? '她拒绝礼物，说明她体谅你、怕欠人情。先别谈保险。'
+            : '先尊重客户目前没有时间的事实，不根据拒绝礼物推断原因。这个客户是你自己开发、别人转介绍的，还是公司转交的老保单客户？' } }],
+        }),
+      };
+    },
+  });
+
+  assert.equal(calls, 2);
+  assert.doesNotMatch(reply.content, /体谅你|怕欠人情/u);
+  assert.match(reply.content, /不根据拒绝礼物推断原因/u);
+  assert.match(reply.content, /自己开发、别人转介绍/u);
+  assert.match(reviewPrompt, /普通业务关系就说普通业务话/u);
+  assert.match(reviewPrompt, /不得写成亲友、知己、陪伴者或心理咨询式表达/u);
+  assert.match(reviewPrompt, /不得用上级管理下级、老师教育学生/u);
+  assert.match(reviewPrompt, /必须有真实、简短、说得出口的联系理由/u);
+});
+
+test('family sales chat falls back to KYC when evidence review still invents customer-management details', async () => {
+  const questionPlan = [{
+    slot: 'explicit_customer_request',
+    question: '客户有没有主动提过保险，或者明确让你帮他处理、分析什么事情？',
+  }, {
+    slot: 'customer_relationship_origin',
+    question: '这个客户是你自己开发、别人转介绍的，还是公司转交的老保单客户？',
+  }, {
+    slot: 'contact_preference',
+    question: '客户希望你用什么方式、什么时间联系？',
+  }];
+  const reply = await generateFamilySalesChatReply({
+    context: {
+      consultationScope: 'open',
+      familyInput: {},
+      salesTurn: {
+        proposal: {
+          customerStatements: [{ text: '礼物是你自己的钱买的不要', source: 'current_message' }],
+          kycFacts: [],
+          stage: { value: 'contact', confidence: 0.9 },
+          turnRelation: { value: 'new_request', confidence: 0.9 },
+        },
+        navigation: { questionPlan },
+      },
+    },
+    question: '这个客户很忙，我怎么经营？',
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => ({
+      ok: true,
+      json: async () => ({
+        model: 'deepseek-v4-pro',
+        choices: [{ message: { content: '她拒绝礼物，说明她怕欠人情。隔三天发一篇行业文章。' } }],
+      }),
+    }),
+  });
+
+  assert.doesNotMatch(reply.content, /怕欠人情|隔三天|行业文章/u);
+  assert.match(reply.content, /知道多少说多少/u);
+  assert.match(reply.content, /对应标签保持为待确认/u);
+  assert.match(reply.content, /候选 Skill 排序/u);
+  for (const item of questionPlan) assert.match(reply.content, new RegExp(item.question.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
 });
 
 test('family sales chat corrects a product comparison cashflow amount from the verified ledger', async () => {

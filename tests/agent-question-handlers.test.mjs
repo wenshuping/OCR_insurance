@@ -478,10 +478,13 @@ test('open sales coaching uses the sales champion without loading family data', 
     }],
   });
 
-  assert.match(result.presentation.message, /现在属于需求发现阶段/u);
-  assert.match(result.presentation.message, /客户希望解决的核心问题/u);
-  assert.equal(result.provenance.skill, 'needs_discovery');
-  assert.equal(generateInput, undefined);
+  assert.equal(result.presentation.message, '先确认养老目标、资金使用期限和流动性要求。');
+  assert.equal(generateInput.context.consultationScope, 'open');
+  assert.equal(generateInput.context.salesTurn.proposal.stage.value, 'discovery');
+  assert.deepEqual(
+    generateInput.context.salesTurn.navigation.questionPlan.map((item) => item.slot),
+    ['customer_relationship_origin', 'customer_goal'],
+  );
 });
 
 test('open sales coaching returns an explicit expert availability message on provider failure', async () => {

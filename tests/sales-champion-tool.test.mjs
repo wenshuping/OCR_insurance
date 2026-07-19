@@ -98,6 +98,88 @@ function salesProposal(question, overrides = {}) {
   };
 }
 
+test('sales champion starts a clean KYC case when semantic context identifies a new customer', async () => {
+  const question = '我前天见了一个63岁的电子仪器企业主，她平时很忙';
+  let received;
+  const tool = createSalesChampionTool({
+    interpretTurn: async ({ activeCustomerKyc }) => {
+      assert.equal(activeCustomerKyc.facts[0].value, '公务员');
+      return salesProposal(question, {
+        customerCase: { relation: 'new_customer', confidence: 0.96 },
+        kycFacts: [
+          { key: 'age_life_stage', value: '63岁', source: 'advisor_fact', evidence: '63岁' },
+          { key: 'occupation', value: '电子仪器企业主', source: 'advisor_fact', evidence: '电子仪器企业主' },
+        ],
+        customerLabels: [],
+      });
+    },
+    execute(_action, context) { received = context; return result(); },
+  });
+
+  const output = await tool.askSalesChampionTool({ context: {
+    internalUserId: 7,
+    intent: 'sales_coaching',
+    question,
+    salesKycState: {
+      caseVersion: 3,
+      knownSlots: ['customer_relationship_origin'],
+      unknownSlots: [],
+      facts: [{ key: 'occupation', value: '公务员', source: 'advisor_fact' }],
+      labels: [{ dimension: 'source', value: 'SRC5', status: 'confirmed' }],
+    },
+  } });
+
+  assert.equal(output.agentContextUpdate.salesKyc.caseVersion, 4);
+  assert.deepEqual(output.agentContextUpdate.salesKyc.facts, [
+    { key: 'age_life_stage', value: '63岁', source: 'advisor_fact' },
+    { key: 'occupation', value: '电子仪器企业主', source: 'advisor_fact' },
+  ]);
+  assert.equal(output.agentContextUpdate.salesKyc.labels.length, 0);
+  assert.deepEqual(received.history, []);
+});
+
+test('sales champion still answers from the full conversation when semantic interpretation fails', async () => {
+  const question = '我有个客户以前是老师，现在约不到了，怎么跟进？';
+  let received;
+  const tool = createSalesChampionTool({
+    interpretTurn: async () => {
+      throw Object.assign(new Error('invalid structured response'), {
+        code: 'SALES_CHAMPION_INTERPRETER_INVALID_RESPONSE',
+      });
+    },
+    execute(_action, context) {
+      received = context;
+      return result();
+    },
+  });
+
+  const output = await tool.askSalesChampionTool({ context: {
+    internalUserId: 7,
+    intent: 'sales_coaching',
+    question,
+    history: [{ role: 'user', content: '这是另一个客户。' }],
+    salesKycState: {
+      caseVersion: 2,
+      knownSlots: ['customer_relationship_origin'],
+      unknownSlots: [],
+      facts: [{ key: 'relationship_origin', value: '公司转交', source: 'advisor_fact' }],
+      labels: [],
+    },
+  } });
+
+  assert.equal(output.interaction.text, '销售建议');
+  assert.match(received.question, /现在约不到了，怎么跟进/u);
+  assert.deepEqual(received.history, [{ role: 'user', content: '这是另一个客户。' }]);
+  assert.equal(received.salesTurn, undefined);
+  assert.deepEqual(output.agentContextUpdate.salesKyc, {
+    caseVersion: 2,
+    knownSlots: ['customer_relationship_origin'],
+    unknownSlots: [],
+    facts: [{ key: 'relationship_origin', value: '公司转交', source: 'advisor_fact' }],
+    labels: [],
+  });
+});
+
 test('sales champion decides when to call the insurance expert for product facts', async () => {
   const question = '客户问这份产品怎么续保，我应该怎么沟通？';
   const expertCalls = [];
@@ -134,6 +216,11 @@ test('sales champion decides when to call the insurance expert for product facts
   assert.equal(expertCalls[0].context.intent, 'insurance_product_knowledge');
   assert.deepEqual(expertCalls[0].context.queryAspects, ['renewal']);
   assert.equal(received.salesTurn.selection.primary.key, 'plain_language_explanation');
+  assert.equal(Array.isArray(received.salesTurn.trainingPacks), true);
+  assert.deepEqual(received.salesTurn.informationFollowUp.questions.map((item) => item.key), [
+    'product_contract',
+  ]);
+  assert.equal(received.salesTurn.informationFollowUp.questions[0].owner, 'insurance_expert');
   assert.deepEqual(received.salesTurn.insuranceNeedResults, [{ type: 'product_facts', status: 'verified' }]);
   assert.deepEqual(received.insuranceExpertEvidence, [{
     status: 'verified',
@@ -176,14 +263,15 @@ test('sales champion calls the insurance expert for an authorized family coverag
   assert.equal(received.insuranceExpertEvidence[0].answer, '已核验家庭保障缺口。');
 });
 
-test('sales champion does not call the insurance expert when products are only background', async () => {
+test('sales champion sends specific training packs to the generator without calling insurance expert for background products', async () => {
   const question = '客户五十多岁，提到买过几份保险，比较在意养老，我怎么跟进？';
   let expertCalled = false;
   let executeCalled = false;
+  let received;
   const tool = createSalesChampionTool({
     interpretTurn: async () => salesProposal(question),
     askInsuranceExpert: async () => { expertCalled = true; return null; },
-    execute() { executeCalled = true; return result(); },
+    execute(_action, context) { executeCalled = true; received = context; return result(); },
   });
 
   const output = await tool.askSalesChampionTool({ context: {
@@ -191,10 +279,66 @@ test('sales champion does not call the insurance expert when products are only b
   } });
 
   assert.equal(expertCalled, false);
-  assert.equal(executeCalled, false);
-  assert.match(output.interaction.text, /现在属于需求发现阶段/u);
-  assert.match(output.interaction.text, /不急着谈新产品/u);
-  assert.equal(output.provenance.skill, 'needs_discovery');
+  assert.equal(executeCalled, true);
+  assert.equal(output.interaction.text, '销售建议');
+  assert.equal(received.salesTurn.trainingPacks[0].key, 'advance_relationship_by_stage');
+  assert.equal(received.salesTurn.executionPlan.primary.key, 'advance_relationship_by_stage');
+  assert.deepEqual(received.salesTurn.executionPlan.supporting.map((pack) => pack.key), [
+    'diagnose_problem_before_product',
+  ]);
+  assert.equal(received.salesTurn.executionPlan.fallbackUsed, false);
+  assert.equal(received.salesTurn.trainingPacks.some((pack) => pack.key === 'discover_goal_with_golden_circle'), false);
+  assert.equal(received.salesTurn.trainingPacks.every((pack) => [
+    'advance_relationship_by_stage',
+    'diagnose_problem_before_product',
+  ].includes(pack.key)), true);
+  assert.deepEqual(received.salesTurn.trainingPacks.flatMap((pack) => pack.evidenceRefs), [
+    'douyin:cheng-jiye:7617439313277553955',
+    'douyin:cheng-jiye:7630848003833711872',
+    'douyin:cheng-jiye:7621478600243432739',
+    'douyin:cheng-jiye:7630847723284991247',
+  ]);
+});
+
+test('missing insurance evidence keeps a specific training pack and calls only available expert work', async () => {
+  const question = '客户说孩子还小，已有保单但以后再买，我怎么跟？';
+  const expertCalls = [];
+  let received;
+  const tool = createSalesChampionTool({
+    interpretTurn: async () => salesProposal(question, {
+      stage: { value: 'objection', confidence: 0.94 },
+      concerns: [{ type: 'underwriting', priority: 'primary', confidence: 0.92 }],
+      signals: { explicitRefusal: false, stopContact: false, factSensitive: true },
+      proposedCapabilities: ['needs_discovery', 'fact_sensitive_routing'],
+      insuranceNeeds: [
+        { type: 'coverage_gap', queryAspects: ['coverage_gap'] },
+        { type: 'product_facts', queryAspects: ['main_responsibilities'] },
+      ],
+      situations: ['age_based_purchase_delay'],
+    }),
+    askInsuranceExpert: async (input) => {
+      expertCalls.push(input);
+      return null;
+    },
+    execute(_action, context) { received = context; return result(); },
+  });
+
+  await tool.askSalesChampionTool({ context: {
+    internalUserId: 7,
+    intent: 'sales_coaching',
+    question,
+    resolvedProducts: [{
+      canonicalProductId: 'product-1', company: '测试保险', officialName: '测试保险产品',
+    }],
+  } });
+
+  assert.equal(expertCalls.length, 1);
+  assert.equal(received.salesTurn.executionPlan.primary.key, 'handle_age_based_delay_without_scare');
+  assert.equal(received.salesTurn.executionPlan.fallbackUsed, false);
+  assert.deepEqual(received.salesTurn.insuranceNeedResults, [
+    { type: 'coverage_gap', status: 'needs_family_or_policy_evidence' },
+    { type: 'product_facts', status: 'unavailable' },
+  ]);
 });
 
 test('sales champion readiness gate blocks expert and generator calls after contact refusal', async () => {

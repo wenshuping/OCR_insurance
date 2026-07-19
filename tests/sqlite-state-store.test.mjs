@@ -1991,7 +1991,7 @@ test('sqlite state store drafts and transactionally publishes agent question pol
   assert.equal(published.status, 'published');
   assert.equal(published.actor, 'admin:2');
   assert.deepEqual(published.policies, [{ key: 'chat', decision: 'propose' }]);
-  assert.deepEqual(published.runtimeSettings, { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
+  assert.deepEqual(published.runtimeSettings, { fallbackHistoryMessageLimit: 40, productContextTtlMinutes: 30 });
   assert.equal(store.db.prepare("SELECT count(*) AS count FROM agent_question_policy_versions WHERE status = 'published'").get().count, 1);
   assert.equal(store.db.prepare('SELECT status FROM agent_question_policy_versions WHERE id = ?').get(first.id).status, 'archived');
   assert.equal((await store.publishAgentQuestionPolicyVersion({ id: second.id, actor: 'admin:2' })).status, 'published');

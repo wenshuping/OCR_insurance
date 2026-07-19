@@ -11,7 +11,7 @@ import {
 } from '../server/agent-question-policy.service.mjs';
 
 test('runtime settings keep safe defaults and reject unsafe ranges', () => {
-  assert.deepEqual(normalizeAgentRuntimeSettings(), { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
+  assert.deepEqual(normalizeAgentRuntimeSettings(), { fallbackHistoryMessageLimit: 40, productContextTtlMinutes: 30 });
   assert.equal(validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 12, productContextTtlMinutes: 90 }), true);
   assert.throws(() => validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 0, productContextTtlMinutes: 30 }), /1 and 40/iu);
   assert.throws(() => validateAgentRuntimeSettings({ fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 1_441 }), /1 and 1440/iu);

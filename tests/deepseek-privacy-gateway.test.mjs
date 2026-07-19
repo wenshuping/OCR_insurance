@@ -37,11 +37,19 @@ test('DeepSeek privacy gateway sanitizes every message without mutating the sour
   };
   const sanitized = sanitizeDeepSeekRequestBody(body);
   assert.match(body.messages[0].content, /13912345678/u);
-  assert.doesNotMatch(sanitized.messages[0].content, /张女士|13912345678/u);
+  assert.match(sanitized.messages[0].content, /张女士/u);
+  assert.doesNotMatch(sanitized.messages[0].content, /13912345678/u);
   assert.match(sanitized.messages[0].content, /预算3万元/u);
 });
 
 test('ordinary product numbers and financial amounts are not removed', () => {
   const redacted = redactDeepSeekDirectIdentifiers('产品代码A2026，等待期90天，年收入300000元，保费20000元。');
   assert.equal(redacted, '产品代码A2026，等待期90天，年收入300000元，保费20000元。');
+});
+
+test('customer titles and professional teacher descriptions are preserved', () => {
+  const redacted = redactDeepSeekDirectIdentifiers('我有个客户是浙大的老师，以前是老师，联系人张老师。');
+  assert.match(redacted, /是浙大的老师/u);
+  assert.match(redacted, /以前是老师/u);
+  assert.match(redacted, /张老师/u);
 });

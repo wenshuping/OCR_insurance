@@ -1,8 +1,17 @@
 import { redactDeepSeekDirectIdentifiers } from './deepseek-privacy-gateway.mjs';
+import {
+  SALES_CHAMPION_KYC_EVIDENCE_SOURCES,
+  SALES_CHAMPION_KYC_FACT_KEYS,
+} from './sales-champion-turn.contract.mjs';
+import { SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY } from './sales-champion-customer-labels.mjs';
+import { SALES_CHAMPION_BOUNDARY_SLOT_KEYS } from './sales-champion-skill-boundary.mjs';
 
 const TASK_STATUSES = new Set(['active', 'completed', 'needs_clarification']);
 const TASK_OWNERS = new Set(['hermes', 'insurance_expert', 'sales_champion', 'system']);
 const FACT_SOURCES = new Set(['domain_agent', 'controlled_catalog', 'conversation_context']);
+const SALES_KYC_SLOTS = new Set(SALES_CHAMPION_BOUNDARY_SLOT_KEYS);
+const SALES_KYC_FACT_KEYS = new Set(SALES_CHAMPION_KYC_FACT_KEYS);
+const SALES_KYC_FACT_SOURCES = new Set(SALES_CHAMPION_KYC_EVIDENCE_SOURCES);
 
 function text(value, limit) {
   return typeof value === 'string'
@@ -35,6 +44,33 @@ function normalizedConflicts(value) {
   });
 }
 
+export function normalizeSalesKycState(value) {
+  const slots = (items) => [...new Set((Array.isArray(items) ? items : [])
+    .filter((item) => typeof item === 'string' && SALES_KYC_SLOTS.has(item)))].slice(0, 24);
+  const knownSlots = slots(value?.knownSlots);
+  const known = new Set(knownSlots);
+  const unknownSlots = slots(value?.unknownSlots).filter((slot) => !known.has(slot));
+  const facts = (Array.isArray(value?.facts) ? value.facts : []).slice(0, 24).flatMap((fact) => {
+    const key = typeof fact?.key === 'string' && SALES_KYC_FACT_KEYS.has(fact.key) ? fact.key : '';
+    const factValue = text(fact?.value, 200);
+    const source = SALES_KYC_FACT_SOURCES.has(fact?.source) ? fact.source : '';
+    return key && factValue && source ? [{ key, value: factValue, source }] : [];
+  });
+  const labels = (Array.isArray(value?.labels) ? value.labels : []).slice(0, 24).flatMap((label) => {
+    const dimension = typeof label?.dimension === 'string' ? label.dimension : '';
+    const labelValue = typeof label?.value === 'string' ? label.value : '';
+    const status = ['confirmed', 'candidate'].includes(label?.status) ? label.status : '';
+    return SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY[dimension]?.includes(labelValue) && status
+      ? [{ dimension, value: labelValue, status }]
+      : [];
+  });
+  const caseVersion = Number.isSafeInteger(value?.caseVersion) && value.caseVersion > 0
+    ? value.caseVersion : 1;
+  return knownSlots.length || unknownSlots.length || facts.length || labels.length
+    ? { caseVersion, knownSlots, unknownSlots, facts, labels }
+    : null;
+}
+
 export function normalizeAgentContextFactBlock(value = {}) {
   const goalQuestion = text(value?.goal?.question, 1_000);
   const status = TASK_STATUSES.has(value?.goal?.status) ? value.goal.status : 'active';
@@ -44,6 +80,7 @@ export function normalizeAgentContextFactBlock(value = {}) {
     ? value.pendingClarification.candidates : [])
     .map((item) => text(item?.label || item, 300)).filter(Boolean).slice(0, 10);
   const pendingQuestion = text(value?.pendingClarification?.question, 1_000);
+  const salesKyc = normalizeSalesKycState(value?.salesKyc);
   return {
     version: 1,
     goal: { question: goalQuestion, status, owner },
@@ -52,6 +89,7 @@ export function normalizeAgentContextFactBlock(value = {}) {
       pendingClarification: { question: pendingQuestion, candidates },
     } : {}),
     conflicts: normalizedConflicts(value?.conflicts),
+    ...(salesKyc ? { salesKyc } : {}),
   };
 }
 
@@ -63,6 +101,7 @@ export function compileAgentContextFactBlock({
   product = null,
   productSource = 'conversation_context',
   productCandidates,
+  salesKyc,
   updatedAt,
 } = {}) {
   const prior = normalizeAgentContextFactBlock(previous || {});
@@ -75,6 +114,7 @@ export function compileAgentContextFactBlock({
   const pendingQuestion = productCandidates === undefined
     ? prior.pendingClarification?.question || ''
     : productCandidates?.question || '';
+  const nextSalesKyc = salesKyc === undefined ? prior.salesKyc : normalizeSalesKycState(salesKyc);
   return normalizeAgentContextFactBlock({
     goal: {
       question: currentQuestion || prior.goal.question,
@@ -91,5 +131,6 @@ export function compileAgentContextFactBlock({
       pendingClarification: { question: pendingQuestion, candidates },
     } : {}),
     conflicts: prior.conflicts,
+    ...(nextSalesKyc ? { salesKyc: nextSalesKyc } : {}),
   });
 }
