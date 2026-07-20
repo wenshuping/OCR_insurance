@@ -480,6 +480,23 @@ function parseBenefitSection(sec, ctx) {
   const benefitAmount = resolveBenefitAmount(text, amount, policy);
   if (benefitAmount <= 0) return results;
 
+  // 模式0A: “自合同生效之日起每满N周年” → 从第N个保单周年日起，每N年领取一次。
+  const anniversaryIntervalMatch = compactText.match(/(?:合同)?生效之日起每满([一二三四五六七八九十百千万两\d]+)周年/u);
+  if (anniversaryIntervalMatch) {
+    const intervalYears = parseChineseInteger(anniversaryIntervalMatch[1]);
+    if (intervalYears > 0) {
+      for (let year = effectiveYear + intervalYears; year <= coverageEndYear; year += intervalYears) {
+        results.push({
+          year,
+          amount: benefitAmount,
+          liability: name,
+          calculationText: buildCalcText(benefitAmount, amount, text),
+        });
+      }
+    }
+    return results;
+  }
+
   // 模式0: "自本合同生效之日起至保险期间届满前，每年..."，含首次/以后不同公式。
   if (/自本合同生效之日起.*?至本合同保险期间届满的年生效对应日前/u.test(compactText) && /每年/u.test(compactText)) {
     const startYear = effectiveYear;
@@ -759,6 +776,21 @@ function mergeCashflowEntries(...groups) {
         continue;
       }
 
+      const genericDuplicate = [...byKey.entries()].find(([, candidate]) => (
+        Number(candidate.year) === Number(entry.year)
+        && normalizeCashflowLookupText(candidate.productName) === normalizeCashflowLookupText(entry.productName)
+        && Number(candidate.amount) === Number(entry.amount)
+        && (
+          /教育\/养老金\/两全等返还/u.test(String(candidate.liability || ''))
+          || /教育\/养老金\/两全等返还/u.test(String(entry.liability || ''))
+        )
+      ));
+      if (genericDuplicate) {
+        const [duplicateKey, candidate] = genericDuplicate;
+        byKey.set(duplicateKey, /教育\/养老金\/两全等返还/u.test(String(candidate.liability || '')) ? entry : candidate);
+        continue;
+      }
+
       byKey.set(key, entry);
       if (equivalentKey) equivalentKeyIndex.set(equivalentKey, key);
     }
@@ -848,6 +880,7 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
     : [{ name: indicator.liability || '现金流', content: sourceText }];
   const entries = [];
   let cumulative = 0;
+  const indicatorAmount = resolveIndicatorAmountForCashflow(indicator, scopedPolicy);
   for (const sec of effectiveSections) {
     if (/身故/u.test(sec.name)) continue;
     const parsed = parseBenefitSection(sec, {
@@ -859,16 +892,22 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
       policy: scopedPolicy,
     });
     for (const item of parsed) {
-      cumulative += item.amount;
+      const shouldUseIndicatorAmount = indicatorAmount > 0
+        && Number(item.amount) === Number(ctx.basicAmount)
+        && indicatorAmount !== Number(ctx.basicAmount);
+      const amount = shouldUseIndicatorAmount ? indicatorAmount : item.amount;
+      cumulative += amount;
       entries.push({
         year: item.year,
         age: item.age ?? ageAtCalendarYear(scopedPolicy, item.year, item.year - ctx.birthYear),
-        amount: item.amount,
+        amount,
         cumulative,
         liability: item.liability || sec.name || indicator.liability || '现金流',
         policyId: policy.id,
         productName: scopedPolicy.name || indicator.productName || policy.name || '',
-        calcText: item.calculationText,
+        calcText: shouldUseIndicatorAmount
+          ? formatCashflowCalculation(indicator, scopedPolicy, amount)
+          : item.calculationText,
         _cashflowSource: 'indicator_source_text',
         _cashflowIndicatorId: indicator.id || '',
       });
