@@ -3,7 +3,7 @@ import type { UploadItem } from '../api/contracts/policy';
 export const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 export const MAX_OCR_IMAGE_DIMENSION = 3600;
 export const OCR_IMAGE_JPEG_QUALITY = 0.96;
-export const OCR_IMAGE_DIRECT_UPLOAD_BYTES = 8 * 1024 * 1024;
+export const OCR_IMAGE_DIRECT_UPLOAD_BYTES = 2 * 1024 * 1024;
 const OCR_IMAGE_COMPRESS_ATTEMPTS = [
   { maxDimension: MAX_OCR_IMAGE_DIMENSION, quality: OCR_IMAGE_JPEG_QUALITY },
   { maxDimension: 3200, quality: 0.9 },
@@ -93,7 +93,7 @@ export async function compressImageForOcr(file: File, timings: ClientPerformance
       dataUrl,
     };
     best = !best || item.size < best.size ? item : best;
-    if (item.size <= MAX_POLICY_UPLOAD_BYTES) {
+    if (item.size <= OCR_IMAGE_DIRECT_UPLOAD_BYTES) {
       timings.imageCompressMs = clientElapsedMs(compressStartedAt);
       return item;
     }
