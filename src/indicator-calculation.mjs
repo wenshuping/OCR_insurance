@@ -71,7 +71,8 @@ function numericSpec(indicator = {}) {
     indicator.sourceExcerpt,
   ].filter(Boolean).join(' '));
   const factor = text.match(/[×xX*]\s*(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
-    || text.match(/(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u);
+    || text.match(/(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
+    || text.match(/(\d+(?:\.\d+)?)\s*(%|％|倍)[^。；;，,]{0,12}?(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)/u);
   if (factor) return { value: Number(factor[1]), unit: factor[2] === '％' ? '%' : factor[2] };
 
   const amount = text.match(/(\d+(?:\.\d+)?)\s*(万)?\s*(元|圆)/u);
@@ -292,6 +293,57 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
   amount = roundMoney(amount);
   if (amount <= 0) return { resolved: false, amount: 0, meta, calculationText };
   return { resolved: true, amount, meta, calculationText };
+}
+
+function currentAgeClause(indicator = {}, currentAge) {
+  if (!Number.isFinite(currentAge)) return null;
+  const text = normalizeText([
+    indicator.formulaText,
+    indicator.condition,
+    indicator.sourceExcerpt,
+  ].filter(Boolean).join(' '));
+  if (!text) return null;
+
+  const clauses = text
+    .split(/(?=若(?:被保险人)?(?:于)?)/u)
+    .map((item) => item.split(/[。；;]/u)[0].trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    const ageMatch = clause.match(/(\d{1,3})周岁[^。；;]{0,40}?(之前|以前|前|以后|及以后|后)/u);
+    if (!ageMatch) continue;
+    const thresholdAge = Number(ageMatch[1]);
+    const direction = ageMatch[2];
+    const applies = /之前|以前|前/u.test(direction) ? currentAge < thresholdAge : currentAge >= thresholdAge;
+    if (applies) return { clause, thresholdAge, direction };
+  }
+  return null;
+}
+
+export function resolveIndicatorAmountForCurrentContext(indicator = {}, inputs = {}) {
+  const currentAge = finiteNumber(inputs.currentAge);
+  const conditional = currentAgeClause(indicator, currentAge);
+  if (conditional) {
+    const branchIndicator = {
+      ...indicator,
+      formulaText: conditional.clause,
+      sourceExcerpt: conditional.clause,
+      value: undefined,
+      valueText: '',
+      unit: '',
+      basisKey: '',
+      calculationKey: '',
+      calculationEligible: undefined,
+    };
+    const branchResult = resolveIndicatorAmountFromCalculation(branchIndicator, inputs);
+    if (branchResult.resolved) {
+      return {
+        ...branchResult,
+        formula: conditional.clause,
+        calculationText: `当前年龄${currentAge}周岁，适用“${conditional.clause}”：${branchResult.calculationText}`,
+      };
+    }
+  }
+  return resolveIndicatorAmountFromCalculation(indicator, inputs);
 }
 
 export function indicatorCalculationPayloadFields(indicator = {}) {

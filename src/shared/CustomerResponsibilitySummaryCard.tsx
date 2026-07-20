@@ -6,7 +6,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import type { CustomerResponsibilitySummary } from '../api/contracts/responsibility';
-import type { CashflowEntry } from '../api/contracts/cashflow';
+import type { CashflowEntry, ScenarioEntry } from '../api/contracts/cashflow';
 import { formatCurrency } from './formatters';
 
 function cleanStrings(values: string[] | undefined) {
@@ -28,9 +28,11 @@ function hostFromUrl(url: string) {
 export function CustomerResponsibilitySummaryCard({
   summary,
   cashflowEntries = [],
+  scenarioEntries = [],
 }: {
   summary: CustomerResponsibilitySummary;
   cashflowEntries?: CashflowEntry[];
+  scenarioEntries?: ScenarioEntry[];
 }) {
   const blocks = (Array.isArray(summary.contentBlocks) ? summary.contentBlocks : [])
     .map((block) => ({
@@ -113,6 +115,9 @@ export function CustomerResponsibilitySummaryCard({
               .sort((left, right) => Number(left.year) - Number(right.year));
             const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
             const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
+            const calculatedScenario = scenarioEntries.find((entry) => (
+              item.title && String(entry.scenario || '').includes(item.title) && Number(entry.amount) > 0
+            ));
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
                 <div className="flex items-start gap-3">
@@ -135,6 +140,11 @@ export function CustomerResponsibilitySummaryCard({
                         <p className="mt-1 text-[11px] text-cyan-700">
                           {calculatedRows[0].calculationText || calculatedRows[0].calcText || '按保险责任指标计算'}
                         </p>
+                      </div>
+                    ) : calculatedScenario ? (
+                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
+                        <p className="font-black">已按本保单当前条件计算：{formatCurrency(calculatedScenario.amount)}</p>
+                        <p className="mt-1 text-[11px] text-cyan-700">{calculatedScenario.calculationText}</p>
                       </div>
                     ) : item.calculationStatus ? (
                       <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">
@@ -163,7 +173,7 @@ export function CustomerResponsibilitySummaryCard({
         </div>
       ) : null}
 
-      {requiredPolicyFields.length && !cashflowEntries.length ? (
+      {requiredPolicyFields.length && !cashflowEntries.length && !scenarioEntries.length ? (
         <div className="mt-4 rounded-[16px] border border-amber-100 bg-amber-50 px-3 py-3">
           <div className="flex items-center gap-2 text-xs font-black text-amber-700">
             <ClipboardList size={16} />

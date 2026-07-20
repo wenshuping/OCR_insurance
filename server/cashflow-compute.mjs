@@ -3,6 +3,7 @@
 // Migrated from src/cashflow-engine.mjs with new template-based computation.
 import {
   normalizeIndicatorCalculation,
+  resolveIndicatorAmountForCurrentContext,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
 
@@ -313,10 +314,27 @@ function expandCashflowIndicator(indicator, policy, pensionStartAge = 0) {
   return entries;
 }
 
+function currentAgeForPolicy(policy) {
+  if (!policy?.insuredBirthday) return null;
+  const today = new Date();
+  return ageAtDate(policy, {
+    year: today.getFullYear(),
+    month: today.getMonth() + 1,
+    day: today.getDate(),
+  });
+}
+
+function resolveScenarioCalculation(indicator, policy) {
+  return resolveIndicatorAmountForCurrentContext(indicator, {
+    ...indicatorCalculationInputs(policy),
+    currentAge: currentAgeForPolicy(policy),
+  });
+}
+
 /** Resolve scenario amount for non-cashflow indicators. */
 function resolveScenarioAmount(indicator, policy) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+  const structured = resolveScenarioCalculation(indicator, scopedPolicy);
   if (structured.resolved) return structured.amount;
   const value = Number(indicator.value);
   const amount = Number(scopedPolicy.amount || 0);
@@ -350,6 +368,8 @@ function resolveScenarioAmount(indicator, policy) {
 /** Build formula display text for scenario entries. */
 function buildScenarioFormula(indicator, policy, amount) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
+  const structured = resolveScenarioCalculation(indicator, scopedPolicy);
+  if (structured.resolved && structured.formula) return structured.formula;
   if (indicator.formulaText) {
     return indicator.formulaText.replace(/[，,]\s*现金价值不展示/g, '').trim();
   }
@@ -1442,6 +1462,7 @@ export function computeScenarioEntries(indicators, policy) {
     const scopedPolicy = policyScopedToIndicator(policy, indicator);
     const amount = resolveScenarioAmount(indicator, scopedPolicy);
     const formula = buildScenarioFormula(indicator, scopedPolicy, amount);
+    const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
 
     entries.push({
       scenario: indicator.liability || indicator.coverageType || '保障责任',
@@ -1450,7 +1471,7 @@ export function computeScenarioEntries(indicators, policy) {
       condition: indicator.condition || '',
       policyId: policy.id,
       productName: scopedPolicy.name || indicator.productName || policy.name || '',
-      calculationText: `${formula} = ${amount.toLocaleString('zh-CN')}元`,
+      calculationText: resolved.resolved ? resolved.calculationText : `${formula} = ${amount.toLocaleString('zh-CN')}元`,
     });
   }
   return entries;

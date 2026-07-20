@@ -1,5 +1,5 @@
 import { resolvePolicyValidityStatus } from './policy-validity.mjs';
-import { resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
+import { resolveIndicatorAmountForCurrentContext, resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
 
 function asNumber(value) {
   const number = Number(value);
@@ -709,6 +709,7 @@ function indicatorCalculationInputs(indicator, policy) {
     baseAmount: indicatorBaseAmount(indicator, policy),
     firstPremium: premium,
     paymentYears,
+    currentAge: ageFromBirthday(policy?.insuredBirthday),
   };
 }
 
@@ -773,7 +774,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const explicitYuanLimit = value !== null
     && /^(?:元|圆)$/u.test(unit)
     && /(限额|保额|保险金额|医疗费用|费用|给付金|保险金)/u.test(text);
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  const structured = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(indicator, policy));
   if (structured.resolved) return structured.amount;
   if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false && !explicitYuanLimit) return 0;
 
@@ -813,7 +814,7 @@ function resolveIndicatorAmount(indicator, policy) {
 }
 
 function indicatorAmountCalculationText(indicator, policy, amount) {
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  const structured = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(indicator, policy));
   if (structured.resolved && Math.abs(structured.amount - asNumber(amount)) < 0.01) return structured.calculationText;
 
   const numericAmount = asNumber(amount);
