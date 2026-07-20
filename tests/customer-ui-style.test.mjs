@@ -2006,12 +2006,14 @@ test('deleting a rider does not force-refresh optional responsibilities when mai
   assert.doesNotMatch(source, /已删除附加险，正在重新带出可选责任['"`]\);\s*void loadFormProductAnalysisDraft\(nextData/u);
 });
 
-test('policy save keeps existing core when another scanned member relation is recognized as self', () => {
+test('policy entry and save force an existing core member relation to self', () => {
   const source = normalizedCustomerAppSource;
 
+  assert.match(source, /member && Number\(member\.id\) === Number\(entrySelectedFamily\?\.coreMemberId \|\| 0\)[\s\S]*\? '本人'/u);
   assert.match(source, /!submitFamily\.coreMemberId && applicantShouldBeCore && insuredShouldBeCore/u);
   assert.match(source, /const shouldPersistAsCore = \(member: FamilyMember, relationLabel: string\) => \(/u);
   assert.match(source, /!submitFamily\.coreMemberId \|\| Number\(member\.id\) === Number\(submitFamily\.coreMemberId\)/u);
+  assert.match(source, /if \(Number\(member\.id\) === Number\(submitFamily\.coreMemberId \|\| 0\)\) return '本人'/u);
   assert.match(source, /return member\.relationLabel && member\.relationLabel !== '本人' \? member\.relationLabel : '待确认'/u);
   assert.match(source, /applicantRelation: applicantFinalRelation/u);
   assert.match(source, /insuredRelation: insuredFinalRelation/u);
