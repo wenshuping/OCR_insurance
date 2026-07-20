@@ -19,6 +19,7 @@ import {
   Sparkles,
   Trash2,
   Users,
+  X,
 } from 'lucide-react';
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
 import type {
@@ -212,12 +213,18 @@ function UploadPageCard(props: {
   badge: string;
   disabled?: boolean;
   onDelete: () => void;
+  onPreview: () => void;
   onReplace: () => void;
 }) {
-  const { badge, disabled = false, item, onDelete, onReplace, title } = props;
+  const { badge, disabled = false, item, onDelete, onPreview, onReplace, title } = props;
   return (
     <article className="grid w-[118px] shrink-0 grid-rows-[88px_auto_auto] gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.45)]">
-      <div className="relative overflow-hidden rounded-md bg-slate-100">
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={`查看${title}`}
+        className="relative overflow-hidden rounded-md bg-slate-100 text-left"
+      >
         {item.dataUrl ? (
           <img src={item.dataUrl} alt={title} className="h-full w-full object-cover" />
         ) : (
@@ -228,7 +235,7 @@ function UploadPageCard(props: {
         <span className="absolute left-1.5 top-1.5 rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">
           {badge}
         </span>
-      </div>
+      </button>
       <p className="truncate text-[11px] font-black leading-4 text-slate-700" title={item.name}>{item.name}</p>
       <div className="grid grid-cols-2 gap-1">
         <button
@@ -266,39 +273,68 @@ function UploadedPageStrip(props: {
   onReplaceSupplement: (index: number) => void;
 }) {
   const supplementItems = Array.isArray(props.supplementItems) ? props.supplementItems : [];
+  const [previewItem, setPreviewItem] = useState<{ item: UploadItem; title: string } | null>(null);
   if (!props.baseItem && !supplementItems.length) return null;
   return (
-    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="已上传保单页面">
-      <div className="flex items-center justify-between gap-3">
-        <h3 className="text-xs font-black text-slate-700">已上传页面</h3>
-        <span className="shrink-0 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-100">
-          {Number(Boolean(props.baseItem)) + supplementItems.length}/6
-        </span>
-      </div>
-      <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
-        {props.baseItem ? (
-          <UploadPageCard
-            title="保单基本页"
-            item={props.baseItem}
-            badge="基本页"
-            disabled={props.disabled}
-            onDelete={props.onDeleteBase}
-            onReplace={props.onReplaceBase}
+    <>
+      <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="已上传保单页面">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-xs font-black text-slate-700">已上传页面</h3>
+          <span className="shrink-0 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-100">
+            {Number(Boolean(props.baseItem)) + supplementItems.length}/6
+          </span>
+        </div>
+        <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
+          {props.baseItem ? (
+            <UploadPageCard
+              title="保单基本页"
+              item={props.baseItem}
+              badge="基本页"
+              disabled={props.disabled}
+              onDelete={props.onDeleteBase}
+              onPreview={() => setPreviewItem({ item: props.baseItem!, title: '保单基本页' })}
+              onReplace={props.onReplaceBase}
+            />
+          ) : null}
+          {supplementItems.map((item, index) => (
+            <UploadPageCard
+              key={`${item.name}-${item.size}-${index}`}
+              title={`补充页${index + 1}`}
+              item={item}
+              badge={`补充${index + 1}`}
+              disabled={props.disabled || !props.baseItem}
+              onDelete={() => props.onDeleteSupplement(index)}
+              onPreview={() => setPreviewItem({ item, title: `补充页${index + 1}` })}
+              onReplace={() => props.onReplaceSupplement(index)}
+            />
+          ))}
+        </div>
+      </section>
+      {previewItem ? (
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`查看${previewItem.title}`}
+          onClick={() => setPreviewItem(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewItem(null)}
+            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-xl"
+            aria-label="关闭图片预览"
+          >
+            <X size={22} />
+          </button>
+          <img
+            src={previewItem.item.dataUrl}
+            alt={previewItem.title}
+            className="max-h-[88vh] max-w-[94vw] rounded-xl bg-white object-contain shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
           />
-        ) : null}
-        {supplementItems.map((item, index) => (
-          <UploadPageCard
-            key={`${item.name}-${item.size}-${index}`}
-            title={`补充页${index + 1}`}
-            item={item}
-            badge={`补充${index + 1}`}
-            disabled={props.disabled || !props.baseItem}
-            onDelete={() => props.onDeleteSupplement(index)}
-            onReplace={() => props.onReplaceSupplement(index)}
-          />
-        ))}
-      </div>
-    </section>
+        </div>
+      ) : null}
+    </>
   );
 }
 
