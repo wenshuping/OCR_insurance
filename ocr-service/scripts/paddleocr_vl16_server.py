@@ -8,6 +8,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from PIL import Image
+
 os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
 
 from paddleocr import PaddleOCRVL
@@ -58,7 +60,7 @@ def normalize_bbox(value):
     return None
 
 
-def collect_document(results):
+def collect_document(results, y_offset=0):
     lines = []
     blocks = []
     for item in results:
@@ -78,6 +80,14 @@ def collect_document(results):
                 or block.get("coordinate")
             )
             if content and bbox:
+                if y_offset and len(bbox) >= 4 and all(
+                    isinstance(item, (int, float)) for item in bbox[:4]
+                ):
+                    bbox = [bbox[0], bbox[1] + y_offset, bbox[2], bbox[3] + y_offset]
+                elif y_offset and all(
+                    isinstance(point, list) and len(point) >= 2 for point in bbox
+                ):
+                    bbox = [[point[0], point[1] + y_offset] for point in bbox]
                 blocks.append({
                     "text": content,
                     "box": bbox,
@@ -86,6 +96,40 @@ def collect_document(results):
                     "order": block.get("block_order"),
                 })
     return "\n".join(lines), blocks
+
+
+def merge_documents(documents):
+    lines = []
+    blocks = []
+    seen_lines = set()
+    for content, document_blocks in documents:
+        for line in content.splitlines():
+            normalized = line.strip()
+            if normalized and normalized not in seen_lines:
+                seen_lines.add(normalized)
+                lines.append(normalized)
+        blocks.extend(document_blocks)
+    return "\n".join(lines), blocks
+
+
+def recognize_tall_image_segments(image_path, tmp_dir):
+    with Image.open(image_path) as image:
+        width, height = image.size
+        if height < 1000 or height / max(width, 1) < 1.15:
+            return "", []
+        ranges = [
+            (0, round(height * 0.55)),
+            (round(height * 0.20), round(height * 0.80)),
+            (round(height * 0.45), height),
+        ]
+        documents = []
+        for index, (top, bottom) in enumerate(ranges):
+            segment_path = os.path.join(tmp_dir, f"segment-{index}.jpg")
+            image.crop((0, top, width, bottom)).convert("RGB").save(
+                segment_path, format="JPEG", quality=95
+            )
+            documents.append(collect_document(pipeline.predict(segment_path), top))
+    return merge_documents(documents)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -123,9 +167,17 @@ class Handler(BaseHTTPRequestHandler):
                     print(f"OCR inference started: {len(image_bytes)} bytes", flush=True)
                     results = pipeline.predict(image_path)
                     content, blocks = collect_document(results)
+                    segmented = False
+                    if len(content.strip()) < 300:
+                        segmented_content, segmented_blocks = recognize_tall_image_segments(
+                            image_path, tmp_dir
+                        )
+                        if len(segmented_content) > len(content):
+                            content, blocks = segmented_content, segmented_blocks
+                            segmented = True
                     print(
                         f"OCR inference completed: {len(content)} chars, {len(blocks)} blocks, "
-                        f"{time.monotonic() - started_at:.1f}s",
+                        f"{time.monotonic() - started_at:.1f}s, segmented={segmented}",
                         flush=True,
                     )
             if not content:

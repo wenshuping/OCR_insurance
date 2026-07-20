@@ -5269,7 +5269,14 @@ export async function recognizePaddleOcrVl16Upload(uploadItem, options = {}) {
         }],
       }),
     });
-    if (!response.ok) throw new Error('POLICY_OCR_FAILED');
+    if (!response.ok) {
+      const errorPreview = await response.text().catch(() => '');
+      console.error('[paddleocr-vl16] request failed', {
+        status: response.status,
+        errorPreview: errorPreview.slice(0, 500),
+      });
+      throw new Error('POLICY_OCR_FAILED');
+    }
     const payload = await response.json().catch(() => null);
     const markdown = extractRemoteVisionPayloadContent(payload);
     const parsed = parseDeepSeekOcrMarkdown(markdown);
@@ -5298,6 +5305,13 @@ export async function recognizePaddleOcrVl16Upload(uploadItem, options = {}) {
     if (isAbortLikeError(error, controller.signal)) throw new Error('POLICY_OCR_UPSTREAM_TIMEOUT');
     const message = String(error?.message || error || '');
     if (message.includes('POLICY_OCR_PROVIDER_NOT_CONFIGURED') || message.includes('POLICY_OCR_EMPTY')) throw error;
+    if (!message.includes('POLICY_OCR_FAILED')) {
+      console.error('[paddleocr-vl16] request exception', {
+        errorName: String(error?.name || ''),
+        errorMessage: message.slice(0, 500),
+        causeCode: String(error?.cause?.code || ''),
+      });
+    }
     throw new Error('POLICY_OCR_FAILED');
   } finally {
     clearTimeout(timer);
