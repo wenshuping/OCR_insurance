@@ -413,6 +413,44 @@ test('computeScenarioEntries: accident scenarios produce correct entries', () =>
   assert.equal(entries[2].amount, 3600000); // 60000 * 60
 });
 
+test('computeScenarioEntries resolves the current age branch for conditional death benefit', () => {
+  const policy = {
+    id: 500555,
+    name: '测试少儿两全保险',
+    company: '测试保险',
+    amount: 50000,
+    insuredBirthday: '2000-01-01',
+  };
+  const indicators = [{
+    coverageType: '身故保障',
+    liability: '身故保险金',
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    sourceExcerpt: '若被保险人于18周岁的保单周年日之前身故，返还所交保险费并按年增长率2.5%单利增值；若于18周岁的保单周年日以后（含）身故，按3倍基本保险金额给付身故保险金。',
+  }];
+
+  const entries = computeScenarioEntries(indicators, policy);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 150000);
+  assert.match(entries[0].formula, /18周岁.*以后.*3倍基本保险金额/u);
+  assert.match(entries[0].calculationText, /基本保险金额50,000元 × 3倍 = 150,000元/u);
+});
+
+test('computeScenarioEntries calculates quantified health and accident benefits generically', () => {
+  const policy = { id: 88, name: '综合保障', amount: 200000, insuredBirthday: '1990-01-01' };
+  const indicators = [
+    { coverageType: '重疾保障', liability: '轻度疾病保险金', value: 20, unit: '%', basis: '基本保险金额' },
+    { coverageType: '意外保障', liability: '航空意外身故保险金', value: 5, unit: '倍', basis: '基本保险金额' },
+    { coverageType: '医疗保障', liability: '特定医疗保险金', value: 30000, unit: '元', basis: '固定金额' },
+  ];
+
+  const entries = computeScenarioEntries(indicators, policy);
+
+  assert.deepEqual(entries.map((entry) => entry.amount), [40000, 1000000, 30000]);
+});
+
 test('computeScenarioEntries: skips cashflow and rule-parameter types', () => {
   const indicators = [
     { coverageType: '现金流', liability: '生存金', value: 100, formulaText: '', condition: '' },

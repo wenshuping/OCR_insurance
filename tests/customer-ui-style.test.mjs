@@ -1202,7 +1202,7 @@ test('customer policy detail uses customer responsibility summary instead of leg
   assert.match(sharedReportUiSource, /indicator\.sourceExcerpt/);
   assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
   assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{ company, name \}\)/);
-  assert.match(detailSource, /<CustomerResponsibilitySummaryCard summary=\{customerSummary\} \/>/);
+  assert.match(detailSource, /<CustomerResponsibilitySummaryCard[\s\S]*summary=\{customerSummary\}[\s\S]*cashflowEntries=\{cashflowEntries\}[\s\S]*scenarioEntries=\{policy\.scenarioEntries\}[\s\S]*\/>/);
   assert.doesNotMatch(detailSource, /ResponsibilityCardList/);
   assert.doesNotMatch(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
   assert.doesNotMatch(detailSource, /官网地址/);
