@@ -507,7 +507,7 @@ test('validatePolicyEntryForm can allow pending top-pillar relations before core
   assert.ok(!relaxedErrors.includes('被保险人与顶梁柱的关系'));
 });
 
-test('validatePolicyEntryForm requires beneficiary relation when saving a policy', async () => {
+test('validatePolicyEntryForm allows saving without a beneficiary relation', async () => {
   const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
   const form = {
     familyId: 1,
@@ -527,7 +527,7 @@ test('validatePolicyEntryForm requires beneficiary relation when saving a policy
     plans: [],
   };
 
-  assert.ok(validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
+  assert.ok(!validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
   assert.ok(!validatePolicyEntryForm({ ...form, beneficiaryRelation: '配偶' }).includes('受益人与顶梁柱的关系'));
   assert.ok(!validatePolicyEntryForm({ ...form, beneficiary: '法定' }).includes('受益人与顶梁柱的关系'));
 });
