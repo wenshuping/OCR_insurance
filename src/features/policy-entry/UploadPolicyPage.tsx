@@ -594,6 +594,10 @@ export function UploadPolicyPage(props: {
   }
 
   function setParticipantAsCore(kind: 'applicant' | 'insured', checked: boolean) {
+    const participantName = kind === 'applicant' ? formData.applicant : formData.insured;
+    const participantMember = findFamilyMemberByName(participantName || '');
+    const existingCoreMemberId = Number(selectedFamily?.coreMemberId || 0);
+    if (checked && existingCoreMemberId && Number(participantMember?.id || 0) !== existingCoreMemberId) return;
     if (participantsAreSamePerson()) {
       updateParticipantRelation(kind, checked ? '本人' : '待确认');
       return;
@@ -620,7 +624,13 @@ export function UploadPolicyPage(props: {
     const samePerson = participantsAreSamePerson();
     const sharesCoreControl = samePerson && kind === 'insured';
     const relation = participantRelation(kind);
-    const isCore = relation === '本人';
+    const participantMember = findFamilyMemberByName(String(formData[nameKey] || ''));
+    const existingCoreMemberId = Number(selectedFamily?.coreMemberId || 0);
+    const isExistingCore = Boolean(existingCoreMemberId && Number(participantMember?.id || 0) === existingCoreMemberId);
+    const hasOtherCore = Boolean(existingCoreMemberId && !isExistingCore);
+    const existingCoreMember = selectedFamilyMembers.find((member) => Number(member.id) === existingCoreMemberId) || null;
+    const isCore = isExistingCore || (relation === '本人' && !hasOtherCore);
+    const visibleRelation = hasOtherCore && relation === '本人' ? '待确认' : relation;
     return (
       <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
         <div className="flex items-center justify-between gap-3">
@@ -630,10 +640,11 @@ export function UploadPolicyPage(props: {
               与投保人为同一人
             </div>
           ) : (
-            <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
+            <label className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${hasOtherCore ? 'cursor-not-allowed bg-slate-100 text-slate-400 ring-slate-200' : isCore ? 'cursor-pointer bg-blue-50 text-blue-700 ring-blue-200' : 'cursor-pointer bg-slate-50 text-slate-600 ring-slate-200'}`}>
               <input
                 type="checkbox"
                 checked={isCore}
+                disabled={hasOtherCore}
                 onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
@@ -647,7 +658,7 @@ export function UploadPolicyPage(props: {
           <div>
             {requiredFieldLabel('与顶梁柱的关系')}
             <div className={`flex h-11 items-center rounded-xl border px-4 text-sm font-black ${isCore ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
-              {relation}
+              {visibleRelation}
             </div>
             <p className="mt-2 text-xs font-medium text-slate-500">与投保人为同一人，顶梁柱身份和关系随上方同步。</p>
           </div>
@@ -659,14 +670,21 @@ export function UploadPolicyPage(props: {
             </div>
           </div>
         ) : (
-          <SelectField
-            label="与顶梁柱的关系"
-            value={relation}
-            onChange={(value) => updateParticipantRelation(kind, value)}
-            options={nonCoreRelationOptions(relation)}
-            placeholder="请选择关系"
-            required
-          />
+          <div>
+            <SelectField
+              label="与顶梁柱的关系"
+              value={visibleRelation}
+              onChange={(value) => updateParticipantRelation(kind, value)}
+              options={nonCoreRelationOptions(visibleRelation)}
+              placeholder="请选择关系"
+              required
+            />
+            {hasOtherCore ? (
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                当前家庭已有顶梁柱：{existingCoreMember?.name || '已设置成员'}。如需更换，请先到家庭档案中调整。
+              </p>
+            ) : null}
+          </div>
         )}
       </div>
     );
