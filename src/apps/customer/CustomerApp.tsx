@@ -2132,13 +2132,18 @@ export function CustomerApp() {
     const sharedMember = sameParticipant ? applicantMember || insuredMember : null;
     const finalApplicantMember = sharedMember || applicantMember;
     const finalInsuredMember = sharedMember || insuredMember;
-    const applicantRelation = resolveBoundParticipantRelation(
-      syncedData.applicantRelationLabel || syncedData.applicantRelation,
-      finalApplicantMember ? relationLabelForEntryMember(finalApplicantMember) : '',
+    const relationForBoundMember = (member: FamilyMember | null, enteredRelation: unknown) => (
+      member && Number(member.id) === Number(entrySelectedFamily?.coreMemberId || 0)
+        ? '本人'
+        : resolveBoundParticipantRelation(enteredRelation, member ? relationLabelForEntryMember(member) : '')
     );
-    const insuredRelation = resolveBoundParticipantRelation(
+    const applicantRelation = relationForBoundMember(
+      finalApplicantMember,
+      syncedData.applicantRelationLabel || syncedData.applicantRelation,
+    );
+    const insuredRelation = relationForBoundMember(
+      finalInsuredMember,
       syncedData.insuredRelationLabel || syncedData.insuredRelation,
-      finalInsuredMember ? relationLabelForEntryMember(finalInsuredMember) : '',
     );
     return sharePolicyPersonInfo({
       ...syncedData,
@@ -3246,6 +3251,7 @@ export function CustomerApp() {
         (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
       );
       const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
+        if (Number(member.id) === Number(submitFamily.coreMemberId || 0)) return '本人';
         if (shouldPersistAsCore(member, relationLabel)) return '本人';
         if (relationLabel !== '本人') return relationLabel || '待确认';
         return member.relationLabel && member.relationLabel !== '本人' ? member.relationLabel : '待确认';
