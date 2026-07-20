@@ -111,6 +111,12 @@ export function PolicyDetailSheet({
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
+  const cashflowEntries = useMemo(() => (
+    (Array.isArray(policy.cashflowEntries) ? policy.cashflowEntries : [])
+      .filter((entry) => Number.isFinite(Number(entry.year)) && Number(entry.amount) > 0)
+      .sort((left, right) => Number(left.year) - Number(right.year))
+  ), [policy.cashflowEntries]);
+  const futureCashflowTotal = cashflowEntries.reduce((total, entry) => total + Number(entry.amount || 0), 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,6 +318,65 @@ export function PolicyDetailSheet({
           </section>
         ) : null}
 
+        {cashflowEntries.length ? (
+          <section className="mt-4 rounded-[22px] border border-cyan-100 bg-cyan-50 px-4 py-4 text-cyan-950">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-black">确定领取现金流</p>
+                <p className="mt-1 text-xs font-semibold leading-5 text-cyan-800">
+                  根据保险责任指标和本保单数据计算，供家庭保障分析报告的财富指标使用。
+                </p>
+              </div>
+              <span className="rounded-full bg-white px-3 py-1 text-xs font-black text-cyan-700 ring-1 ring-cyan-100">
+                指标计算
+              </span>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <MetricBox label="未来领取合计" value={formatCurrency(futureCashflowTotal)} />
+              <MetricBox
+                label="首次领取"
+                value={`${cashflowEntries[0].year}年 · ${formatCurrency(cashflowEntries[0].amount)}`}
+              />
+              <MetricBox
+                label="末次领取"
+                value={`${cashflowEntries[cashflowEntries.length - 1].year}年 · ${formatCurrency(cashflowEntries[cashflowEntries.length - 1].amount)}`}
+              />
+            </div>
+            <details className="mt-3 rounded-xl bg-white px-3 py-2 ring-1 ring-cyan-100">
+              <summary className="cursor-pointer text-xs font-black text-cyan-800">
+                查看逐年领取与计算依据（{cashflowEntries.length}项）
+              </summary>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-xs">
+                  <thead className="text-cyan-800">
+                    <tr>
+                      <th className="pb-2 pr-3 font-black">年份</th>
+                      <th className="pb-2 pr-3 font-black">责任</th>
+                      <th className="pb-2 pr-3 text-right font-black">领取金额</th>
+                      <th className="pb-2 font-black">计算依据</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-cyan-50 text-slate-700">
+                    {cashflowEntries.map((entry, index) => (
+                      <tr key={`${entry.year}-${entry.liability}-${index}`}>
+                        <td className="py-2 pr-3 font-bold">{entry.year}</td>
+                        <td className="py-2 pr-3 font-semibold">{entry.liability || '现金流'}</td>
+                        <td className="py-2 pr-3 text-right font-black text-cyan-700">{formatCurrency(entry.amount)}</td>
+                        <td className="py-2 font-medium leading-5 text-slate-500">
+                          {entry.calculationText || entry.calcText || '按保险责任指标计算'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </details>
+            <p className="mt-3 text-[11px] font-semibold leading-5 text-cyan-700">
+              分红、红利及万能账户等金额具有不确定性，不计入上述合计；现金价值作为单独参考，不与未来领取重复相加。
+            </p>
+          </section>
+        ) : null}
+
         <section className="print-only print-policy-section">
           <h2>保单信息</h2>
           <div className="print-policy-grid">
@@ -366,7 +431,7 @@ export function PolicyDetailSheet({
               正在生成客户可读保险责任摘要...
             </article>
           ) : customerSummary ? (
-            <CustomerResponsibilitySummaryCard summary={customerSummary} />
+            <CustomerResponsibilitySummaryCard summary={customerSummary} cashflowEntries={cashflowEntries} />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
               {customerSummaryMessage || (reportGenerating ? '正在生成客户可读保险责任摘要，请稍后。' : '暂无客户版保险责任摘要。')}

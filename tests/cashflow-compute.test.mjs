@@ -142,6 +142,76 @@ test('computePolicyCashflow: indicator maturity uses exact coverage end age befo
   assert.equal(entries[0].amount, 32960);
 });
 
+test('computePolicyCashflow: indicator source expands every N policy anniversaries', () => {
+  const policy = {
+    id: 500553,
+    name: '测试周期生存保险',
+    company: '测试保险',
+    amount: 100000,
+    firstPremium: 5000,
+    date: '2025-06-30',
+    insuredBirthday: '2010-01-01',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至2040年06月30日',
+  };
+  const indicators = [{
+    coverageType: '现金流',
+    liability: '生存保险金',
+    value: 12,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: '生存保险金 = 基本保险金额 × 12%',
+    sourceExcerpt: '被保险人于本主险合同生效之日起每满3周年时仍生存，按基本保险金额的12%给付生存保险金。',
+  }];
+
+  const entries = computePolicyCashflow(policy, null, indicators);
+
+  assert.deepEqual(entries.map((entry) => entry.year), [2028, 2031, 2034, 2037, 2040]);
+  assert.deepEqual(entries.map((entry) => entry.amount), [12000, 12000, 12000, 12000, 12000]);
+  assert.equal(entries.at(-1).cumulative, 60000);
+});
+
+test('computePolicyCashflow: duplicate generic and concrete anniversary indicators count once', () => {
+  const policy = {
+    id: 500554,
+    name: '测试周期生存保险',
+    company: '测试保险',
+    amount: 50000,
+    date: '2008-11-28',
+    insuredBirthday: '2005-01-01',
+    coveragePeriod: '至2020年11月28日',
+  };
+  const sourceExcerpt = '被保险人于本主险合同生效之日起每满3周年时仍生存，按基本保险金额的12%给付生存保险金。';
+  const indicators = [
+    {
+      id: 'generic',
+      coverageType: '现金流',
+      liability: '教育/养老金/两全等返还',
+      value: 12,
+      unit: '%',
+      basis: '基本保额',
+      sourceExcerpt,
+    },
+    {
+      id: 'concrete',
+      coverageType: '现金流',
+      liability: '生存保险金',
+      value: 12,
+      unit: '%',
+      basis: '基本保险金额',
+      formulaText: '生存保险金 = 基本保险金额 × 12%',
+      sourceExcerpt: sourceExcerpt.replace('12%', '12 %'),
+    },
+  ];
+
+  const entries = computePolicyCashflow(policy, null, indicators);
+
+  assert.deepEqual(entries.map((entry) => entry.year), [2011, 2014, 2017, 2020]);
+  assert.deepEqual(entries.map((entry) => entry.amount), [6000, 6000, 6000, 6000]);
+  assert.ok(entries.every((entry) => entry.liability === '生存保险金'));
+  assert.equal(entries.at(-1).cumulative, 24000);
+});
+
 test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
   const policy = {
     id: 600001,
