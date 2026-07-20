@@ -447,7 +447,7 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
     liability: indicator?.liability,
   });
   const override = existing.byId.get(id);
-  if (override?.selectionStatus) {
+  if (override?.selectionStatus && override.selectionStatus !== 'unknown') {
     return {
       optionalResponsibilityId: override.id || id,
       selectionStatus: override.selectionStatus,
@@ -455,12 +455,10 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
       ...(override.id ? { selectedOptionalResponsibilityId: override.id } : {}),
     };
   }
-  if (hasExplicitOptionalResponsibilityId) {
-    return { selectionStatus: 'unknown', selectionEvidence: 'official_terms' };
-  }
-
-  const keyOverride = existing.byKey.get(semanticKey) || existing.byKey.get(key);
-  if (keyOverride?.selectionStatus) {
+  const keyOverride = hasExplicitOptionalResponsibilityId
+    ? null
+    : existing.byKey.get(semanticKey) || existing.byKey.get(key);
+  if (keyOverride?.selectionStatus && keyOverride.selectionStatus !== 'unknown') {
     return {
       ...(keyOverride.id ? { optionalResponsibilityId: keyOverride.id, selectedOptionalResponsibilityId: keyOverride.id } : {}),
       selectionStatus: keyOverride.selectionStatus,
@@ -469,7 +467,8 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
   }
 
   const evidenceText = policyOptionalSelectionEvidenceText(policy);
-  const suffix = optionalResponsibilitySuffix(indicator?.liability);
+  const suffix = optionalResponsibilitySuffix(indicator?.liability)
+    || optionalResponsibilitySuffix(override?.liability);
   const explicitSelectedSuffixes = explicitSelectedOptionalResponsibilitySuffixes(evidenceText);
   if (explicitSelectedSuffixes && suffix) {
     return {
@@ -488,6 +487,9 @@ function inferOptionalResponsibilitySelection(policy = {}, indicator = {}, id = 
   }
   if (OPTIONAL_RESPONSIBILITY_SELECTED_PATTERN.test(evidenceText)) {
     return { selectionStatus: 'selected', selectionEvidence: 'policy_ocr' };
+  }
+  if (hasExplicitOptionalResponsibilityId) {
+    return { selectionStatus: 'unknown', selectionEvidence: 'official_terms' };
   }
   return { selectionStatus: 'unknown', selectionEvidence: 'official_terms' };
 }
@@ -616,7 +618,7 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
   }
   const candidateStatus = normalizeResponsibilitySelectionStatus(normalized.selectionStatus);
   const useCandidateSelection = normalized.selectionEvidence === 'manual'
-    ? Boolean(candidateStatus)
+    ? candidateStatus !== 'unknown'
     : existing.selectionEvidence !== 'manual' && candidateStatus !== 'unknown';
   const existingQuantificationStatus = normalizeQuantificationStatus(existing.quantificationStatus);
   const candidateQuantificationStatus = normalizeQuantificationStatus(normalized.quantificationStatus);
@@ -849,7 +851,9 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     mergeOptionalResponsibilityCandidate(
       candidates,
       {
-        ...(existing ? { ...candidate, selectionStatus: existing.selectionStatus, selectionEvidence: existing.selectionEvidence } : candidate),
+        ...(existing && existing.selectionStatus !== 'unknown'
+          ? { ...candidate, selectionStatus: existing.selectionStatus, selectionEvidence: existing.selectionEvidence }
+          : candidate),
         mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, indicator),
       },
     );

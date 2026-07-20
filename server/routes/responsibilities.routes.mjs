@@ -61,6 +61,17 @@ function parseJsonObject(value) {
   }
 }
 
+function isCustomerUploadRecord(record = {}) {
+  return ['customer_policy_photo', 'customer_policy_terms'].includes(trim(record.sourceKind || record.source_kind));
+}
+
+function ownerMatches(record = {}, { userId = null, guestId = '' } = {}) {
+  if (userId) return Number(record.ownerUserId || 0) === Number(userId);
+  return Boolean(guestId)
+    && !Number(record.ownerUserId || 0)
+    && trim(record.ownerGuestId) === guestId;
+}
+
 function nowMs() {
   return Date.now();
 }
@@ -114,6 +125,8 @@ export function createResponsibilityRoutes(context) {
     registerResponsibilityAssistantQuery,
     registerResponsibilityAssistantProductMatch,
     registerCustomerResponsibilitySummaryQuery,
+    normalizeGuestId,
+    resolveAuthUser,
   } = context;
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
@@ -782,18 +795,24 @@ export function createResponsibilityRoutes(context) {
     });
   });
 
-  async function queryCustomerResponsibilitySummary({ company, name }) {
+  async function queryCustomerResponsibilitySummary({ company, name }, { privateSourceRecords = [] } = {}) {
     const routeStartedAt = nowMs();
-    const input = normalizeResponsibilityQueryInput({ company, name });
+    const privateRecord = privateSourceRecords[0];
+    const input = normalizeResponsibilityQueryInput(privateRecord ? {
+      company: privateRecord.company,
+      name: privateRecord.productName,
+    } : { company, name });
+    const usesPrivateSource = privateSourceRecords.length > 0;
     const result = await generateProductCustomerResponsibilitySummary({
       state,
       db,
       input,
-      findSummary: findProductCustomerResponsibilitySummary,
-      persistSummary: persistProductCustomerResponsibilitySummary,
-      persistGenerationRun: typeof persistProductCustomerSummaryGenerationRun === 'function'
+      findSummary: usesPrivateSource ? undefined : findProductCustomerResponsibilitySummary,
+      persistSummary: usesPrivateSource ? undefined : persistProductCustomerResponsibilitySummary,
+      persistGenerationRun: !usesPrivateSource && typeof persistProductCustomerSummaryGenerationRun === 'function'
         ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
         : undefined,
+      privateSourceRecords,
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
       generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
       generateOfficialAnalysis: async ({ company: insurer, productName }) => assistantAnalyzer({
@@ -804,7 +823,8 @@ export function createResponsibilityRoutes(context) {
         preferLocalKnowledgeAnswer: false,
       }),
     });
-    if (result?.ok && result?.summary && typeof retrieveCustomerResponsibilityMaterials === 'function'
+    if (usesPrivateSource && result?.ok) result.source = 'customer_upload';
+    if (!usesPrivateSource && result?.ok && result?.summary && typeof retrieveCustomerResponsibilityMaterials === 'function'
       && typeof enrichCustomerResponsibilitySummaryWithMaterials === 'function') {
       try {
         const evidencePackage = await retrieveCustomerResponsibilityMaterials({
@@ -835,7 +855,33 @@ export function createResponsibilityRoutes(context) {
   router.post('/customer-summary', async (req, res) => {
     try {
       const input = normalizeResponsibilityQueryInput(req.body);
-      const result = await queryCustomerResponsibilitySummary(input);
+      const policyId = Number(req.body?.policyId || 0);
+      let privateSourceRecords = [];
+      if (policyId > 0) {
+        const user = resolveAuthUser(req, state);
+        const guestId = normalizeGuestId(req.body?.guestId);
+        if (!user && !guestId) {
+          return res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '请先登录' });
+        }
+        const policy = (state.policies || []).find((row) => (
+          Number(row.id) === policyId
+          && (user
+            ? Number(row.userId || 0) === Number(user.id)
+            : !Number(row.userId || 0) && normalizeGuestId(row.guestId) === guestId)
+        ));
+        if (!policy) {
+          return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
+        }
+        const owner = user ? { userId: Number(user.id), guestId: '' } : { userId: null, guestId };
+        privateSourceRecords = (state.knowledgeRecords || [])
+          .filter((record) => isCustomerUploadRecord(record))
+          .filter((record) => trim(record.reviewStatus) === 'pending')
+          .filter((record) => ownerMatches(record, owner))
+          .filter((record) => productNameMatchesQuery(record.productName, input.name))
+          .sort((left, right) => Number(right.id || 0) - Number(left.id || 0))
+          .slice(0, 6);
+      }
+      const result = await queryCustomerResponsibilitySummary(input, { privateSourceRecords });
       res.json(result);
     } catch (error) {
       sendError(res, error, 400);

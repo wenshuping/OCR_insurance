@@ -12,6 +12,7 @@ export type CashflowEntry = {
   calculationText: string;
   /** Alias used by the server DB store (calc_text column) */
   calcText?: string | null;
+  calculationDecisionSource?: string;
   cashValue?: number | null;
 };
 
@@ -41,6 +42,7 @@ export type ScenarioEntry = {
   policyId: number;
   productName: string;
   calculationText: string;
+  calculationDecisionSource?: string;
 };
 
 export type PolicyCashflowPlan = {

@@ -20,6 +20,8 @@ import {
   Trash2,
   Users,
   X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
 import type {
@@ -274,6 +276,11 @@ function UploadedPageStrip(props: {
 }) {
   const supplementItems = Array.isArray(props.supplementItems) ? props.supplementItems : [];
   const [previewItem, setPreviewItem] = useState<{ item: UploadItem; title: string } | null>(null);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  function openPreview(item: UploadItem, title: string) {
+    setPreviewZoom(1);
+    setPreviewItem({ item, title });
+  }
   if (!props.baseItem && !supplementItems.length) return null;
   return (
     <>
@@ -292,7 +299,7 @@ function UploadedPageStrip(props: {
               badge="基本页"
               disabled={props.disabled}
               onDelete={props.onDeleteBase}
-              onPreview={() => setPreviewItem({ item: props.baseItem!, title: '保单基本页' })}
+              onPreview={() => openPreview(props.baseItem!, '保单基本页')}
               onReplace={props.onReplaceBase}
             />
           ) : null}
@@ -304,7 +311,7 @@ function UploadedPageStrip(props: {
               badge={`补充${index + 1}`}
               disabled={props.disabled || !props.baseItem}
               onDelete={() => props.onDeleteSupplement(index)}
-              onPreview={() => setPreviewItem({ item, title: `补充页${index + 1}` })}
+              onPreview={() => openPreview(item, `补充页${index + 1}`)}
               onReplace={() => props.onReplaceSupplement(index)}
             />
           ))}
@@ -312,7 +319,7 @@ function UploadedPageStrip(props: {
       </section>
       {previewItem ? (
         <div
-          className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-950/80 p-4"
+          className="fixed inset-0 z-[90] overflow-auto bg-slate-950/80 p-4"
           role="dialog"
           aria-modal="true"
           aria-label={`查看${previewItem.title}`}
@@ -326,12 +333,41 @@ function UploadedPageStrip(props: {
           >
             <X size={22} />
           </button>
-          <img
-            src={previewItem.item.dataUrl}
-            alt={previewItem.title}
-            className="max-h-[88vh] max-w-[94vw] rounded-xl bg-white object-contain shadow-2xl"
+          <div
+            className="fixed left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-white/95 p-1.5 shadow-xl"
             onClick={(event) => event.stopPropagation()}
-          />
+          >
+            <button
+              type="button"
+              aria-label="缩小图片"
+              disabled={previewZoom <= 1}
+              onClick={() => setPreviewZoom((current) => Math.max(1, current - 0.5))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+            >
+              <ZoomOut size={20} />
+            </button>
+            <span className="min-w-12 text-center text-xs font-black text-slate-600">{Math.round(previewZoom * 100)}%</span>
+            <button
+              type="button"
+              aria-label="放大图片"
+              disabled={previewZoom >= 3}
+              onClick={() => setPreviewZoom((current) => Math.min(3, current + 0.5))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+            >
+              <ZoomIn size={20} />
+            </button>
+          </div>
+          <div className="flex min-h-full min-w-full items-center justify-center pt-12">
+            <img
+              src={previewItem.item.dataUrl}
+              alt={previewItem.title}
+              className="rounded-xl bg-white object-contain shadow-2xl"
+              style={previewZoom === 1
+                ? { maxHeight: '84vh', maxWidth: '94vw' }
+                : { width: `${previewZoom * 90}vw`, maxWidth: 'none' }}
+              onClick={(event) => event.stopPropagation()}
+            />
+          </div>
         </div>
       ) : null}
     </>
@@ -594,10 +630,6 @@ export function UploadPolicyPage(props: {
   }
 
   function setParticipantAsCore(kind: 'applicant' | 'insured', checked: boolean) {
-    const participantName = kind === 'applicant' ? formData.applicant : formData.insured;
-    const participantMember = findFamilyMemberByName(participantName || '');
-    const existingCoreMemberId = Number(selectedFamily?.coreMemberId || 0);
-    if (checked && existingCoreMemberId && Number(participantMember?.id || 0) !== existingCoreMemberId) return;
     if (participantsAreSamePerson()) {
       updateParticipantRelation(kind, checked ? '本人' : '待确认');
       return;
@@ -606,6 +638,7 @@ export function UploadPolicyPage(props: {
       updateParticipantRelation(kind, '待确认');
       return;
     }
+    updateParticipantRelation(kind === 'applicant' ? 'insured' : 'applicant', '待确认');
     updateParticipantRelation(kind, '本人');
   }
 
@@ -629,8 +662,8 @@ export function UploadPolicyPage(props: {
     const isExistingCore = Boolean(existingCoreMemberId && Number(participantMember?.id || 0) === existingCoreMemberId);
     const hasOtherCore = Boolean(existingCoreMemberId && !isExistingCore);
     const existingCoreMember = selectedFamilyMembers.find((member) => Number(member.id) === existingCoreMemberId) || null;
-    const isCore = isExistingCore || (relation === '本人' && !hasOtherCore);
-    const visibleRelation = hasOtherCore && relation === '本人' ? '待确认' : relation;
+    const isCore = isExistingCore || relation === '本人';
+    const visibleRelation = relation;
     return (
       <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
         <div className="flex items-center justify-between gap-3">
@@ -640,11 +673,10 @@ export function UploadPolicyPage(props: {
               与投保人为同一人
             </div>
           ) : (
-            <label className={`inline-flex h-9 shrink-0 items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${hasOtherCore ? 'cursor-not-allowed bg-slate-100 text-slate-400 ring-slate-200' : isCore ? 'cursor-pointer bg-blue-50 text-blue-700 ring-blue-200' : 'cursor-pointer bg-slate-50 text-slate-600 ring-slate-200'}`}>
+            <label className={`inline-flex h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full px-3 text-xs font-black ring-1 transition ${isCore ? 'bg-blue-50 text-blue-700 ring-blue-200' : 'bg-slate-50 text-slate-600 ring-slate-200'}`}>
               <input
                 type="checkbox"
                 checked={isCore}
-                disabled={hasOtherCore}
                 onChange={(event) => setParticipantAsCore(kind, event.target.checked)}
                 className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
               />
@@ -681,7 +713,7 @@ export function UploadPolicyPage(props: {
             />
             {hasOtherCore ? (
               <p className="mt-2 text-xs font-medium text-slate-500">
-                当前家庭已有顶梁柱：{existingCoreMember?.name || '已设置成员'}。如需更换，请先到家庭档案中调整。
+                当前家庭顶梁柱：{existingCoreMember?.name || '已设置成员'}。勾选后保存将更换顶梁柱。
               </p>
             ) : null}
           </div>
@@ -1018,6 +1050,9 @@ export function UploadPolicyPage(props: {
 
           <OptionalResponsibilityReview
             items={optionalResponsibilitiesForProduct(optionalResponsibilities, formData.name)}
+            baseAmount={formData.amount}
+            firstPremium={formData.firstPremium}
+            paymentPeriod={formData.paymentPeriod}
             disabled={loading}
             compact
             title="主险可选责任确认"
@@ -1164,6 +1199,10 @@ export function AnalysisReportPage(props: {
 
         <OptionalResponsibilityReview
           items={optionalResponsibilities}
+          indicators={(analysis.responsibilityCards || []).flatMap((card) => card.indicators || [])}
+          baseAmount={formData.amount}
+          firstPremium={formData.firstPremium}
+          paymentPeriod={formData.paymentPeriod}
           disabled={loading}
           onChange={onUpdateOptionalResponsibility}
         />
@@ -1191,6 +1230,8 @@ export function AnalysisReportPage(props: {
             <ResponsibilityCardList
               cards={responsibilityCards}
               optionalResponsibilities={optionalResponsibilities}
+              baseAmount={formData.amount}
+              firstPremium={formData.firstPremium}
             />
           ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

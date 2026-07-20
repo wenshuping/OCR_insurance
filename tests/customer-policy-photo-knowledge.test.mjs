@@ -55,11 +55,42 @@ test('customer policy terms photos stay pending until operations review', () => 
   assert.equal(record.referenceOnly, true);
   assert.equal(record.ownerUserId, 9);
   assert.equal(record.uploadImages.length, 0);
+  assert.equal(record.originalCompany, '新华保险');
+  assert.equal(record.originalProductName, '测试重疾保险');
+  assert.equal(record.originalPageText, record.pageText);
 
   const approved = approveCustomerPolicyPhotoKnowledgeRecord(record, { approved: true, reviewedAt: '2026-07-03T00:00:00.000Z' });
   assert.equal(approved.reviewStatus, 'approved');
   assert.equal(approved.globalSearchable, true);
   assert.equal(approved.evidenceLevel, 'customer_policy_terms');
+
+  const rolledBack = approveCustomerPolicyPhotoKnowledgeRecord(approved, {
+    action: 'pending',
+    updates: {
+      company: '新华人寿',
+      productName: '修改后的测试重疾保险',
+      pageText: '修改后的保险责任文本',
+    },
+    reviewedAt: '2026-07-03T01:00:00.000Z',
+  });
+  assert.equal(rolledBack.reviewStatus, 'pending');
+  assert.equal(rolledBack.globalSearchable, false);
+  assert.equal(rolledBack.company, '新华人寿');
+  assert.equal(rolledBack.productName, '修改后的测试重疾保险');
+  assert.equal(rolledBack.pageText, '修改后的保险责任文本');
+  assert.equal(rolledBack.originalCompany, '新华保险');
+  assert.equal(rolledBack.originalProductName, '测试重疾保险');
+  assert.equal(rolledBack.originalPageText, record.pageText);
+
+  const republished = approveCustomerPolicyPhotoKnowledgeRecord(rolledBack, {
+    action: 'approved',
+    reviewedAt: '2026-07-03T02:00:00.000Z',
+  });
+  assert.equal(republished.reviewStatus, 'approved');
+  assert.equal(republished.globalSearchable, true);
+  assert.equal(republished.productName, '修改后的测试重疾保险');
+  assert.match(republished.title, /修改后的测试重疾保险/);
+  assert.equal(republished.originalPageText, record.pageText);
 });
 
 test('customer policy review record preserves uploaded images for operations only', () => {
@@ -73,6 +104,12 @@ test('customer policy review record preserves uploaded images for operations onl
   assert.deepEqual(record.uploadImages, [{ name: 'rider.jpg', type: 'image/jpeg', size: 123, dataUrl: 'data:image/jpeg;base64,AAAA' }]);
   assert.equal(record.reviewStatus, 'pending');
   assert.equal(record.globalSearchable, false);
+
+  const rolledBack = approveCustomerPolicyPhotoKnowledgeRecord(
+    approveCustomerPolicyPhotoKnowledgeRecord(record, { action: 'approved' }),
+    { action: 'pending' },
+  );
+  assert.deepEqual(rolledBack.uploadImages, record.uploadImages);
 });
 
 test('customer policy non-terms photos stay pending until review', () => {

@@ -33,6 +33,7 @@ type FamilyReportPageProps = {
   onRegenerate?: () => void | Promise<void>;
   onGeneratePolicyAnalysisReport?: () => void | Promise<void>;
   regenerating?: boolean;
+  statusMessage?: string;
   readOnly?: boolean;
 };
 
@@ -2072,6 +2073,7 @@ export function FamilyReportPage({
   onRegenerate,
   onGeneratePolicyAnalysisReport,
   regenerating = false,
+  statusMessage = '',
   readOnly = false,
 }: FamilyReportPageProps) {
   const activeReportRef = useRef<HTMLDivElement | null>(null);
@@ -2159,6 +2161,13 @@ export function FamilyReportPage({
       <div className="no-print h-[149px]" aria-hidden="true" />
 
       <main className="py-4 md:py-5">
+        {statusMessage ? (
+          <div className="family-report-content mb-4">
+            <div className="rounded-[18px] border border-blue-200 bg-blue-50 px-4 py-3 text-sm font-bold leading-6 text-blue-800" role="status" aria-live="polite">
+              {statusMessage}
+            </div>
+          </div>
+        ) : null}
         {activeReportTab === 'analysis' ? (
           <div ref={activeReportRef} className="family-report-content print-policy-report space-y-4 md:space-y-5">
             {reportStale ? (

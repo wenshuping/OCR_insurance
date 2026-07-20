@@ -6,6 +6,12 @@ function displayText(value) {
   return String(value || '').normalize('NFKC').trim();
 }
 
+export function hasQuantifiedCalculationSignal(value) {
+  const text = displayText(value);
+  if (!text) return false;
+  return /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额|首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费|现金价值|账户价值|实际医疗费用|医疗费用|免赔额|给付比例|赔付比例|赔偿比例|伤残程度|伤残等级|给付天数|住院天数|日津贴额|住院日额|限额|\d+(?:\.\d+)?\s*(?:%|％|倍|元|圆|万元|天|日))/u.test(text);
+}
+
 function finiteNumber(value) {
   if (value === null || value === undefined || String(value).trim() === '') return null;
   const number = Number(value);
@@ -28,6 +34,25 @@ function indicatorCoreText(indicator = {}) {
 function isExpenseReimbursementText(value = '') {
   return /医疗费用|实际合理医疗费用|实际合理[^。；;，,]{0,20}费用|实际[^。；;，,]{0,20}费用|免赔额|报销|补偿/u.test(value);
 }
+
+const MODEL_CALCULATION_PAIRS = new Set([
+  'basic_amount:basic_amount',
+  'basic_amount:percent_of_basic_amount',
+  'basic_amount:multiple_of_basic_amount',
+  'first_premium:first_premium',
+  'first_premium:percent_of_first_premium',
+  'first_premium:multiple_of_first_premium',
+  'first_basic_responsibility_premium:first_premium',
+  'first_basic_responsibility_premium:percent_of_first_premium',
+  'first_basic_responsibility_premium:multiple_of_first_premium',
+  'annual_premium:first_premium',
+  'annual_premium:percent_of_first_premium',
+  'annual_premium:multiple_of_first_premium',
+  'total_paid_premium:total_paid_premium',
+  'total_paid_premium:percent_of_total_paid_premium',
+  'total_paid_premium:multiple_of_total_paid_premium',
+  'unknown:fixed_amount',
+]);
 
 export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculation-inputs';
 
@@ -71,8 +96,8 @@ function numericSpec(indicator = {}) {
     indicator.sourceExcerpt,
   ].filter(Boolean).join(' '));
   const factor = text.match(/[×xX*]\s*(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
-    || text.match(/(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
-    || text.match(/(\d+(?:\.\d+)?)\s*(%|％|倍)[^。；;，,]{0,12}?(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)/u);
+    || text.match(/(?:基本保险金额|基本保险金|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
+    || text.match(/(\d+(?:\.\d+)?)\s*(%|％|倍)[^。；;，,]{0,12}?(?:基本保险金额|基本保险金|基本保额|保险金额|有效保险金额|保险费|保费)/u);
   if (factor) return { value: Number(factor[1]), unit: factor[2] === '％' ? '%' : factor[2] };
 
   const amount = text.match(/(\d+(?:\.\d+)?)\s*(万)?\s*(元|圆)/u);
@@ -116,6 +141,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
       calculationKey: 'not_calculable',
       calculationEligible: false,
       calculationReason: '规则参数或不可量化责任，不进入金额计算',
+      decisionSource: 'code_safety_rule',
       value,
       unit,
     };
@@ -134,7 +160,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(formulaSignalText)) {
     basisKey = 'daily_allowance';
-  } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(formulaSignalText || basis)) {
     basisKey = 'schedule_or_policy_table';
@@ -152,7 +178,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(basis || formulaText)) {
     basisKey = 'daily_allowance';
-  } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(text)) {
     basisKey = 'schedule_or_policy_table';
@@ -163,9 +189,18 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   }
 
   const normalizedUnit = unit === '％' ? '%' : unit;
+  const modelBasisKey = displayText(indicator.basisKey);
+  const modelCalculationKey = displayText(indicator.calculationKey);
+  const hasStructuredDecision = Boolean(modelCalculationKey)
+    && MODEL_CALCULATION_PAIRS.has(`${modelBasisKey || 'unknown'}:${modelCalculationKey}`)
+    && (!basisKey || basisKey === modelBasisKey);
+  if (hasStructuredDecision && !basisKey) basisKey = modelBasisKey || 'unknown';
   let calculationKey = '';
   let calculationEligible = true;
   let calculationReason = '';
+  let decisionSource = hasStructuredDecision
+    ? (displayText(indicator.calculationDecisionSource) === 'model_semantic' ? 'model_semantic' : 'structured_semantic')
+    : 'code_inference';
 
   if (/(?:max|较大者|较高者|最大者|取大|两者|三者|条件给付|约定情形)/iu.test(formulaSignalText || text)) {
     calculationKey = 'manual_formula';
@@ -173,29 +208,38 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationReason = /条件给付|约定情形/u.test(formulaSignalText || text)
       ? '包含条件化给付，需要结合事故原因、合同生效时间或条款条件判断'
       : '包含较大者/多基准比较，需要现金价值或条款表后才能计算';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'cash_value' || basisKey === 'account_value') {
     calculationKey = basisKey;
     calculationEligible = false;
     calculationReason = '依赖现金价值或账户价值，不能只靠指标和保单基础字段计算';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'schedule_or_policy_table') {
     calculationKey = 'schedule_or_policy_table';
     calculationEligible = false;
     calculationReason = '依赖领取计划、比例表或保单载明金额';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'medical_expense') {
     calculationKey = 'medical_formula';
     calculationEligible = false;
     calculationReason = '医疗费用型责任依赖实际费用、免赔额和补偿数据';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'daily_allowance') {
     calculationKey = 'daily_allowance';
     calculationEligible = false;
     calculationReason = '津贴型责任依赖实际天数或保险单位数';
+    decisionSource = 'code_safety_rule';
+  } else if (hasStructuredDecision) {
+    calculationKey = modelCalculationKey;
+    calculationEligible = indicator.calculationEligible !== false;
+    calculationReason = calculationEligible ? '' : (displayText(indicator.calculationReason) || '模型判断当前信息不足，暂不计算');
   } else if (value !== null && /^(?:元|圆)$/u.test(normalizedUnit)) {
     calculationKey = 'fixed_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '%') {
     calculationKey = 'percent_of_basic_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '倍') {
     calculationKey = 'multiple_of_basic_amount';
-  } else if (basisKey === 'basic_amount' && /公式|^$/u.test(normalizedUnit || '') && /基本保险金额|基本保额|保险金额/u.test(text)) {
+  } else if (basisKey === 'basic_amount' && /公式|^$/u.test(normalizedUnit || '') && /基本保险金额|基本保险金|基本保额|保险金额/u.test(text)) {
     calculationKey = 'basic_amount';
   } else if ((basisKey === 'first_premium' || basisKey === 'first_basic_responsibility_premium' || basisKey === 'annual_premium') && value !== null && normalizedUnit === '%') {
     calculationKey = 'percent_of_first_premium';
@@ -220,6 +264,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey,
     calculationEligible,
     calculationReason,
+    decisionSource,
     value,
     unit: normalizedUnit,
   };

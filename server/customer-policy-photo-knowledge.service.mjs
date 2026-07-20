@@ -154,6 +154,9 @@ export function buildCustomerPolicyPhotoKnowledgeRecord({
       size: Number(item?.size || 0) || 0,
       dataUrl: text(item?.dataUrl),
     })).filter((item) => item.dataUrl.startsWith('data:image/')),
+    originalCompany: resolvedCompany,
+    originalProductName: resolvedProductName,
+    originalPageText: safePageText,
     discoveredAt: createdAt,
     lastFetchedAt: createdAt,
     updatedAt: createdAt,
@@ -164,11 +167,57 @@ export function buildCustomerPolicyPhotoKnowledgeRecord({
   };
 }
 
-export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, { approved = true, reviewedAt = new Date().toISOString() } = {}) {
+export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, {
+  approved = true,
+  action = '',
+  updates = {},
+  reviewedAt = new Date().toISOString(),
+} = {}) {
   if (![CUSTOMER_POLICY_PHOTO_SOURCE_KIND, CUSTOMER_POLICY_TERMS_SOURCE_KIND].includes(text(record.sourceKind))) return null;
-  if (!approved) {
+  const reviewAction = text(action) || (approved ? 'approved' : 'rejected');
+  if (!['approved', 'rejected', 'pending'].includes(reviewAction)) return null;
+  const company = text(updates.company) || text(record.company);
+  const productName = text(updates.productName) || text(record.productName);
+  const pageText = text(updates.pageText) || text(record.pageText);
+  const originalCompany = text(record.originalCompany) || text(record.company);
+  const originalProductName = text(record.originalProductName) || text(record.productName);
+  const originalPageText = text(record.originalPageText) || text(record.pageText);
+  const draft = {
+    ...record,
+    company,
+    productName,
+    title: text(record.materialType) === 'policy_terms'
+      ? `客户上传保单责任页/合同页：${productName}`
+      : `客户补充保单照片识别：${productName}`,
+    pageText,
+    snippet: pageText.slice(0, 220),
+    originalCompany,
+    originalProductName,
+    originalPageText,
+  };
+  if (reviewAction === 'pending') {
+    const next = {
+      ...draft,
+      reviewStatus: 'pending',
+      globalSearchable: false,
+      sourceKind: CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
+      sourceType: 'customer_policy_photo',
+      official: false,
+      evidenceLabel: '客户上传保单照片（待发布）',
+      evidenceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+      sourceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
+      responsibilityDeferred: true,
+      revertedAt: reviewedAt,
+      updatedAt: reviewedAt,
+    };
     return {
-      ...record,
+      ...next,
+      ...evidenceVerificationFields(next),
+    };
+  }
+  if (reviewAction === 'rejected') {
+    return {
+      ...draft,
       reviewStatus: 'rejected',
       globalSearchable: false,
       evidenceLabel: '客户上传保单照片（已驳回）',
@@ -178,9 +227,12 @@ export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, { approve
       updatedAt: reviewedAt,
     };
   }
-  const termsEvidence = looksLikePolicyTermsEvidence(record.pageText || record.snippet);
+  const termsEvidence = looksLikePolicyTermsEvidence(pageText || draft.snippet);
   const next = {
-    ...record,
+    ...draft,
+    title: termsEvidence
+      ? `客户上传保单责任页/合同页：${productName}`
+      : `客户补充保单照片识别：${productName}`,
     reviewStatus: 'approved',
     globalSearchable: true,
     sourceKind: termsEvidence ? CUSTOMER_POLICY_TERMS_SOURCE_KIND : CUSTOMER_POLICY_PHOTO_SOURCE_KIND,

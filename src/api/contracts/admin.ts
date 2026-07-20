@@ -595,10 +595,21 @@ export function crawlAdminKnowledge(token: string, input: { company: string; nam
   });
 }
 
-export function reviewAdminKnowledgeRecord(token: string, input: { id: number; action: 'approved' | 'rejected' }) {
+export function reviewAdminKnowledgeRecord(token: string, input: {
+  id: number;
+  action: 'approved' | 'rejected' | 'pending';
+  company?: string;
+  productName?: string;
+  pageText?: string;
+}) {
   return request<AdminKnowledgeRecordsResponse & { record: KnowledgeRecord }>(`/api/admin/knowledge-records/${encodeURIComponent(String(input.id))}/review`, {
     token,
-    body: { action: input.action },
+    body: {
+      action: input.action,
+      ...(input.company !== undefined ? { company: input.company } : {}),
+      ...(input.productName !== undefined ? { productName: input.productName } : {}),
+      ...(input.pageText !== undefined ? { pageText: input.pageText } : {}),
+    },
   });
 }
 

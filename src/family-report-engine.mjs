@@ -728,6 +728,7 @@ function classifyCriticalIndicator(indicator) {
     indicator?.condition,
     indicator?.basis,
   ].filter(Boolean).join(' ');
+  if (/豁免/u.test(primaryText)) return CRITICAL_ROWS.find((definition) => definition.key === 'waiver') || null;
   return classifyByDefinitions(primaryText, CRITICAL_ROWS) || classifyByDefinitions(indicatorText(indicator), CRITICAL_ROWS);
 }
 
@@ -780,7 +781,7 @@ function resolveIndicatorAmount(indicator, policy) {
 
   const basis = String(indicator?.basis || '').normalize('NFKC');
   const baseAmount = indicatorBaseAmount(indicator, policy);
-  const baseAmountPattern = /基本(?:保险金额|保额)/u;
+  const baseAmountPattern = /基本(?:保险金额|保险金|保额)/u;
   const usesBaseAmountBasis = baseAmountPattern.test(basis) || /^(?:保险金额|本合同保险金额|合同保险金额|保单保险金额)$/u.test(basis);
 
   if (value !== null && unit === '%' && usesBaseAmountBasis) {
@@ -823,7 +824,7 @@ function indicatorAmountCalculationText(indicator, policy, amount) {
   const basis = String(indicator?.basis || '').normalize('NFKC').trim();
   const text = indicatorText(indicator).normalize('NFKC');
   const baseAmount = indicatorBaseAmount(indicator, policy);
-  const baseAmountPattern = /基本(?:保险金额|保额)/u;
+  const baseAmountPattern = /基本(?:保险金额|保险金|保额)/u;
   const usesBaseAmountBasis = baseAmountPattern.test(basis) || /^(?:保险金额|本合同保险金额|合同保险金额|保单保险金额)$/u.test(basis);
   const baseLabel = usesBaseAmountBasis || baseAmountPattern.test(text) ? '基本保险金额' : (basis || '基准金额');
 
@@ -1061,7 +1062,6 @@ function markInactiveCriticalPolicies(rowMap, memberPolicies) {
     const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let matched = false;
     for (const indicator of indicators) {
-      if (indicatorCannotContributeRadarAmount(indicator)) continue;
       if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyCriticalIndicator(indicator);
       if (!definition) continue;
@@ -1149,7 +1149,6 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = [], co
   for (const policy of memberPolicies) {
     const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     for (const indicator of indicators) {
-      if (indicatorCannotContributeRadarAmount(indicator)) continue;
       if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyCriticalIndicator(indicator);
       if (!definition) continue;
@@ -2348,8 +2347,8 @@ function formulaLifeBaseReference(policy = {}, indicator = {}) {
   const baseAmount = indicatorBaseAmount(indicator, policy);
   if (baseAmount <= 0 || !/(身故|全残)/u.test(text)) return null;
 
-  const multipleMatch = text.match(/(?:有效保险金额|基本保险金额|基本保额|保险金额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十])\s*倍/u)
-    || text.match(/([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十])\s*倍(?:的)?(?:有效保险金额|基本保险金额|基本保额|保险金额)/u);
+  const multipleMatch = text.match(/(?:有效保险金额|基本保险金额|基本保险金|基本保额|保险金额)(?:的)?\s*([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十])\s*倍/u)
+    || text.match(/([0-9]+(?:\.[0-9]+)?|[一二两三四五六七八九十])\s*倍(?:的)?(?:有效保险金额|基本保险金额|基本保险金|基本保额|保险金额)/u);
   const multiplier = parseSimpleMultiplier(multipleMatch?.[1]);
   if (multiplier > 0) {
     const amount = baseAmount * multiplier;

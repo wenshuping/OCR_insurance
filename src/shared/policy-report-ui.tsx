@@ -1,4 +1,5 @@
 import type { OptionalResponsibility, Policy, PolicyFormData, ResponsibilityCard } from '../api';
+import { hasQuantifiedCalculationSignal } from '../indicator-calculation.mjs';
 
 export type ResponsibilitySourceLink = {
   title: string;
@@ -187,6 +188,12 @@ function responsibilityCardVerificationLabel(card: ResponsibilityCard) {
   return '';
 }
 
+function quantifiedIndicatorText(indicator: NonNullable<ResponsibilityCard['indicators']>[number]) {
+  const formula = String(indicator.formulaText || '').trim();
+  if (formula) return formula;
+  return [indicator.basis, indicator.value, indicator.unit].filter((value) => value !== null && value !== undefined && String(value).trim()).join(' × ');
+}
+
 function optionalResponsibilityTitle(item: OptionalResponsibility) {
   return String(item.liability || item.title || item.coverageType || '').trim();
 }
@@ -228,9 +235,13 @@ export function getVisibleResponsibilityCards(
 export function ResponsibilityCardList({
   cards = [],
   optionalResponsibilities = [],
+  baseAmount = 0,
+  firstPremium = 0,
 }: {
   cards?: ResponsibilityCard[];
   optionalResponsibilities?: OptionalResponsibility[];
+  baseAmount?: string | number;
+  firstPremium?: string | number;
 }) {
   const visibleCards = getVisibleResponsibilityCards(cards, optionalResponsibilities);
   if (!visibleCards.length) return null;
@@ -242,6 +253,17 @@ export function ResponsibilityCardList({
         const meta = [card.productName, card.category].filter(Boolean).join(' · ');
         const summary = String(card.plainSummary || card.triggerCondition || '').trim();
         const payout = String(card.payoutSummary || '').trim();
+        const quantifiedIndicators = (card.indicators || [])
+          .map((indicator) => ({ indicator, formula: quantifiedIndicatorText(indicator) }))
+          .filter(({ indicator, formula }) => hasQuantifiedCalculationSignal([
+            indicator.liability,
+            formula,
+            indicator.condition,
+            indicator.sourceExcerpt,
+          ].filter(Boolean).join(' ')));
+        const quantifiedText = quantifiedIndicators.map(({ formula, indicator }) => `${indicator.liability || ''} ${formula}`).join(' ');
+        const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(quantifiedText);
+        const usesPolicyPremium = /(?:首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费)/u.test(quantifiedText);
         const verificationLabel = responsibilityCardVerificationLabel(card);
         return (
           <article key={card.id || `${title}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -269,6 +291,24 @@ export function ResponsibilityCardList({
                 </div>
                 {summary ? <p className="mt-2 whitespace-pre-wrap text-base leading-7 text-slate-500">{summary}</p> : null}
                 {payout ? <p className="mt-2 rounded-xl bg-[#F8FBFF] px-3 py-2 text-base font-bold leading-7 text-blue-700">{payout}</p> : null}
+                {quantifiedIndicators.length ? (
+                  <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
+                    <p className="text-xs font-black text-blue-700">量化指标（{quantifiedIndicators.length}项）</p>
+                    {usesPolicyAmount && Number(baseAmount) > 0 ? (
+                      <p className="mt-1 text-xs font-black text-cyan-800">本保单保险金额：{Number(baseAmount).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
+                    ) : null}
+                    {usesPolicyPremium && Number(firstPremium) > 0 ? (
+                      <p className="mt-1 text-xs font-black text-cyan-800">本保单首期保费：{Number(firstPremium).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
+                    ) : null}
+                    <div className="mt-1.5 space-y-1">
+                      {quantifiedIndicators.map(({ indicator, formula }, indicatorIndex) => (
+                        <p key={indicator.id || `${indicator.liability}-${indicatorIndex}`} className="text-xs font-bold leading-5 text-slate-600">
+                          {indicator.liability || indicator.coverageType || '保险责任'}{formula ? `：${formula}` : ''}
+                        </p>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </article>

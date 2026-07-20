@@ -1497,6 +1497,55 @@ test('buildFamilyReport resolves critical illness amounts from formula text', ()
   assert.equal(child.rows.find((row) => row.key === 'specific_disease').amountText, '100万');
 });
 
+test('buildFamilyReport assembles selected quantified optional indicators even when only a formula can be shown', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 31,
+      insured: '妈妈',
+      name: '可选责任重疾险',
+      amount: 170000,
+      coverageIndicators: [
+        {
+          id: 'optional-moderate',
+          coverageType: '疾病保障',
+          liability: '中度疾病保险金（可选责任一）',
+          formulaText: '基本保险金额 × 50%',
+          basis: '基本保险金额',
+          value: 50,
+          unit: '%',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'quantified',
+          calculationEligible: true,
+        },
+        {
+          id: 'optional-waiver',
+          coverageType: '豁免',
+          liability: '轻度疾病或中度疾病豁免保险费',
+          formulaText: '豁免后续应交保险费',
+          basis: '后续应交保险费',
+          unit: '公式',
+          responsibilityScope: 'optional',
+          selectionStatus: 'selected',
+          quantificationStatus: 'quantified',
+          calculationEligible: false,
+        },
+      ],
+    }),
+  ]);
+
+  const rows = report.criticalIllness.members.find((item) => item.member === '妈妈').rows;
+  const moderate = rows.find((row) => row.key === 'moderate');
+  const waiver = rows.find((row) => row.key === 'waiver');
+
+  assert.equal(moderate.amount, 85000);
+  assert.equal(moderate.amountText, '8.5万');
+  assert.equal(waiver.amount, 0);
+  assert.equal(waiver.status, 'formula');
+  assert.match(waiver.amountText, /豁免后续应交保险费/u);
+  assert.equal(waiver.sourcePolicies[0].liability, '轻度疾病或中度疾病豁免保险费');
+});
+
 test('buildFamilyReport uses matched rider amount for critical illness indicator percentages', () => {
   const report = buildFamilyReport([
     makePolicy({

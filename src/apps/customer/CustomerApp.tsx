@@ -501,16 +501,16 @@ function resolveIndicatorAmount(indicator: CoverageIndicator, policy: Policy) {
   const unit = String(indicator.unit || '').trim();
   const basis = normalizeOverviewText(indicator.basis);
   if (!Number.isFinite(value) || value <= 0) {
-    if (/基本保险金额|基本保额/u.test(text) && /给付|领取|生存|年金/u.test(overviewText)) return planOrPolicyAmount(policy, indicator);
+    if (/基本保险金额|基本保险金|基本保额/u.test(text) && /给付|领取|生存|年金/u.test(overviewText)) return planOrPolicyAmount(policy, indicator);
     return 0;
   }
-  if (/%/u.test(unit) && /基本保险金额|基本保额|保险金额/u.test(basis)) {
+  if (/%/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
     return planOrPolicyAmount(policy, indicator) * value / 100;
   }
-  if (/倍/u.test(unit) && /基本保险金额|基本保额|保险金额/u.test(basis)) {
+  if (/倍/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
     return planOrPolicyAmount(policy, indicator) * value;
   }
-  if (/基本保险金额|基本保额|保险金额/u.test(basis) && /^公式$/u.test(unit)) return planOrPolicyAmount(policy, indicator);
+  if (/基本保险金额|基本保险金|基本保额|保险金额/u.test(basis) && /^公式$/u.test(unit)) return planOrPolicyAmount(policy, indicator);
   return 0;
 }
 
@@ -529,13 +529,13 @@ function formatIndicatorCalculation(indicator: CoverageIndicator, policy: Policy
     if (premiumParts.years > 1) return `年交保费 × 缴费年期 = ${formatNumberText(premiumParts.premium)} × ${formatNumberText(premiumParts.years)}`;
     return `保费 = ${formatNumberText(premiumParts.total)}元`;
   }
-  if (Number.isFinite(value) && value > 0 && /%/u.test(unit) && /基本保险金额|基本保额|保险金额/u.test(basis)) {
+  if (Number.isFinite(value) && value > 0 && /%/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
     return `基本保额 × 比例 = ${formatNumberText(planAmount)} × ${valueText || value}%`;
   }
-  if (Number.isFinite(value) && value > 0 && /倍/u.test(unit) && /基本保险金额|基本保额|保险金额/u.test(basis)) {
+  if (Number.isFinite(value) && value > 0 && /倍/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
     return `基本保额 × 倍数 = ${formatNumberText(planAmount)} × ${valueText || value}`;
   }
-  if (/基本保险金额|基本保额/u.test(normalizeOverviewText(indicatorOverviewText(indicator)))) return `基本保额 = ${formatNumberText(planAmount)}元`;
+  if (/基本保险金额|基本保险金|基本保额/u.test(normalizeOverviewText(indicatorOverviewText(indicator)))) return `基本保额 = ${formatNumberText(planAmount)}元`;
   const formulaText = normalizeIndicatorFormulaText(indicator);
   if (formulaText) return formulaText;
   return [valueText ? `${valueText}${unit}` : unit, indicator.basis].filter(Boolean).join(' / ');
@@ -3199,7 +3199,7 @@ export function CustomerApp() {
       const insuredRelationForSubmit = submitBaseData.insuredRelationLabel || submitBaseData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
-      if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭顶梁柱只能选择一个');
         return;
       }
@@ -3247,8 +3247,7 @@ export function CustomerApp() {
         return;
       }
       const shouldPersistAsCore = (member: FamilyMember, relationLabel: string) => (
-        relationLabel === '本人' &&
-        (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
+        relationLabel === '本人'
       );
       const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
         if (Number(member.id) === Number(submitFamily.coreMemberId || 0)) return '本人';
@@ -4405,6 +4404,7 @@ export function CustomerApp() {
           onRegenerate={regenerateFamilyReport}
           onGeneratePolicyAnalysisReport={generateFamilyPolicyAnalysisReport}
           regenerating={familyReportLoading}
+          statusMessage={message}
         />
         {familyReportLoading || familyPolicyAnalysisLoading ? (
           <div className="no-print fixed bottom-40 right-4 z-30 rounded-full bg-white px-4 py-2 text-xs font-black text-slate-600 shadow-lg shadow-slate-950/10">
@@ -4670,6 +4670,8 @@ export function CustomerApp() {
         {selectedPolicy ? (
           <PolicyDetailSheet
             policy={selectedPolicy}
+            token={token}
+            guestId={guestId}
             onClose={() => setSelectedPolicy(null)}
             onRetryReport={retryPolicyReport}
             retrying={retryingPolicyId === selectedPolicy.id}

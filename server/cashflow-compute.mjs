@@ -244,9 +244,9 @@ function resolveIndicatorAmountForCashflow(indicator, policy) {
   const unit = String(indicator.unit || '').trim();
   const basis = String(indicator.basis || '').trim();
   const amount = Number(scopedPolicy.amount || 0);
-  if (/%/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis)) return amount * value / 100;
-  if (/倍/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis)) return amount * value;
-  if (/(?:基本保额|基本保险金额|保险金额)/.test(basis) && /公式/.test(unit)) return amount;
+  if (/%/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return amount * value / 100;
+  if (/倍/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return amount * value;
+  if (/(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis) && /公式/.test(unit)) return amount;
   return amount || 0;
 }
 
@@ -266,10 +266,10 @@ function formatCashflowCalculation(indicator, policy, amount) {
   const value = Number(indicator.value);
   const unit = String(indicator.unit || '').trim();
   const basis = String(indicator.basis || '').trim();
-  if (/%/.test(unit) && /(?:基本保额|基本保险金额|保险金额)/.test(basis) && value) {
+  if (/%/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis) && value) {
     return `基本保额 ${basicAmount.toLocaleString('zh-CN')} × ${value}% = ${amount.toLocaleString('zh-CN')}元`;
   }
-  if (/(?:基本保额|基本保险金额|保险金额)/.test(text)) return `基本保额 = ${amount.toLocaleString('zh-CN')}元`;
+  if (/(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(text)) return `基本保额 = ${amount.toLocaleString('zh-CN')}元`;
   return indicator.formulaText || `${amount.toLocaleString('zh-CN')}元`;
 }
 
@@ -307,6 +307,7 @@ function expandCashflowIndicator(indicator, policy, pensionStartAge = 0) {
       policyId: policy.id,
       productName: policy.name || indicator.productName || '',
       calcText: formatCashflowCalculation(indicator, policy, amount),
+      calculationDecisionSource: normalizeIndicatorCalculation(indicator).decisionSource || indicator.calculationDecisionSource || 'code_inference',
       _cashflowSource: 'indicator',
       _cashflowIndicatorId: indicator.id || '',
     });
@@ -606,11 +607,13 @@ function parseBenefitSection(sec, ctx) {
     return results;
   }
 
-  // 模式D: 单个特定周岁 "N周岁保单周年日"
-  const singleAgeMatch = text.match(/([一二三四五六七八九十百千万两\d]+)\s*周岁.*?(?:保单周年日|年生效对应日)/u);
-  if (singleAgeMatch && !/至.*?(?:前|之前|不含)|起.*?至|开始领取日/.test(text)) {
-    const age = parseChineseInteger(singleAgeMatch[1]);
-    const year = coverageEndYear || birthYear + age;
+  // 模式D: 单个特定周岁 "于/生存至N周岁保单生效对应日"
+  const singleAgeMatch = text.match(/(?:于|生存至)\s*(?:年满)?\s*([一二三四五六七八九十百千万两\d]+)\s*周岁(?:保单)?生效对应日/u);
+  const maturityAgeMatch = text.match(/年满\s*([一二三四五六七八九十百千万两\d]+)\s*周岁的年生效对应日/u);
+  const pointAgeMatch = singleAgeMatch || maturityAgeMatch;
+  if (pointAgeMatch && !/至.*?(?:前|之前|不含)|起.*?至|开始领取日/.test(text)) {
+    const age = parseChineseInteger(pointAgeMatch[1]);
+    const year = maturityAgeMatch ? coverageEndYear : birthYear + age;
     if (year >= effectiveYear && year <= coverageEndYear) {
       results.push({ year, age, amount: benefitAmount, liability: name, calculationText: buildCalcText(benefitAmount, amount, text) });
     }
@@ -641,7 +644,7 @@ function resolveBenefitAmount(text, basicAmount, policy) {
   if (multipleMatch) return basicAmount * Number(multipleMatch[1]);
   const pctOfAmount = text.match(/基本保险金额[的]?\s*(\d+)\s*%/);
   if (pctOfAmount) return Math.round(basicAmount * Number(pctOfAmount[1]) / 100);
-  if (/基本保险金额|基本保额/.test(text)) return basicAmount;
+  if (/基本保险金额|基本保险金|基本保额/.test(text)) return basicAmount;
   if (/max|二者之[较最]大|三者之[最]/.test(text)) {
     return Math.max(totalPremium, basicAmount);
   }
@@ -740,7 +743,7 @@ function cashflowBenefitBasisKey(entry = {}) {
     entry.calculationText,
   ].join(' '));
   if (/实际交纳|已交保费|所交保费/u.test(text)) return `${liabilityKey}:paid_premium`;
-  if (/基本保额|基本保险金额/u.test(text)) return `${liabilityKey}:basic_amount`;
+  if (/基本保额|基本保险金额|基本保险金/u.test(text)) return `${liabilityKey}:basic_amount`;
   return '';
 }
 
@@ -837,7 +840,7 @@ function indicatorQuantificationText(indicator = {}) {
 }
 
 function indicatorUsesBasicAmount(indicator = {}) {
-  return /基本保额|基本保险金额/u.test(normalizeCashflowLookupText(indicatorQuantificationText(indicator)));
+  return /基本保额|基本保险金额|基本保险金/u.test(normalizeCashflowLookupText(indicatorQuantificationText(indicator)));
 }
 
 function indicatorUsesPaidPremium(indicator = {}) {
@@ -922,7 +925,9 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
         age: item.age ?? ageAtCalendarYear(scopedPolicy, item.year, item.year - ctx.birthYear),
         amount,
         cumulative,
-        liability: item.liability || sec.name || indicator.liability || '现金流',
+        liability: String(item.liability || '').startsWith(`${indicator.liability}:`)
+          ? indicator.liability
+          : item.liability || sec.name || indicator.liability || '现金流',
         policyId: policy.id,
         productName: scopedPolicy.name || indicator.productName || policy.name || '',
         calcText: shouldUseIndicatorAmount
@@ -1460,9 +1465,10 @@ export function computeScenarioEntries(indicators, policy) {
     if (scenarioIndicatorIsRatioOnly(indicator)) continue;
 
     const scopedPolicy = policyScopedToIndicator(policy, indicator);
+    const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
+    if (indicator.calculationEligible === false || indicator.calculationKey === 'not_calculable') continue;
     const amount = resolveScenarioAmount(indicator, scopedPolicy);
     const formula = buildScenarioFormula(indicator, scopedPolicy, amount);
-    const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
 
     entries.push({
       scenario: indicator.liability || indicator.coverageType || '保障责任',
@@ -1472,6 +1478,7 @@ export function computeScenarioEntries(indicators, policy) {
       policyId: policy.id,
       productName: scopedPolicy.name || indicator.productName || policy.name || '',
       calculationText: resolved.resolved ? resolved.calculationText : `${formula} = ${amount.toLocaleString('zh-CN')}元`,
+      calculationDecisionSource: resolved.meta?.decisionSource || indicator.calculationDecisionSource || 'code_inference',
     });
   }
   return entries;

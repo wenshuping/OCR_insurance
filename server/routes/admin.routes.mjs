@@ -906,8 +906,26 @@ export function createAdminRoutes(context) {
         throw error;
       }
       const action = String(req.body?.action || req.body?.reviewStatus || '').trim();
+      if (!['approved', 'rejected', 'pending'].includes(action)) {
+        const error = new Error('审核操作无效');
+        error.code = 'KNOWLEDGE_RECORD_REVIEW_ACTION_INVALID';
+        error.status = 400;
+        throw error;
+      }
+      const updates = {
+        company: String(req.body?.company ?? existing.company ?? '').trim().slice(0, 80),
+        productName: String(req.body?.productName ?? existing.productName ?? '').trim().slice(0, 160),
+        pageText: String(req.body?.pageText ?? existing.pageText ?? '').trim().slice(0, 6000),
+      };
+      if (!updates.company || !updates.productName || !updates.pageText) {
+        const error = new Error('保险公司、产品名称和保险责任文本不能为空');
+        error.code = 'KNOWLEDGE_RECORD_REVIEW_CONTENT_REQUIRED';
+        error.status = 400;
+        throw error;
+      }
       const reviewed = approveCustomerPolicyPhotoKnowledgeRecord(existing, {
-        approved: action !== 'rejected',
+        action,
+        updates,
       });
       if (!reviewed) {
         const error = new Error('只支持审核客户补充照片线索');

@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  hasQuantifiedCalculationSignal,
   indicatorCalculationPayloadFields,
   normalizeIndicatorCalculation,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
+
+test('quantified calculation signals include formula inputs even when a final amount needs claim data', () => {
+  assert.equal(hasQuantifiedCalculationSignal('保险金额 × 伤残程度等级对应的给付比例'), true);
+  assert.equal(hasQuantifiedCalculationSignal('保险金额扣减已给付残疾保险金后的余额'), true);
+  assert.equal(hasQuantifiedCalculationSignal('实际医疗费用扣除免赔额后按80%给付'), true);
+  assert.equal(hasQuantifiedCalculationSignal('被保险人发生意外伤害'), false);
+});
 
 test('normalizeIndicatorCalculation classifies first basic responsibility premium separately from total paid premium', () => {
   const indicator = {
@@ -48,6 +56,63 @@ test('normalizeIndicatorCalculation treats paid premium as cumulative paid premi
   assert.equal(result.amount, 120000);
   assert.equal(result.meta.basisKey, 'total_paid_premium');
   assert.equal(result.meta.calculationKey, 'total_paid_premium');
+});
+
+test('model semantic decision can select a calculation basis while code performs the arithmetic', () => {
+  const indicator = {
+    coverageType: '疾病保障',
+    liability: '中度疾病保险金',
+    formulaText: '按约定基准的50%给付',
+    value: 50,
+    unit: '%',
+    basisKey: 'basic_amount',
+    calculationKey: 'percent_of_basic_amount',
+    calculationEligible: true,
+    calculationDecisionSource: 'model_semantic',
+  };
+
+  const result = resolveIndicatorAmountFromCalculation(indicator, {
+    baseAmount: 170000,
+    firstPremium: 10000,
+    paymentYears: 20,
+  });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 85000);
+  assert.equal(result.meta.decisionSource, 'model_semantic');
+  assert.match(result.calculationText, /170,000元 × 50% = 85,000元/u);
+});
+
+test('model semantic decision cannot override a high-risk medical dependency', () => {
+  const meta = normalizeIndicatorCalculation({
+    coverageType: '医疗保障',
+    liability: '住院医疗保险金',
+    formulaText: '实际医疗费用扣除免赔额后按比例报销',
+    value: 100,
+    unit: '%',
+    basisKey: 'basic_amount',
+    calculationKey: 'percent_of_basic_amount',
+    calculationEligible: true,
+    calculationDecisionSource: 'model_semantic',
+  });
+
+  assert.equal(meta.calculationEligible, false);
+  assert.equal(meta.calculationKey, 'medical_formula');
+  assert.equal(meta.decisionSource, 'code_safety_rule');
+});
+
+test('validated legacy structured decisions use the same guarded calculation path', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '中度疾病保险金',
+    formulaText: '按约定基准的50%给付',
+    value: 50,
+    unit: '%',
+    basisKey: 'basic_amount',
+    calculationKey: 'percent_of_basic_amount',
+  }, { baseAmount: 170000 });
+
+  assert.equal(result.amount, 85000);
+  assert.equal(result.meta.decisionSource, 'structured_semantic');
 });
 
 test('normalizeIndicatorCalculation blocks cash value and rule parameter calculations', () => {
