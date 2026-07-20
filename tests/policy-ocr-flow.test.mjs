@@ -5654,6 +5654,97 @@ test('customer responsibility summary generates once and then reads from databas
   }
 });
 
+test('customer responsibility summary uses the current policy owner pending upload without publishing it', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
+  const state = {
+    ...createInitialState(),
+    users: [
+      { id: 7, mobile: '13800000007' },
+      { id: 8, mobile: '13800000008' },
+    ],
+    sessions: [
+      { token: 'owner-token', userId: 7 },
+      { token: 'other-token', userId: 8 },
+    ],
+    policies: [{ id: 516516, userId: 7, guestId: '', company: '新华保险', name: '测试保单' }],
+    knowledgeRecords: [{
+      id: 516514,
+      company: '新华人寿保险股份有限公司',
+      productName: '测试保单',
+      sourceKind: 'customer_policy_photo',
+      reviewStatus: 'pending',
+      globalSearchable: false,
+      official: false,
+      ownerUserId: 7,
+      ownerGuestId: '',
+      pageText: [
+        '第五条 保险责任',
+        '身故保险金 被保险人身故时，保险公司按基本保险金额给付身故保险金，本合同终止。',
+        '身体全残保险金 被保险人身体全残时，保险公司按基本保险金额给付身体全残保险金，本合同终止。',
+        '第六条 责任免除',
+      ].join('\n'),
+    }],
+  };
+  let officialLookupCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    analyzer: async () => {
+      officialLookupCalls += 1;
+      throw new Error('owner upload should avoid official lookup');
+    },
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async () => ({
+      productCategory: 'ordinary_whole_life',
+      categoryLabel: '终身寿险',
+      headline: '这是一份提供身故及身体全残保障的寿险保单。',
+      responsibilities: [{
+        title: '身故或身体全残保险金',
+        plainText: '被保险人身故或身体全残时按合同约定给付。',
+        triggerCondition: '被保险人身故或身体全残。',
+        paymentRule: '按基本保险金额给付。',
+        calculationStatus: 'calculable_now',
+      }],
+      productFunctions: [],
+      importantNotes: ['具体给付以本保单上传的保险责任原文为准。'],
+      missingOrUnclear: [],
+    }),
+  });
+  const server = await listen(app);
+
+  try {
+    const ownerResult = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      headers: { authorization: 'Bearer owner-token' },
+      body: JSON.stringify({
+        policyId: 516516,
+        company: '新华保险',
+        name: '测试保单',
+      }),
+    });
+    assert.equal(ownerResult.response.status, 200);
+    assert.equal(ownerResult.payload.ok, true);
+    assert.equal(ownerResult.payload.source, 'customer_upload');
+    assert.equal(ownerResult.payload.summary.productName, '测试保单');
+    assert.equal(officialLookupCalls, 0);
+    assert.equal(state.productCustomerResponsibilitySummaries.length, 0);
+    assert.equal(state.knowledgeRecords[0].reviewStatus, 'pending');
+    assert.equal(state.knowledgeRecords[0].globalSearchable, false);
+
+    const otherResult = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      headers: { authorization: 'Bearer other-token' },
+      body: JSON.stringify({ policyId: 516516, company: '新华保险', name: '测试保单' }),
+    });
+    assert.equal(otherResult.response.status, 404);
+    assert.equal(otherResult.payload.code, 'POLICY_NOT_FOUND');
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer summary endpoint uses admin plannerMode config for Planner', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
@@ -8926,6 +9017,40 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(termsMatch.verificationStatus, 'verified');
     assert.equal(termsMatch.referenceOnly, false);
     assert.equal(afterApproval.payload.status, 'exact');
+
+    const rolledBack = await jsonFetch(server.baseUrl, `/api/admin/knowledge-records/${termsRecord.id}/review`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${login.payload.token}` },
+      body: JSON.stringify({
+        action: 'pending',
+        company: '新华人寿',
+        productName: '修改后的找不到产品',
+        pageText: '产品名称:修改后的找不到产品\n保险责任:重大疾病保险金按基本保险金额给付。',
+      }),
+    });
+    assert.equal(rolledBack.response.status, 200);
+    assert.equal(rolledBack.payload.record.reviewStatus, 'pending');
+    assert.equal(rolledBack.payload.record.globalSearchable, false);
+    assert.equal(rolledBack.payload.record.originalProductName, '找不到的产品');
+    assert.match(rolledBack.payload.record.originalPageText, /轻度疾病保险金/u);
+    assert.equal(rolledBack.payload.record.uploadImages.length, 5);
+
+    const afterRollback = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({ company: '新华人寿', name: '修改后的找不到产品' }),
+    });
+    assert.equal(afterRollback.payload.matches.some((match) => match.sourceKind === 'customer_policy_terms'), false);
+
+    const republished = await jsonFetch(server.baseUrl, `/api/admin/knowledge-records/${termsRecord.id}/review`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${login.payload.token}` },
+      body: JSON.stringify({ action: 'approved' }),
+    });
+    assert.equal(republished.response.status, 200);
+    assert.equal(republished.payload.record.reviewStatus, 'approved');
+    assert.equal(republished.payload.record.productName, '修改后的找不到产品');
+    assert.equal(republished.payload.record.originalProductName, '找不到的产品');
+    assert.equal(republished.payload.record.uploadImages.length, 5);
   } finally {
     await server.close();
   }

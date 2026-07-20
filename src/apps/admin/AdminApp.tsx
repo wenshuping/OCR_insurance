@@ -460,15 +460,15 @@ export function AdminApp() {
     const normalizedFamilyReportLimitInput = familyReportDailyRefreshLimitInput.trim();
     const normalizedSalesReviewLimitInput = familySalesReviewDailyRefreshLimitInput.trim();
     if (!/^\d+$/.test(normalizedFamilyReportLimitInput)) {
-      setMessage('家庭保单分析报告每日刷新次数请输入非负整数');
+      setMessage('家庭保单分析报告每日重算次数请输入非负整数');
       return;
     }
     if (!/^\d+$/.test(normalizedSalesReviewLimitInput)) {
-      setMessage('营销建议报告每日刷新次数请输入非负整数');
+      setMessage('营销建议报告每日重算次数请输入非负整数');
       return;
     }
     setMembershipSaving(true);
-    setMessage('正在保存会员设置');
+      setMessage('正在保存会员与报告设置');
     try {
       const payload = await updateAdminMembershipConfig(adminToken, {
         enabled: membershipConfig.enabled,
@@ -480,7 +480,7 @@ export function AdminApp() {
       setMembershipQuotaInput(String(payload.config.registeredFreePolicyQuota));
       setFamilyReportDailyRefreshLimitInput(String(payload.config.familyReportDailyRefreshLimit));
       setFamilySalesReviewDailyRefreshLimitInput(String(payload.config.familySalesReviewDailyRefreshLimit));
-      setMessage('会员设置已保存');
+      setMessage('会员与报告设置已保存');
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) clearAdminAuthState();
       setMessage(error instanceof Error ? error.message : '会员设置保存失败');
@@ -617,14 +617,18 @@ export function AdminApp() {
     }
   }
 
-  async function reviewKnowledgeRecord(record: KnowledgeRecord, action: 'approved' | 'rejected') {
+  async function reviewKnowledgeRecord(
+    record: KnowledgeRecord,
+    action: 'approved' | 'rejected' | 'pending',
+    updates: { company?: string; productName?: string; pageText?: string } = {},
+  ) {
     if (!adminToken || loading) return;
     setLoading(true);
-    setMessage(action === 'approved' ? '正在通过客户照片线索' : '正在驳回客户照片线索');
+    setMessage(action === 'approved' ? '正在发布客户上传责任' : action === 'pending' ? '正在保存为待发布' : '正在驳回客户上传责任');
     try {
-      const payload = await reviewAdminKnowledgeRecord(adminToken, { id: record.id, action });
+      const payload = await reviewAdminKnowledgeRecord(adminToken, { id: record.id, action, ...updates });
       setKnowledgeRecords(payload.records);
-      setMessage(action === 'approved' ? '客户照片线索已通过，后续可作为非官方候选' : '客户照片线索已驳回');
+      setMessage(action === 'approved' ? '客户上传责任已发布到公共产品库' : action === 'pending' ? '客户上传责任已保存为待发布' : '客户上传责任已驳回');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '客户照片线索审核失败');
     } finally {

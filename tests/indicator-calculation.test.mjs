@@ -1,10 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  hasQuantifiedCalculationSignal,
   indicatorCalculationPayloadFields,
   normalizeIndicatorCalculation,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
+
+test('quantified calculation signals include formula inputs even when a final amount needs claim data', () => {
+  assert.equal(hasQuantifiedCalculationSignal('保险金额 × 伤残程度等级对应的给付比例'), true);
+  assert.equal(hasQuantifiedCalculationSignal('保险金额扣减已给付残疾保险金后的余额'), true);
+  assert.equal(hasQuantifiedCalculationSignal('实际医疗费用扣除免赔额后按80%给付'), true);
+  assert.equal(hasQuantifiedCalculationSignal('被保险人发生意外伤害'), false);
+});
 
 test('normalizeIndicatorCalculation classifies first basic responsibility premium separately from total paid premium', () => {
   const indicator = {

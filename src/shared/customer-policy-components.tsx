@@ -1,7 +1,7 @@
 import { useId, useState } from 'react';
 import { Shield } from 'lucide-react';
 import type { PolicyFormData } from '../api/contracts/policy';
-import type { OptionalResponsibility, PolicyProductSuggestion } from '../api/contracts/responsibility';
+import type { CoverageIndicator, OptionalResponsibility, PolicyProductSuggestion } from '../api/contracts/responsibility';
 import {
   policyValidityClassName,
   resolvePolicyValidityStatus,
@@ -15,6 +15,7 @@ import {
   formatCurrency,
   normalizePolicyPlanRoleLabel,
 } from './formatters';
+import { resolveIndicatorAmountFromCalculation } from '../indicator-calculation.mjs';
 import {
   normalizePolicyPlanList,
   normalizePolicyPlanListWithIndex,
@@ -282,6 +283,10 @@ export function CoveragePeriodField(props: {
 
 export function OptionalResponsibilityReview({
   items = [],
+  indicators = [],
+  baseAmount = 0,
+  firstPremium = 0,
+  paymentPeriod = '',
   disabled = false,
   saving = false,
   compact = false,
@@ -290,6 +295,10 @@ export function OptionalResponsibilityReview({
   onChange,
 }: {
   items?: OptionalResponsibility[];
+  indicators?: Array<Partial<CoverageIndicator>>;
+  baseAmount?: string | number;
+  firstPremium?: string | number;
+  paymentPeriod?: string;
   disabled?: boolean;
   saving?: boolean;
   compact?: boolean;
@@ -300,6 +309,7 @@ export function OptionalResponsibilityReview({
   const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
   if (!visibleItems.length) return null;
   const statusOptions = OPTIONAL_RESPONSIBILITY_STATUS_OPTIONS;
+  const paymentYears = Number(String(paymentPeriod).match(/(\d+(?:\.\d+)?)\s*年/u)?.[1] || (/趸交|一次交清/u.test(paymentPeriod) ? 1 : 0)) || 1;
 
   return (
     <section className="rounded-[24px] border border-amber-100 bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">
@@ -322,6 +332,8 @@ export function OptionalResponsibilityReview({
           const displayName = optionalResponsibilityDisplayName(item);
           const contentText = optionalResponsibilityContentText(item);
           const contentClampClass = compact ? 'line-clamp-3' : 'line-clamp-2';
+          const indicatorIds = new Set(Array.isArray(item.indicatorIds) ? item.indicatorIds : []);
+          const linkedIndicators = indicators.filter((indicator) => indicator.id && indicatorIds.has(indicator.id));
           return (
             <article key={item.id} className="group rounded-[18px] border border-slate-100 bg-slate-50 p-3">
               <div className="flex flex-wrap items-start justify-between gap-2">
@@ -361,6 +373,32 @@ export function OptionalResponsibilityReview({
                 >
                   {contentText}
                 </p>
+              ) : null}
+              {linkedIndicators.length ? (
+                <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
+                  <p className="text-[11px] font-black text-blue-700">量化指标（{linkedIndicators.length}项）</p>
+                  <div className="mt-1.5 space-y-1">
+                    {linkedIndicators.map((indicator) => {
+                      const calculation = status === 'selected'
+                        ? resolveIndicatorAmountFromCalculation(indicator, { baseAmount, firstPremium, paymentYears })
+                        : null;
+                      return (
+                        <div key={indicator.id} className="text-xs font-bold leading-5 text-slate-600">
+                          <p>
+                            {indicator.liability || indicator.coverageType || '保险责任'}
+                            {indicator.formulaText ? `：${indicator.formulaText}` : ''}
+                          </p>
+                          {calculation?.resolved ? (
+                            <div className="mt-1 rounded-lg bg-cyan-50 px-2.5 py-2 text-cyan-800 ring-1 ring-cyan-100">
+                              <p className="font-black">已按本保单计算：{formatCurrency(calculation.amount)}</p>
+                              <p className="text-[11px] text-cyan-700">{calculation.calculationText}</p>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               ) : null}
               {!compact && optionalResponsibilityHasQuantificationGap(item) ? (
                 <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">

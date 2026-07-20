@@ -566,6 +566,7 @@ export function UploadPolicyPage(props: {
       updateParticipantRelation(kind, '待确认');
       return;
     }
+    updateParticipantRelation(kind === 'applicant' ? 'insured' : 'applicant', '待确认');
     updateParticipantRelation(kind, '本人');
   }
 
@@ -964,6 +965,9 @@ export function UploadPolicyPage(props: {
 
           <OptionalResponsibilityReview
             items={optionalResponsibilitiesForProduct(optionalResponsibilities, formData.name)}
+            baseAmount={formData.amount}
+            firstPremium={formData.firstPremium}
+            paymentPeriod={formData.paymentPeriod}
             disabled={loading}
             compact
             title="主险可选责任确认"
@@ -1110,6 +1114,10 @@ export function AnalysisReportPage(props: {
 
         <OptionalResponsibilityReview
           items={optionalResponsibilities}
+          indicators={(analysis.responsibilityCards || []).flatMap((card) => card.indicators || [])}
+          baseAmount={formData.amount}
+          firstPremium={formData.firstPremium}
+          paymentPeriod={formData.paymentPeriod}
           disabled={loading}
           onChange={onUpdateOptionalResponsibility}
         />
@@ -1137,6 +1145,8 @@ export function AnalysisReportPage(props: {
             <ResponsibilityCardList
               cards={responsibilityCards}
               optionalResponsibilities={optionalResponsibilities}
+              baseAmount={formData.amount}
+              firstPremium={formData.firstPremium}
             />
           ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

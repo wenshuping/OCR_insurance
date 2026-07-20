@@ -64,6 +64,17 @@ function parseJsonObject(value) {
   }
 }
 
+function isCustomerUploadRecord(record = {}) {
+  return ['customer_policy_photo', 'customer_policy_terms'].includes(trim(record.sourceKind || record.source_kind));
+}
+
+function ownerMatches(record = {}, { userId = null, guestId = '' } = {}) {
+  if (userId) return Number(record.ownerUserId || 0) === Number(userId);
+  return Boolean(guestId)
+    && !Number(record.ownerUserId || 0)
+    && trim(record.ownerGuestId) === guestId;
+}
+
 function nowMs() {
   return Date.now();
 }
@@ -120,6 +131,8 @@ export function createResponsibilityRoutes(context) {
     registerResponsibilityAssistantQuery,
     registerResponsibilityAssistantProductMatch,
     registerCustomerResponsibilitySummaryQuery,
+    normalizeGuestId,
+    resolveAuthUser,
   } = context;
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {

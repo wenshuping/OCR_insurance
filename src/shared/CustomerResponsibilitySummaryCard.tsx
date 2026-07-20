@@ -39,7 +39,7 @@ export function CustomerResponsibilitySummaryCard({
     }))
     .filter((block) => block.enabled && (block.title || block.content))
     .sort((left, right) => left.order - right.order);
-  const responsibilities = (Array.isArray(summary.mainResponsibilities) ? summary.mainResponsibilities : [])
+  const summaryResponsibilities = (Array.isArray(summary.mainResponsibilities) ? summary.mainResponsibilities : [])
     .map((item) => ({
       title: cleanText(item?.title),
       plainText: cleanText(item?.plainText),
@@ -50,6 +50,22 @@ export function CustomerResponsibilitySummaryCard({
       sourceRefs: cleanStrings(item?.sourceRefs),
     }))
     .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.sourceRefs.length);
+  const responsibilityTitles = mergeCalculatedResponsibilityTitles(
+    summaryResponsibilities.map((item) => item.title),
+    cashflowEntries,
+    scenarioEntries,
+  );
+  const responsibilities = responsibilityTitles.map((title) => (
+    summaryResponsibilities.find((item) => item.title === title) || {
+      title,
+      plainText: '根据本保单已识别指标计算。',
+      triggerCondition: '',
+      howItPays: '',
+      calculationStatus: '',
+      requiredPolicyFields: [],
+      sourceRefs: [],
+    }
+  ));
   const notices = cleanStrings(summary.notices);
   const requiredPolicyFields = cleanStrings(summary.requiredPolicyFields);
   const sourceUrls = cleanStrings(summary.sourceUrls);

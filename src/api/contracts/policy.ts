@@ -130,6 +130,10 @@ export type KnowledgeRecord = PolicySource & {
   ownerGuestId?: string;
   uploadNames?: string[];
   uploadImages?: UploadItem[];
+  originalCompany?: string;
+  originalProductName?: string;
+  originalPageText?: string;
+  revertedAt?: string;
   reviewIndicators?: Array<{
     id?: number | string;
     coverageType?: string;

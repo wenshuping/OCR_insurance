@@ -62,6 +62,54 @@ test('optional responsibility review preserves manual selection and excludes uns
   assert.equal(reviewItems[0].selectionStatus, 'not_selected');
 });
 
+test('OCR evidence resolves a previously unknown optional responsibility draft', () => {
+  const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）';
+  const policy = {
+    company: '新华保险',
+    name: productName,
+    ocrText: '备注：本保单的保险责任包含基本责任和可选责任一、可选责任二。',
+    optionalResponsibilities: [{
+      id: 'opt_one',
+      company: '新华保险',
+      productName,
+      coverageType: '可选责任',
+      liability: '可选责任一',
+      selectionStatus: 'unknown',
+      selectionEvidence: 'manual',
+    }],
+  };
+  const optionalResponsibilityRecords = [{
+    id: 'opt_one',
+    company: '新华保险',
+    productName,
+    coverageType: '可选责任',
+    liability: '可选责任一',
+    responsibilityScope: 'optional',
+    quantificationStatus: 'quantified',
+    indicatorIds: ['ind_light'],
+  }];
+  const indicatorRecords = [{
+    id: 'ind_light',
+    company: '新华保险',
+    productName,
+    coverageType: '疾病保障',
+    liability: '轻度疾病保险金',
+    value: 20,
+    unit: '%',
+    basis: '基本保险金额',
+    responsibilityScope: 'optional',
+    optionalResponsibilityId: 'opt_one',
+    quantificationStatus: 'quantified',
+  }];
+
+  const attached = attachPolicyCoverageIndicators(policy, indicatorRecords, [], optionalResponsibilityRecords);
+  const optionalOne = attached.optionalResponsibilities.find((item) => item.liability === '可选责任一');
+
+  assert.equal(optionalOne.selectionStatus, 'selected');
+  assert.equal(optionalOne.selectionEvidence, 'policy_ocr');
+  assert.equal(selectedCoverageIndicators(attached.coverageIndicators).length, 1);
+});
+
 test('policy indicators preserve explicit optional scope and optional responsibility id', () => {
   const policy = {
     company: '新华保险',

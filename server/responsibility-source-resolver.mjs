@@ -133,6 +133,11 @@ function isOfficial(record = {}) {
     || allUrlValues(record).some(hasOfficialDomain);
 }
 
+function isCustomerPolicyUpload(record = {}) {
+  return ['customer_policy_photo', 'customer_policy_terms']
+    .includes(text(record.sourceKind || record.source_kind));
+}
+
 function preferredProductName({ inputProductName, records }) {
   const counts = new Map();
 
@@ -149,13 +154,14 @@ export function resolveOfficialResponsibilitySources({
   company = '',
   productName = '',
   records = [],
+  allowCustomerUploadSources = false,
 } = {}) {
   const resolvedCompany = text(company);
   const inputProductName = text(productName);
   const matched = normalizeArray(records)
     .filter((record) => text(record.company || record.companyName) === resolvedCompany)
     .filter((record) => productNameMatches(record.productName || record.product_name || record.title, inputProductName))
-    .filter((record) => isOfficial(record))
+    .filter((record) => isOfficial(record) || (allowCustomerUploadSources && isCustomerPolicyUpload(record)))
     .filter((record) => firstUrl(record) || hasResponsibilityText(record))
     .sort((left, right) => materialRank(left) - materialRank(right)
       || Number(hasResponsibilityText(right)) - Number(hasResponsibilityText(left))

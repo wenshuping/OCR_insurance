@@ -1672,6 +1672,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   modelName = resolveDeepSeekConfig().model,
   nowIso = () => new Date().toISOString(),
   logger = console,
+  privateSourceRecords = [],
 } = {}) {
   const company = text(input.company).slice(0, 80);
   const inputProductName = text(input.name || input.productName).slice(0, 160);
@@ -1688,7 +1689,11 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   const inputProductKey = productKeyFor(company, inputProductName);
   const inputProduct = { company, productName: inputProductName, productKey: inputProductKey };
   let cards = loadProductResponsibilityCards(db, inputProduct);
-  let records = sourceRecordsForProduct(state.knowledgeRecords, inputProduct);
+  const scopedPrivateRecords = normalizeArray(privateSourceRecords);
+  let records = sourceRecordsForProduct(
+    scopedPrivateRecords.length ? scopedPrivateRecords : state.knowledgeRecords,
+    inputProduct,
+  );
   let indicators = indicatorsForProduct(state.insuranceIndicatorRecords, inputProduct);
   cards = enrichCardsWithOfficialRecords(cards, records);
   if (!cards.length && !records.length) {
@@ -1861,6 +1866,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     company,
     productName,
     records,
+    allowCustomerUploadSources: scopedPrivateRecords.length > 0,
   });
   if (resolvedSources.status !== 'ready') {
     await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({

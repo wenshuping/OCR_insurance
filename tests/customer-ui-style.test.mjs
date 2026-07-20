@@ -107,7 +107,7 @@ test('admin backoffice shell defines grouped sidebar navigation', () => {
   assert.match(adminPagesSource, /label: '可选责任缺口'/);
   assert.match(adminPagesSource, /label: '产品知识库'/);
   assert.match(adminPagesSource, /label: '官方域名'/);
-  assert.match(adminPagesSource, /label: '会员设置'/);
+  assert.match(adminPagesSource, /label: '会员与报告设置'/);
   assert.match(adminPagesSource, /key: 'familyReport', label: '家庭报告'/);
   assert.match(adminPagesSource, /key: 'salesReview', label: '销售建议'/);
   assert.doesNotMatch(adminPagesSource.match(/export const ADMIN_PAGE_GROUPS[\s\S]*?export const ADMIN_PAGE_META/u)?.[0] || '', /key: 'familyReport'/);
@@ -373,6 +373,8 @@ test('entry form requires family profile and supports top-pillar setup after OCR
   assert.match(pageSource, /顶梁柱身份和关系随上方同步/);
   assert.doesNotMatch(pageSource, /if \(participantsAreSamePerson\(\)\) return '本人'/);
   assert.doesNotMatch(pageSource, /disabled=\{samePerson\}/);
+  assert.doesNotMatch(pageSource, /disabled=\{hasOtherCore\}/);
+  assert.match(pageSource, /勾选后保存将更换顶梁柱/);
   assert.doesNotMatch(pageSource, /applicantRelation \|\| '本人'/);
   assert.doesNotMatch(pageSource, /samePersonRelationResetKeyRef/);
   assert.doesNotMatch(customerSource, /participantNamesMatch \? '本人'/);
@@ -404,6 +406,12 @@ test('entry form requires family profile and supports top-pillar setup after OCR
   assert.doesNotMatch(pageSource, /selectFamilyParticipantMember/);
   assert.doesNotMatch(customerSource, /input\.memberId && !input\.setAsCore/);
   assert.doesNotMatch(customerSource, /input\.setAsCore\s*\?\s*null/);
+});
+
+test('uploaded policy pages open a zoomable image preview', () => {
+  assert.match(policyEntrySource, /aria-label="放大图片"/u);
+  assert.match(policyEntrySource, /aria-label="缩小图片"/u);
+  assert.match(policyEntrySource, /setPreviewZoom/u);
 });
 
 test('family profile entry keeps the selected family but clears stale member bindings', () => {
@@ -1244,11 +1252,34 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(analysisSource, /OptionalResponsibilityReview/);
   assert.match(analysisSource, /onUpdateOptionalResponsibility/);
   assert.match(detailSource, /policy\.optionalResponsibilities/);
+  assert.match(detailSource, /indicators=\{policy\.coverageIndicators\}/);
+  assert.match(detailSource, /baseAmount=\{policy\.amount\}/);
+  assert.match(detailSource, /CustomerResponsibilitySummaryCard[\s\S]*baseAmount=\{policy\.amount\}/);
   assert.match(detailSource, /onUpdateOptionalResponsibility/);
   assert.match(reviewSource, /可选责任确认/);
+  assert.match(reviewSource, /量化指标/);
+  assert.match(reviewSource, /indicatorIds/);
+  assert.match(reviewSource, /resolveIndicatorAmountFromCalculation/);
+  assert.match(reviewSource, /已按本保单计算/);
   assert.match(normalizedCustomerPolicyComponentsSource, /value: 'selected', label: '已投保'/);
   assert.match(normalizedCustomerPolicyComponentsSource, /value: 'not_selected', label: '未投保'/);
   assert.match(normalizedCustomerPolicyComponentsSource, /value: 'unknown', label: '不确定'/);
+});
+
+test('customer calculation cards do not expose internal model and code implementation wording', () => {
+  const source = fs.readFileSync(new URL('../src/shared/CustomerResponsibilitySummaryCard.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /大模型匹配指标与计算基数/);
+  assert.match(source, /hasQuantifiedCalculationSignal/);
+  assert.match(source, /量化指标/);
+});
+
+test('responsibility cards keep formula-based indicators visible even before a final amount is calculable', () => {
+  const source = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
+  assert.match(source, /quantifiedIndicators/);
+  assert.match(source, /hasQuantifiedCalculationSignal/);
+  assert.match(source, /量化指标（/);
+  assert.match(source, /本保单保险金额/);
+  assert.match(source, /本保单首期保费/);
 });
 
 test('ocr recognition stays on entry form while carrying matched responsibility draft', () => {
@@ -1443,6 +1474,7 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(normalizedCustomerAppSource, /regenerateFamilyReportRecord\(\{[\s\S]*userRefresh: true/);
   assert.match(normalizedCustomerAppSource, /createFamilySalesReview\(\{[\s\S]*familyId: familySalesReviewFamilyId,[\s\S]*userRefresh: true/);
   assert.match(normalizedCustomerAppSource, /正在重新生成家庭保障分析报告/);
+  assert.match(normalizedCustomerAppSource, /statusMessage=\{message\}/);
   assert.match(normalizedCustomerAppSource, /DeepSeek质检已完成/);
   assert.match(normalizedCustomerAppSource, /当前为本地规则结果/);
   assert.match(normalizedCustomerAppSource, /String\(savedFamilyReportRecord\?\.status \|\| ''\) === 'active'/);
@@ -1455,6 +1487,8 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(familySource, /当前展示的是旧版家庭保单分析报告/);
   assert.doesNotMatch(familySource, /autoPolicyAnalysisRequestedRef/);
   assert.match(familySource, /重新生成家庭保障分析报告/);
+  assert.match(familySource, /aria-live="polite"/);
+  assert.match(familySource, /statusMessage/);
   assert.match(familySource, /全家总统计/);
   assert.match(familySource, /家庭保单清单/);
   assert.match(familySource, /被保人保单明细/);
@@ -2067,13 +2101,21 @@ test('admin exposes a dedicated customer product review workflow', () => {
   const pagesSource = fs.readFileSync(new URL('../src/apps/admin/adminPages.ts', import.meta.url), 'utf8');
   const reviewPageSource = fs.readFileSync(new URL('../src/apps/admin/pages/AdminCustomerKnowledgeReviewPage.tsx', import.meta.url), 'utf8');
 
-  assert.match(pagesSource, /客户产品审核/);
+  assert.match(pagesSource, /客户上传责任审核/);
+  assert.match(reviewPageSource, /客户上传保险责任审核/);
   assert.match(reviewPageSource, /客户上传图片/);
-  assert.match(reviewPageSource, /OCR 解析的保险责任/);
+  assert.match(reviewPageSource, /待发布保险责任（可修改）/);
   assert.match(reviewPageSource, /结构化保险指标/);
-  assert.match(reviewPageSource, /通过并全局生效/);
+  assert.match(reviewPageSource, /发布到公共产品库/);
+  assert.match(reviewPageSource, /未发布 · 待运营发布/);
+  assert.match(reviewPageSource, /已发布到公共产品库/);
+  assert.match(reviewPageSource, /保存修改并重新发布/);
+  assert.match(reviewPageSource, /保存为未发布/);
+  assert.match(reviewPageSource, /publishButtonClassName/);
+  assert.match(reviewPageSource, /unpublishButtonClassName/);
+  assert.match(reviewPageSource, /首次上传 OCR 原文（只读）/);
   assert.match(reviewPageSource, /拒绝/);
-  assert.match(reviewPageSource, /产品名称：\{record\.reviewProductName \|\| '待确认'\}/);
+  assert.match(reviewPageSource, /产品名称：\{record\.reviewProductName \|\| record\.productName \|\| '待确认'\}/);
   assert.match(reviewPageSource, /record\.reviewStatus === 'approved'/);
   assert.match(reviewPageSource, /record\.reviewStatus === 'rejected'/);
 });

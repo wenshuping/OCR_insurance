@@ -1993,6 +1993,10 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
         dataUrl: trimString(item?.dataUrl),
       })).filter((item) => item.dataUrl.startsWith('data:image/'))
       : [],
+    originalCompany: trimString(record.originalCompany),
+    originalProductName: trimString(record.originalProductName),
+    originalPageText: trimString(record.originalPageText),
+    revertedAt: trimString(record.revertedAt),
     detailFields: record.detailFields && typeof record.detailFields === 'object' && !Array.isArray(record.detailFields)
       ? record.detailFields
       : undefined,
@@ -2070,13 +2074,18 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.clauseFileName = record.clauseFileName || existing.clauseFileName;
       existing.clauseUrl = record.clauseUrl || existing.clauseUrl;
       existing.futureExtractionStatus = record.futureExtractionStatus || existing.futureExtractionStatus;
-      existing.responsibilityDeferred = record.responsibilityDeferred || existing.responsibilityDeferred;
+      existing.responsibilityDeferred = record.responsibilityDeferred;
       existing.reviewStatus = record.reviewStatus || existing.reviewStatus;
       existing.globalSearchable = record.globalSearchable;
       existing.reviewedAt = record.reviewedAt || existing.reviewedAt;
+      existing.revertedAt = record.revertedAt || existing.revertedAt;
       existing.ownerUserId = record.ownerUserId || existing.ownerUserId;
       existing.ownerGuestId = record.ownerGuestId || existing.ownerGuestId;
       existing.uploadNames = record.uploadNames?.length ? record.uploadNames : existing.uploadNames;
+      existing.uploadImages = record.uploadImages?.length ? record.uploadImages : existing.uploadImages;
+      existing.originalCompany = record.originalCompany || existing.originalCompany;
+      existing.originalProductName = record.originalProductName || existing.originalProductName;
+      existing.originalPageText = record.originalPageText || existing.originalPageText;
       existing.detailFields = record.detailFields || existing.detailFields;
       existing.lastFetchedAt = record.lastFetchedAt || existing.lastFetchedAt;
       existing.updatedAt = nowIso();
