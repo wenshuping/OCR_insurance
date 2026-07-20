@@ -1500,7 +1500,7 @@ function extractPingAnInlineTablePlans(lines, company) {
     if (/附加一年期短险/u.test(line)) insideOneYearSection = true;
     if (/首期保险费合计/u.test(line)) break;
 
-    const longTerm = line.match(/^(?:(投保主险|附加险|附加长险)[:：]?\s*)?(.+?[（(]\d{3,5}[）)])\s*(终身|\d{1,3}年)\s*(\d{1,3}年)\s*(---|[\d,]+(?:\.\d+)?元)\s*([\d,]+(?:\.\d+)?元)/u);
+    const longTerm = line.match(/^(?:(投保主险|附加险|附加长险)[:：]?\s*)?(.+?[（(]\d{3,5}[）)])\s*(终身|\d{1,3}年)\s*(\d{1,3}年)\s*(-{3,}|[\d,]+(?:\.\d+)?元)\s*([\d,]+(?:\.\d+)?元)/u);
     if (longTerm) {
       const label = longTerm[1] || '';
       plans.push({
@@ -1511,7 +1511,7 @@ function extractPingAnInlineTablePlans(lines, company) {
         coveragePeriod: normalizeCoveragePeriodText(longTerm[3]),
         paymentMode: '',
         paymentPeriod: normalizePlanPaymentPeriod(normalizePaymentPeriodText(longTerm[4]), ''),
-        amount: longTerm[5] === '---' ? '' : normalizeAmountText(longTerm[5]),
+        amount: /^-{3,}$/u.test(longTerm[5]) ? '' : normalizeAmountText(longTerm[5]),
         premium: normalizeAmountText(longTerm[6]),
         premiumText: longTerm[6],
       });
