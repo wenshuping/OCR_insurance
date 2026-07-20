@@ -442,7 +442,7 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
 });
 
-test('family sales chat replaces speculative objection choices with the controlled open question', async () => {
+test('family sales chat does not let a stale objection question override the final agent answer', async () => {
   const reply = await generateFamilySalesChatReply({
     context: {
       consultationScope: 'open',
@@ -464,21 +464,19 @@ test('family sales chat replaces speculative objection choices with the controll
         },
       },
     },
-    question: '客户觉得缴费期太长，我怎么跟？',
+    question: '我前面补充过，他后来不买是因为身体情况可能过不了核保，我现在怎么约？',
     env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
     fetchImpl: async () => ({
       ok: true,
       json: async () => ({
         model: 'deepseek-v4-pro',
-        choices: [{ message: { content: '王哥，您是怕用钱不方便，还是家人不同意？如果他说怕用钱，就这样处理。' } }],
+        choices: [{ message: { content: '这次不是原因没问清，而是顾问已经补充了客户卡在核保条件。先围绕能否投保核实事实，再决定是否继续约。' } }],
       }),
     }),
   });
 
-  assert.match(reply.content, /具体最卡您的是哪一点？您按真实想法说就行/u);
-  assert.match(reply.content, /这个客户这次最想解决什么/u);
-  assert.match(reply.content, /保险专家核验/u);
-  assert.doesNotMatch(reply.content, /王哥|还是家人不同意|如果他说/u);
+  assert.match(reply.content, /已经补充了客户卡在核保条件/u);
+  assert.doesNotMatch(reply.content, /具体最卡您的是哪一点|客户只说了有顾虑/u);
 });
 
 test('family sales chat treats an advisor correction as newer context instead of reusing the objection template', async () => {

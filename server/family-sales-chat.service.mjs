@@ -68,33 +68,6 @@ function isAdvisorCorrectionOrContextUpdate(question = '') {
     || /^(?:人家|客户|他|她|这|那|前面|之前).{0,80}(?:不是|难道).{1,80}(?:吗|嘛|呢)[？?]?$/u.test(value);
 }
 
-function controlledObjectionDiscoveryReply(context = {}, question = '') {
-  if (context?.salesTurn?.proposal?.turnRelation?.value === 'correction'
-    || isAdvisorCorrectionOrContextUpdate(question)) return '';
-  const questions = (Array.isArray(context?.salesTurn?.informationFollowUp?.questions)
-    ? context.salesTurn.informationFollowUp.questions : []).slice(0, 2);
-  const objectionQuestion = questions.find((item) => item?.key === 'objection_reason');
-  if (!objectionQuestion?.askCustomerIfUnknown) return '';
-  const nextQuestion = questions.find((item) => item?.key !== 'objection_reason');
-  return [
-    '先别解释产品，也别拿客户的收入、职业去证明这个安排没有压力。客户只说了有顾虑，具体原因还没确认。',
-    '',
-    '这一次只做一件事：让客户自己把卡点说出来。',
-    '',
-    '可以直接这样说：',
-    `“${objectionQuestion.askCustomerIfUnknown}”`,
-    '',
-    '说完就停住，别替客户列原因，也别提前讲几套应对。等他回答后，再按他确认的那个点往下处理。',
-    ...(nextQuestion ? [
-      '',
-      `你再帮我确认一个信息：${nextQuestion.askAdvisor}`,
-      `如果你也不知道，可以问客户：“${nextQuestion.askCustomerIfUnknown}”`,
-    ] : []),
-    '',
-    '涉及具体条款、现金价值、缴费期调整或替代方案，拿到官方资料后交给保险专家核验；现在先不报数字，也不凭印象承诺。',
-  ].join('\n');
-}
-
 function needsUnsupportedInferenceReview(content = '') {
   const value = trim(content);
   return /(?:说明|代表|意味着).{0,40}(?:客户|他|她|不想|担心|害怕|怕|信任|体谅|会躲)/u.test(value)
@@ -135,7 +108,7 @@ function buildUnsupportedInferenceReviewMessages({ context = {}, question = '', 
       '校准客户话术的关系距离：普通业务关系就说普通业务话，不得写成亲友、知己、陪伴者或心理咨询式表达。不要用顾问的自我感动、示弱或表忠心换客户回应，不要宣称“惦记、想起、一直记着、尊敬、按您舒服的节奏、买不买都由您”等没有真实关系依据的话。',
       '校准身份和辈分：不得用上级管理下级、老师教育学生、咨询师安抚来访者的口吻替客户安排节奏、授予选择权或评价其生活。面对长辈、老师或资深客户要礼貌克制、就事论事，不居高临下，也不刻意奉承。',
       '客户话术必须有真实、简短、说得出口的联系理由；没有合适理由时可以只做正常问候，不得虚构整理资料、路过、活动、礼物或其他由头。',
-      'requiredQuestions 中的每一个 KYC 问题都必须原样保留，不能少问、换题或新增其他问题。',
+      'requiredQuestions 只是结构化层提出的候选 KYC 问题。结合 advisorQuestion、groundedFacts 和 customerEvidence 删除已经被回答的问题；未被回答且确实会改变本轮建议的问题才原样保留，不得换题或新增其他问题。',
       '待确认标签只参与候选 Skill 评分，不得被改写成禁止或许可结论；只有客户明确停止营销或停止联系才是硬边界。',
     ].join('\n'),
   }, {
@@ -355,7 +328,7 @@ export function buildFamilySalesChatMessages({
         '26B. 客户话术必须按真实关系校准距离。普通业务关系就用普通业务口吻，不得擅自写成亲友、知己、长期陪伴或心理咨询式关系；不得靠“我一直记着您、突然想到您、按您舒服的节奏、买不买都由您、我联系客户不多”等自我表态制造亲近感。只说真实来意、具体事项和一个低负担动作。',
         '26C. 客户话术不得带上级对下级、教育、管理或安抚口吻，不替客户安排“节奏”，不以“由您决定、给您选择”表现成顾问在授予客户权利。面对长辈、老师或资深客户，保持礼貌克制、就事论事，不居高临下，也不刻意奉承。',
         advisorQuestions.length
-          ? '27. 本轮补充问题已由受控信息层选好，只能在建议和话术之后自然追问下面列出的问题，不能换成别的问题，也不能因多个辅助 Skill 增加问题数量。顾问回答“不知道”时，客户话术必须原样使用对应的客户询问原话，不得改写成选择题。不得在追问前把未确认项写成“可能原因”，不得给客户添加受控问题中没有的选项、例子或暗示。'
+          ? '27. 本轮补充问题是结构化层根据候选理解选出的参考问题。你必须先结合完整对话删除已经被顾问实质回答、已明确不知道或与当前客户无关的问题；只有剩余问题才能放在建议和话术之后自然追问，不能换成别的问题，不能因多个辅助 Skill 增加问题数量。顾问回答“不知道”且仍需向客户确认时，客户话术必须原样使用对应的客户询问原话，不得改写成选择题。不得在追问前把未确认项写成“可能原因”，不得给客户添加受控问题中没有的选项、例子或暗示。'
           : '27. 本轮受控信息层没有选出补充问题，不要为了显得完整而额外追问。',
         ...(selectedSkillRules.length ? [
           '',
@@ -524,7 +497,7 @@ export async function generateFamilySalesChatReply({
       sanitizedContent = customerManagementKycFallback(context) || sanitizedContent;
     }
     return {
-      content: controlledObjectionDiscoveryReply(context, userQuestion) || sanitizedContent,
+      content: sanitizedContent,
       model: trim(payload?.model || config.model) || config.model,
       generatedAt: new Date().toISOString(),
     };
