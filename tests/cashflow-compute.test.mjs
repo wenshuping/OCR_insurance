@@ -212,6 +212,42 @@ test('computePolicyCashflow: duplicate generic and concrete anniversary indicato
   assert.equal(entries.at(-1).cumulative, 24000);
 });
 
+test('computePolicyCashflow: single-age policy effective dates use the insured age year', () => {
+  const policy = {
+    id: 500556,
+    name: '成长阳光少儿两全保险(A款)（分红型）',
+    company: '新华保险',
+    amount: 165020,
+    date: '2002-06-07',
+    insuredBirthday: '2007-12-07',
+    coveragePeriod: '终身',
+  };
+  const indicators = [
+    {
+      coverageType: '现金流',
+      liability: '深造金',
+      value: 60,
+      unit: '%',
+      basis: '有效保险金额',
+      sourceExcerpt: '被保险人于22周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的60%给付深造金。',
+    },
+    {
+      coverageType: '现金流',
+      liability: '立业金',
+      value: 80,
+      unit: '%',
+      basis: '有效保险金额',
+      sourceExcerpt: '被保险人于25周岁保单生效对应日生存，按有效保险金额的80%给付立业金。',
+    },
+  ];
+
+  const entries = computePolicyCashflow(policy, null, indicators);
+
+  assert.deepEqual(entries.map((entry) => entry.year), [2029, 2032]);
+  assert.deepEqual(entries.map((entry) => entry.amount), [99012, 132016]);
+  assert.deepEqual(entries.map((entry) => entry.liability), ['深造金', '立业金']);
+});
+
 test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
   const policy = {
     id: 600001,
@@ -449,6 +485,43 @@ test('computeScenarioEntries calculates quantified health and accident benefits 
   const entries = computeScenarioEntries(indicators, policy);
 
   assert.deepEqual(entries.map((entry) => entry.amount), [40000, 1000000, 30000]);
+});
+
+test('computeScenarioEntries treats 基本保险金 as coverage amount instead of premium', () => {
+  const policy = { ...changxingPolicy, firstPremium: 3296 };
+  const indicators = [{
+    coverageType: '意外保障',
+    liability: '一般意外伤害身故或身体全残保险金',
+    value: 10,
+    unit: '倍',
+    basis: '基本保险金',
+    formulaText: '基本保险金 × 10',
+  }];
+
+  const entries = computeScenarioEntries(indicators, policy);
+
+  assert.equal(entries[0].amount, 600000);
+  assert.match(entries[0].calculationText, /基本保险金额60,000元 × 10倍 = 600,000元/u);
+  assert.doesNotMatch(entries[0].calculationText, /3,296/u);
+});
+
+test('computeScenarioEntries excludes premium-waiver rules without a determinable remaining premium', () => {
+  const policy = { id: 500557, name: '测试重疾险', amount: 170000, firstPremium: 7667, paymentPeriod: '年交' };
+  const indicators = [{
+    coverageType: '疾病保障',
+    liability: '轻度疾病或中度疾病豁免保险费',
+    unit: '公式',
+    basis: '后续应交保险费',
+    formulaText: '豁免后续应交保险费',
+    calculationKey: 'not_calculable',
+    calculationEligible: false,
+    calculationReason: '缺少剩余交费期数',
+    selectionStatus: 'selected',
+  }];
+
+  const entries = computeScenarioEntries(indicators, policy);
+
+  assert.deepEqual(entries, []);
 });
 
 test('computeScenarioEntries: skips cashflow and rule-parameter types', () => {

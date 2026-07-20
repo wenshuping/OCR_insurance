@@ -217,7 +217,7 @@ export type CustomerResponsibilitySummary = {
 export type CustomerResponsibilitySummaryResponse =
   | {
       ok: true;
-      source: 'database' | 'generated';
+      source: 'database' | 'generated' | 'customer_upload';
       summary: CustomerResponsibilitySummary;
     }
   | {
@@ -317,11 +317,17 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
 export function getProductCustomerResponsibilitySummary(input: {
   company: string;
   name: string;
+  policyId?: number;
+  token?: string;
+  guestId?: string;
 }) {
   return requestResponsibility<CustomerResponsibilitySummaryResponse>('/api/policy-responsibilities/customer-summary', {
+    token: input.token,
     body: {
       company: input.company,
       name: input.name,
+      policyId: input.policyId,
+      guestId: input.guestId,
     },
   });
 }

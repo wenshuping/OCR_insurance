@@ -72,6 +72,8 @@ function normalizeProductCode(value: unknown) {
 
 export function PolicyDetailSheet({
   policy,
+  token,
+  guestId,
   onClose,
   onRetryReport,
   retrying = false,
@@ -83,6 +85,8 @@ export function PolicyDetailSheet({
   onEditCashValue,
 }: {
   policy: Policy;
+  token?: string;
+  guestId?: string;
   onClose: () => void;
   onRetryReport?: (policy: Policy) => void | Promise<void>;
   retrying?: boolean;
@@ -97,6 +101,7 @@ export function PolicyDetailSheet({
   const [editing, setEditing] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [customerSummary, setCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
+  const [customerSummarySource, setCustomerSummarySource] = useState('');
   const [customerSummaryLoading, setCustomerSummaryLoading] = useState(false);
   const [customerSummaryMessage, setCustomerSummaryMessage] = useState('');
   const generatedAt = new Date().toLocaleString('zh-CN', { hour12: false });
@@ -123,6 +128,7 @@ export function PolicyDetailSheet({
     const company = String(policy.company || '').trim();
     const name = String(policy.name || '').trim();
     setCustomerSummary(null);
+    setCustomerSummarySource('');
     setCustomerSummaryMessage('');
     if (!company || !name) {
       setCustomerSummaryLoading(false);
@@ -132,15 +138,23 @@ export function PolicyDetailSheet({
       };
     }
     setCustomerSummaryLoading(true);
-    getProductCustomerResponsibilitySummary({ company, name })
+    getProductCustomerResponsibilitySummary({
+      company,
+      name,
+      policyId: policy.id,
+      token,
+      guestId,
+    })
       .then((payload) => {
         if (cancelled) return;
         setCustomerSummary(payload.ok ? payload.summary : null);
+        setCustomerSummarySource(payload.ok ? payload.source : '');
         setCustomerSummaryMessage(payload.ok ? '' : (payload.message || '客户版保险责任摘要暂未生成，请稍后重试。'));
       })
       .catch(() => {
         if (cancelled) return;
         setCustomerSummary(null);
+        setCustomerSummarySource('');
         setCustomerSummaryMessage('客户版保险责任摘要生成失败，请稍后重试。');
       })
       .finally(() => {
@@ -149,7 +163,7 @@ export function PolicyDetailSheet({
     return () => {
       cancelled = true;
     };
-  }, [policy.company, policy.id, policy.name]);
+  }, [guestId, policy.company, policy.id, policy.name, policy.reportStatus, token]);
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
@@ -413,6 +427,10 @@ export function PolicyDetailSheet({
           <div className="mt-4">
             <OptionalResponsibilityReview
               items={optionalResponsibilities}
+              indicators={policy.coverageIndicators}
+              baseAmount={policy.amount}
+              firstPremium={policy.firstPremium}
+              paymentPeriod={policy.paymentPeriod}
               disabled={updating || deleting}
               saving={updating}
               onChange={onUpdateOptionalResponsibility ? (id, status) => void onUpdateOptionalResponsibility(policy, id, status) : undefined}
@@ -424,7 +442,11 @@ export function PolicyDetailSheet({
         <section className="mt-4 space-y-3">
           <div>
             <h3 className="text-base font-bold text-slate-900">保险责任</h3>
-            <p className="mt-1 text-xs text-slate-500">以下内容来自官网保险责任摘要。</p>
+            <p className="mt-1 text-xs text-slate-500">
+              {customerSummarySource === 'customer_upload'
+                ? '以下内容来自本保单客户上传的保险责任，仅供本保单使用。'
+                : '以下内容来自官网保险责任摘要。'}
+            </p>
           </div>
           {customerSummaryLoading ? (
             <article className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 text-sm font-semibold leading-6 text-slate-500">
@@ -435,6 +457,8 @@ export function PolicyDetailSheet({
               summary={customerSummary}
               cashflowEntries={cashflowEntries}
               scenarioEntries={policy.scenarioEntries}
+              baseAmount={policy.amount}
+              firstPremium={policy.firstPremium}
             />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">

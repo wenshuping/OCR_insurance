@@ -58,6 +58,33 @@ test('resolveOfficialResponsibilitySources rejects non-official records for read
   assert.equal(result.status, 'needs_source_review');
 });
 
+test('resolveOfficialResponsibilitySources accepts a customer upload only when explicitly scoped', () => {
+  const record = {
+    company: '新华保险',
+    productName: '测试保单',
+    sourceKind: 'customer_policy_photo',
+    reviewStatus: 'pending',
+    official: false,
+    pageText: '保险责任 身故保险金按基本保险金额给付。',
+  };
+
+  const defaultResult = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '测试保单',
+    records: [record],
+  });
+  const scopedResult = resolveOfficialResponsibilitySources({
+    company: '新华保险',
+    productName: '测试保单',
+    records: [record],
+    allowCustomerUploadSources: true,
+  });
+
+  assert.equal(defaultResult.status, 'needs_source_review');
+  assert.equal(scopedResult.status, 'ready');
+  assert.deepEqual(scopedResult.records, [record]);
+});
+
 test('resolveOfficialResponsibilitySources accepts insurer official evidence levels', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '平安人寿',

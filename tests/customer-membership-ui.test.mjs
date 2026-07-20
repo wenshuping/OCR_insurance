@@ -50,16 +50,17 @@ test('admin app exposes membership settings controls', () => {
   assert.match(appSource, /getAdminMembershipConfig/);
   assert.match(appSource, /updateAdminMembershipConfig/);
   assert.match(appSource, /AdminMembershipPage/);
-  assert.match(pageSource, /会员与报告刷新设置/);
+  assert.match(pageSource, /会员与报告重算设置/);
   assert.match(pageSource, /注册用户免费保存保单数/);
-  assert.match(pageSource, /家庭保单分析报告每日刷新次数/);
-  assert.match(pageSource, /营销建议报告每日刷新次数/);
-  assert.match(pageSource, /只统计用户在前台主动点击重新生成/);
+  assert.match(pageSource, /家庭保单分析报告每日重算次数/);
+  assert.match(pageSource, /营销建议报告每日重算次数/);
+  assert.match(pageSource, /重算次数只统计用户在前台主动点击重新生成/);
+  assert.match(read('src/apps/admin/adminPages.ts'), /会员与报告设置/);
   assert.match(appSource, /免费保存保单数请输入非负整数/);
   assert.match(appSource, /familyReportDailyRefreshLimitInput/);
   assert.match(appSource, /familySalesReviewDailyRefreshLimitInput/);
-  assert.match(appSource, /家庭保单分析报告每日刷新次数请输入非负整数/);
-  assert.match(appSource, /营销建议报告每日刷新次数请输入非负整数/);
+  assert.match(appSource, /家庭保单分析报告每日重算次数请输入非负整数/);
+  assert.match(appSource, /营销建议报告每日重算次数请输入非负整数/);
   assert.match(appSource, /clearAdminAuthState/);
 });
 

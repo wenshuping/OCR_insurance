@@ -71,7 +71,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
     group: '知识配置',
     items: [
       { key: 'knowledge', label: '产品知识库', description: '爬取和查看本地官方资料', icon: Database },
-      { key: 'customerKnowledgeReviews', label: '客户产品审核', description: '审核客户上传的主险和附加险资料', icon: ListChecks },
+      { key: 'customerKnowledgeReviews', label: '客户上传责任审核', description: '审核客户上传的保险责任页和合同页', icon: ListChecks },
       { key: 'companyMaterials', label: '产品资料与审核', description: '上传并审核公司 PDF、PPT、Word 产品资料', icon: PackageSearch },
       { key: 'expertKnowledge', label: '专家知识与审核', description: '上传并审核语音、培训资料和销售经验', icon: Mic2 },
       { key: 'responsibilityGeneration', label: '保险责任自我修正', description: '维护责任摘要生成、校验和重试规则', icon: BrainCircuit },
@@ -83,7 +83,7 @@ export const ADMIN_PAGE_GROUPS: AdminPageGroup[] = [
     items: [
       { key: 'agentPolicies', label: '智能体策略管理', description: '管理受限路由策略、预览决策和版本', icon: ShieldCheck },
       { key: 'ocrRouting', label: 'OCR 模型路由', description: '按业务场景选择 OCR 模型', icon: ScanText },
-      { key: 'membership', label: '会员设置', description: '配置会员购买和免费额度', icon: Settings },
+      { key: 'membership', label: '会员与报告设置', description: '配置会员、免费额度和报告每日重算次数', icon: Settings },
     ],
   },
 ];
