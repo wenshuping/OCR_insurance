@@ -1023,6 +1023,13 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.doesNotMatch(source, /CustomerResponsibilitySummaryCard/);
 });
 
+test('responsibility assistant reads the cached customer responsibility summary after a local responsibility match', () => {
+  const source = componentSource('CustomerApp', null);
+  assert.match(source, /正在读取库内保险责任摘要/);
+  assert.match(source, /getProductCustomerResponsibilitySummary/);
+  assert.doesNotMatch(source, /正在生成客户可读摘要/);
+});
+
 test('ResponsibilityAssistant keeps Planner mode out of customer controls', () => {
   const source = normalizedResponsibilityAssistantSource;
   assert.doesNotMatch(source, /plannerMode/);

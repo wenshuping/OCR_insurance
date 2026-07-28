@@ -16,6 +16,7 @@ const DEFAULT_TARGET_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || '/data/poli
 const BUNDLE_FORMAT = 'policy-ocr-production-sqlite-bundle-v1';
 const FULL_BUNDLE_MODE = 'full';
 const KNOWLEDGE_BUNDLE_MODE = 'knowledge';
+const RESPONSIBILITY_BUNDLE_MODE = 'responsibility';
 const KNOWLEDGE_TABLES = [
   'knowledge_records',
   'insurance_indicator_records',
@@ -27,6 +28,14 @@ const KNOWLEDGE_TABLES = [
 const KNOWLEDGE_BUNDLE_TABLES = [
   ...KNOWLEDGE_TABLES,
   'state_documents',
+];
+const RESPONSIBILITY_BUNDLE_TABLES = [
+  'knowledge_records',
+  'insurance_indicator_records',
+  'optional_responsibility_records',
+  'product_responsibility_cards',
+  'product_customer_responsibility_summaries',
+  'product_customer_summary_generation_runs',
 ];
 const KNOWLEDGE_STATE_DOCUMENT_KEYS = ['insuranceIndicatorSnapshot'];
 const PROTECTED_TABLE_KEYS = {
@@ -218,11 +227,40 @@ function createKnowledgeOnlySnapshot({ sourceDbPath, snapshotPath }) {
   }
 }
 
+function createResponsibilitySnapshot({ sourceDbPath, snapshotPath }) {
+  const sourceDb = new DatabaseSync(sourceDbPath, { readOnly: true });
+  const targetDb = new DatabaseSync(snapshotPath);
+  try {
+    targetDb.exec('PRAGMA foreign_keys = OFF');
+    const tableResults = [];
+    for (const table of RESPONSIBILITY_BUNDLE_TABLES) {
+      if (!copyTableSchema({ sourceDb, targetDb, table })) {
+        tableResults.push({ table, copied: 0, skipped: true });
+        continue;
+      }
+      tableResults.push(copyKnowledgeTableRows({ sourceDb, targetDb, table }));
+    }
+    targetDb.exec('VACUUM');
+    return tableResults;
+  } finally {
+    targetDb.close();
+    sourceDb.close();
+  }
+}
+
 function assertKnowledgeOnlySnapshot(snapshotSummary) {
   const protectedTables = Object.keys(PROTECTED_TABLE_KEYS)
     .filter((table) => Number(snapshotSummary.counts?.[table] || 0) > 0);
   if (protectedTables.length) {
     throw new Error(`Knowledge bundle unexpectedly contains protected tables: ${protectedTables.join(', ')}`);
+  }
+}
+
+function assertResponsibilitySnapshot(snapshotSummary) {
+  const protectedTables = Object.keys(PROTECTED_TABLE_KEYS)
+    .filter((table) => Number(snapshotSummary.counts?.[table] || 0) > 0);
+  if (protectedTables.length) {
+    throw new Error(`Responsibility bundle unexpectedly contains protected tables: ${protectedTables.join(', ')}`);
   }
 }
 
@@ -329,6 +367,44 @@ function insertRowsFromSource({ sourceDb, targetDb, table }) {
   const rows = sourceDb.prepare(`SELECT ${quotedColumns} FROM ${table}`).all();
   for (const row of rows) insert.run(...columns.map((column) => row[column]));
   return { table, copied: rows.length, skipped: false };
+}
+
+function sourceProductIdentities(sourceDb) {
+  const identities = new Map();
+  for (const table of RESPONSIBILITY_BUNDLE_TABLES) {
+    if (!hasTable(sourceDb, table)) continue;
+    const columns = new Set(tableColumns(sourceDb, table));
+    if (!columns.has('company') || !columns.has('product_name')) continue;
+    for (const row of sourceDb.prepare(`
+      SELECT DISTINCT TRIM(company) AS company, TRIM(product_name) AS product_name
+      FROM ${table}
+      WHERE TRIM(COALESCE(company, '')) <> ''
+        AND TRIM(COALESCE(product_name, '')) <> ''
+    `).all()) {
+      const company = String(row.company || '').trim();
+      const productName = String(row.product_name || '').trim();
+      identities.set(`${company}\u0000${productName}`, { company, productName });
+    }
+  }
+  return [...identities.values()];
+}
+
+function replaceProductScopedRows({ sourceDb, targetDb, table, products }) {
+  if (!hasTable(sourceDb, table) || !hasTable(targetDb, table)) {
+    return { table, copied: 0, replacedProductCount: 0, skipped: true };
+  }
+  const sourceColumns = tableColumns(sourceDb, table);
+  const targetColumnSet = new Set(tableColumns(targetDb, table));
+  const columns = sourceColumns.filter((column) => targetColumnSet.has(column));
+  if (!columns.length) return { table, copied: 0, replacedProductCount: 0, skipped: true };
+  const remove = targetDb.prepare('DELETE FROM ' + table + ' WHERE company = ? AND product_name = ?');
+  for (const product of products) remove.run(product.company, product.productName);
+  const quotedColumns = columns.map((column) => `"${column}"`).join(', ');
+  const placeholders = columns.map(() => '?').join(', ');
+  const insert = targetDb.prepare(`INSERT INTO ${table} (${quotedColumns}) VALUES (${placeholders})`);
+  const rows = sourceDb.prepare(`SELECT ${quotedColumns} FROM ${table}`).all();
+  for (const row of rows) insert.run(...columns.map((column) => row[column]));
+  return { table, copied: rows.length, replacedProductCount: products.length, skipped: false };
 }
 
 function replaceSelectedStateDocuments({ sourceDb, targetDb, keys }) {
@@ -469,6 +545,44 @@ export async function createKnowledgeDataBundle({
     tables: tableResults,
     source: summarizeKnowledgeBundleSource(sourceSummary),
     snapshot: summarizeKnowledgeBundleSnapshot(snapshotSummary),
+  };
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  await fs.rm(snapshotPath, { force: true });
+  return { ...manifest, bundlePath, manifestPath };
+}
+
+export async function createResponsibilityDataBundle({
+  dbPath = DEFAULT_DB_PATH,
+  outDir = DEFAULT_OUT_DIR,
+  name = `policy-ocr-responsibility-data-${timestampSlug()}`,
+} = {}) {
+  const resolvedDbPath = path.resolve(dbPath);
+  const resolvedOutDir = path.resolve(outDir);
+  if (!existsSync(resolvedDbPath)) throw new Error(`Database not found: ${resolvedDbPath}`);
+  await fs.mkdir(resolvedOutDir, { recursive: true });
+
+  const snapshotPath = path.join(resolvedOutDir, `${name}.sqlite`);
+  const bundlePath = `${snapshotPath}.gz`;
+  const manifestPath = path.join(resolvedOutDir, `${name}.manifest.json`);
+  await fs.rm(snapshotPath, { force: true });
+  await fs.rm(bundlePath, { force: true });
+  await fs.rm(manifestPath, { force: true });
+
+  const tableResults = createResponsibilitySnapshot({ sourceDbPath: resolvedDbPath, snapshotPath });
+  const snapshotSummary = summarizeSqliteDatabase(snapshotPath);
+  assertResponsibilitySnapshot(snapshotSummary);
+  await gzipFile(snapshotPath, bundlePath);
+  const manifest = {
+    format: BUNDLE_FORMAT,
+    mode: RESPONSIBILITY_BUNDLE_MODE,
+    createdAt: new Date().toISOString(),
+    bundleFile: path.basename(bundlePath),
+    sqliteBytes: statSync(snapshotPath).size,
+    bundleBytes: statSync(bundlePath).size,
+    sqliteSha256: await fileSha256(snapshotPath),
+    bundleSha256: await fileSha256(bundlePath),
+    tables: tableResults,
+    productScoped: true,
   };
   await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
   await fs.rm(snapshotPath, { force: true });
@@ -647,12 +761,79 @@ export async function installKnowledgeDataBundle({
   }
 }
 
+export async function installResponsibilityDataBundle({
+  bundlePath,
+  manifestPath = '',
+  targetDbPath = DEFAULT_TARGET_DB_PATH,
+  backupDir = '',
+} = {}) {
+  if (!bundlePath) throw new Error('bundlePath is required');
+  const resolvedBundlePath = path.resolve(bundlePath);
+  const resolvedTargetDbPath = path.resolve(targetDbPath);
+  const resolvedManifestPath = path.resolve(manifestPath || defaultManifestPath(resolvedBundlePath));
+  const resolvedBackupDir = path.resolve(backupDir || path.join(path.dirname(resolvedTargetDbPath), 'backups'));
+  const manifest = await validateBundleFile({ resolvedBundlePath, resolvedManifestPath });
+  if (manifest?.mode !== RESPONSIBILITY_BUNDLE_MODE) {
+    throw new Error('Product-scoped responsibility install requires an export-responsibility bundle.');
+  }
+  if (!existsSync(resolvedTargetDbPath)) throw new Error(`Target database not found: ${resolvedTargetDbPath}`);
+
+  const before = summarizeSqliteDatabase(resolvedTargetDbPath);
+  const tmpDbPath = `${resolvedTargetDbPath}.responsibility-installing-${Date.now()}`;
+  await fs.rm(tmpDbPath, { force: true });
+  try {
+    await gunzipFile(resolvedBundlePath, tmpDbPath);
+    const sourceSummary = summarizeSqliteDatabase(tmpDbPath);
+    if (sourceSummary.integrity !== 'ok') throw new Error(`Source database integrity check failed: ${sourceSummary.integrity}`);
+    const backup = await backupSqliteFiles(resolvedTargetDbPath, resolvedBackupDir);
+    const sourceDb = new DatabaseSync(tmpDbPath, { readOnly: true });
+    const targetDb = new DatabaseSync(resolvedTargetDbPath);
+    try {
+      const products = sourceProductIdentities(sourceDb);
+      if (!products.length) throw new Error('Responsibility bundle contains no company/product records.');
+      targetDb.exec('BEGIN IMMEDIATE');
+      let tableResults;
+      try {
+        tableResults = RESPONSIBILITY_BUNDLE_TABLES.map((table) => replaceProductScopedRows({
+          sourceDb,
+          targetDb,
+          table,
+          products,
+        }));
+        targetDb.exec('COMMIT');
+      } catch (error) {
+        targetDb.exec('ROLLBACK');
+        throw error;
+      }
+      return {
+        ok: true,
+        mode: RESPONSIBILITY_BUNDLE_MODE,
+        bundlePath: resolvedBundlePath,
+        manifestPath: existsSync(resolvedManifestPath) ? resolvedManifestPath : '',
+        targetDbPath: resolvedTargetDbPath,
+        backup,
+        products,
+        tables: tableResults,
+        before,
+        after: summarizeSqliteDatabase(resolvedTargetDbPath),
+      };
+    } finally {
+      sourceDb.close();
+      targetDb.close();
+    }
+  } finally {
+    await fs.rm(tmpDbPath, { force: true });
+  }
+}
+
 function printUsageAndExit() {
   console.error(`Usage:
   node scripts/production-data-bundle.mjs export [--db-path <path>] [--out-dir <dir>] [--name <name>]
   node scripts/production-data-bundle.mjs export-knowledge [--db-path <path>] [--out-dir <dir>] [--name <name>]
+  node scripts/production-data-bundle.mjs export-responsibility [--db-path <path>] [--out-dir <dir>] [--name <name>]
   node scripts/production-data-bundle.mjs inspect --db-path <path>
   node scripts/production-data-bundle.mjs install-knowledge --bundle <path> [--manifest <path>] [--target-db <path>] [--backup-dir <dir>]
+  node scripts/production-data-bundle.mjs install-responsibility --bundle <path> [--manifest <path>] [--target-db <path>] [--backup-dir <dir>]
   node scripts/production-data-bundle.mjs install --bundle <path> [--manifest <path>] [--target-db <path>] [--backup-dir <dir>] [--replace-non-empty] [--allow-user-data-loss]
 `);
   process.exit(1);
@@ -675,6 +856,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         name: readArg('name', `policy-ocr-knowledge-data-${timestampSlug()}`),
       });
       console.log(JSON.stringify(result, null, 2));
+    } else if (command === 'export-responsibility') {
+      const result = await createResponsibilityDataBundle({
+        dbPath: readArg('db-path', DEFAULT_DB_PATH),
+        outDir: readArg('out-dir', DEFAULT_OUT_DIR),
+        name: readArg('name', `policy-ocr-responsibility-data-${timestampSlug()}`),
+      });
+      console.log(JSON.stringify(result, null, 2));
     } else if (command === 'inspect') {
       const dbPath = readArg('db-path');
       if (!dbPath) printUsageAndExit();
@@ -683,6 +871,16 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       const bundlePath = readArg('bundle');
       if (!bundlePath) printUsageAndExit();
       const result = await installKnowledgeDataBundle({
+        bundlePath,
+        manifestPath: readArg('manifest', ''),
+        targetDbPath: readArg('target-db', DEFAULT_TARGET_DB_PATH),
+        backupDir: readArg('backup-dir', ''),
+      });
+      console.log(JSON.stringify(result, null, 2));
+    } else if (command === 'install-responsibility') {
+      const bundlePath = readArg('bundle');
+      if (!bundlePath) printUsageAndExit();
+      const result = await installResponsibilityDataBundle({
         bundlePath,
         manifestPath: readArg('manifest', ''),
         targetDbPath: readArg('target-db', DEFAULT_TARGET_DB_PATH),

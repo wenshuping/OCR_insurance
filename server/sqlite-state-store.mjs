@@ -584,6 +584,46 @@ function normalizeProductCustomerSummaryGenerationRun(row = {}) {
   };
 }
 
+function customerSummaryFromPassedGenerationRun(row = {}) {
+  const run = normalizeProductCustomerSummaryGenerationRun(row);
+  if (!run || run.status !== 'passed') return null;
+  const preview = parseJson(run.rawPreview, {});
+  const responsibilities = normalizeArray(preview.responsibilities).map((item) => ({
+    title: String(item?.title || '').trim(),
+    plainText: String(item?.plainText || '').trim(),
+    triggerCondition: String(item?.triggerCondition || '').trim(),
+    howItPays: String(item?.paymentRule || item?.howItPays || '').trim(),
+    calculationStatus: String(item?.calculationStatus || '').trim(),
+    sourceRefs: normalizeStringArray(item?.sourceRefs),
+  }));
+  const summaryJson = normalizeCustomerSummaryJson({
+    company: run.company,
+    productName: run.productName,
+    headline: preview.headline,
+    mainResponsibilities: responsibilities,
+    notices: preview.importantNotes,
+    requiredPolicyFields: preview.missingOrUnclear,
+    sourceUrls: preview.sourceUrls,
+    contentBlocks: preview.contentBlocks,
+  });
+  if (!hasCustomerSummaryContent(summaryJson)) return null;
+  return normalizeProductCustomerResponsibilitySummary({
+    id: `customer_summary:${run.productKey}:${run.summaryVersion}`,
+    productKey: run.productKey,
+    company: run.company,
+    productName: run.productName,
+    summaryVersion: run.summaryVersion,
+    status: 'ready',
+    headline: summaryJson.headline,
+    summaryJson,
+    sourceDigest: run.sourceDigest,
+    modelProvider: run.modelProvider,
+    modelName: run.modelName,
+    generatedAt: run.createdAt,
+    payload: { recoveredFromGenerationRunId: run.id },
+  });
+}
+
 function getMeta(db, key) {
   return db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value || '';
 }
@@ -2624,6 +2664,26 @@ function loadPayloadRows(db, table, orderBy) {
     .filter(Boolean);
 }
 
+function createLazyArray(loader) {
+  const target = [];
+  let loaded = false;
+  const ensureLoaded = () => {
+    if (loaded) return;
+    loaded = true;
+    target.push(...loader());
+  };
+  return new Proxy(target, {
+    get(current, property, receiver) {
+      ensureLoaded();
+      return Reflect.get(current, property, receiver);
+    },
+    set(current, property, value, receiver) {
+      ensureLoaded();
+      return Reflect.set(current, property, value, receiver);
+    },
+  });
+}
+
 function loadProductCustomerSummaryGenerationRuns(db) {
   return db.prepare(`
     SELECT
@@ -2652,7 +2712,13 @@ function loadProductCustomerSummaryGenerationRuns(db) {
     .filter(Boolean);
 }
 
-function loadDbOwnedState(db) {
+function loadDbOwnedState(db, {
+  includeKnowledgeRecords = true,
+  includeResponsibilityIndexes = true,
+  deferFamilyReports = false,
+  deferLargeState = false,
+} = {}) {
+  const deferLargeCollections = deferFamilyReports || deferLargeState;
   const state = {
     users: loadPayloadRows(db, 'users', 'id ASC'),
     sessions: loadPayloadRows(db, 'sessions', 'created_at ASC'),
@@ -2661,31 +2727,35 @@ function loadDbOwnedState(db) {
     policies: loadPayloadRows(db, 'policies', 'id ASC'),
     pendingScans: loadPayloadRows(db, 'pending_scans', 'row_id ASC'),
     sourceRecords: loadPayloadRows(db, 'source_records', 'id ASC'),
-    knowledgeRecords: loadPayloadRows(db, 'knowledge_records', 'id ASC'),
-    insuranceIndicatorRecords: loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC'),
-    optionalResponsibilityRecords: loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC'),
-    productCustomerResponsibilitySummaries: loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'),
-    productCustomerSummaryGenerationRuns: loadProductCustomerSummaryGenerationRuns(db),
-    policyDerivedResults: loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
-    productIndicatorVersions: loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
-    indicatorUpdateBatches: loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
+    knowledgeRecords: includeKnowledgeRecords ? loadPayloadRows(db, 'knowledge_records', 'id ASC') : [],
+    insuranceIndicatorRecords: includeResponsibilityIndexes
+      ? loadPayloadRows(db, 'insurance_indicator_records', 'product_name ASC, coverage_type ASC, liability ASC, id ASC')
+      : [],
+    optionalResponsibilityRecords: includeResponsibilityIndexes
+      ? loadPayloadRows(db, 'optional_responsibility_records', 'product_name ASC, liability ASC, id ASC')
+      : [],
+    productCustomerResponsibilitySummaries: deferLargeCollections ? [] : loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'),
+    productCustomerSummaryGenerationRuns: deferLargeCollections ? [] : loadProductCustomerSummaryGenerationRuns(db),
+    policyDerivedResults: deferLargeCollections ? [] : loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'),
+    productIndicatorVersions: deferLargeCollections ? [] : loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'),
+    indicatorUpdateBatches: deferLargeCollections ? [] : loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'),
     officialDomainProfiles: loadPayloadRows(db, 'official_domain_profiles', 'id ASC'),
     familyProfiles: loadPayloadRows(db, 'family_profiles', 'id ASC'),
     familyMembers: loadPayloadRows(db, 'family_members', 'id ASC'),
-    familyReports: loadPayloadRows(db, 'family_reports', 'generated_at ASC, id ASC'),
-    familyReportIssues: loadPayloadRows(db, 'family_report_issues', 'created_at ASC, id ASC'),
-    familyReportCorrections: loadPayloadRows(db, 'family_report_corrections', 'created_at ASC, id ASC'),
-    familyReportShares: loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
-    familySalesReviews: loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
-    familySalesChatThreads: loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'),
-    familySalesChatMessages: loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'),
-    familySalesMemories: loadPayloadRows(db, 'family_sales_memories', 'updated_at ASC, id ASC'),
-    reportRefreshEvents: loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
+    familyReports: deferFamilyReports ? [] : loadPayloadRows(db, 'family_reports', 'generated_at ASC, id ASC'),
+    familyReportIssues: deferFamilyReports ? [] : loadPayloadRows(db, 'family_report_issues', 'created_at ASC, id ASC'),
+    familyReportCorrections: deferFamilyReports ? [] : loadPayloadRows(db, 'family_report_corrections', 'created_at ASC, id ASC'),
+    familyReportShares: deferFamilyReports ? [] : loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'),
+    familySalesReviews: deferFamilyReports ? [] : loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'),
+    familySalesChatThreads: deferFamilyReports ? [] : loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'),
+    familySalesChatMessages: deferFamilyReports ? [] : loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'),
+    familySalesMemories: deferFamilyReports ? [] : loadPayloadRows(db, 'family_sales_memories', 'updated_at ASC, id ASC'),
+    reportRefreshEvents: deferLargeCollections ? [] : loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'),
     membershipConfig: parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null),
-    membershipOrders: loadPayloadRows(db, 'membership_orders', 'id ASC'),
-    memberships: loadPayloadRows(db, 'memberships', 'user_id ASC'),
-    userWechatIdentities: loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'),
-    wechatOAuthStates: loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
+    membershipOrders: deferLargeCollections ? [] : loadPayloadRows(db, 'membership_orders', 'id ASC'),
+    memberships: deferLargeCollections ? [] : loadPayloadRows(db, 'memberships', 'user_id ASC'),
+    userWechatIdentities: deferLargeCollections ? [] : loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'),
+    wechatOAuthStates: deferLargeCollections ? [] : loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
@@ -2723,12 +2793,24 @@ function stateDocumentEntries(state) {
   return Object.entries(state || {}).filter(([key]) => !DB_OWNED_KEYS.has(key) && !RESERVED_STATE_KEYS.has(key));
 }
 
-export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
+export async function createSqliteStateStore({
+  dbPath,
+  seedStatePath,
+  lazyKnowledgeRecords = false,
+  lazyFamilyReports = false,
+  lazyLargeState = false,
+} = {}) {
   if (!dbPath) throw new Error('POLICY_OCR_APP_DB_PATH is required');
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
   db.exec('PRAGMA busy_timeout = 5000');
-  createSchema(db);
+  let schemaVersion = '';
+  try {
+    schemaVersion = getMeta(db, 'schema_version');
+  } catch {
+    schemaVersion = '';
+  }
+  if (schemaVersion !== SCHEMA_VERSION) createSchema(db);
 
   async function loadSeedState() {
     const seed = seedStatePath ? await readJsonFile(seedStatePath, createInitialState()) : createInitialState();
@@ -3263,17 +3345,30 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       LIMIT 1
     `).get(key, version);
     const summary = normalizeProductCustomerResponsibilitySummary(parseJson(row?.payload, null) || {});
-    if (!summary) return null;
+    const recoveredRun = !summary ? db.prepare(`
+      SELECT payload, raw_preview
+      FROM product_customer_summary_generation_runs
+      WHERE product_key = ?
+        AND summary_version = ?
+        AND status = 'passed'
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `).get(key, version) : null;
+    const resolvedSummary = summary || customerSummaryFromPassedGenerationRun({
+      ...(parseJson(recoveredRun?.payload, {}) || {}),
+      raw_preview: recoveredRun?.raw_preview,
+    });
+    if (!resolvedSummary) return null;
     const hasSummaryContent = Boolean(
-      summary.summaryJson?.headline
-        || normalizeArray(summary.summaryJson?.mainResponsibilities).some((item) =>
+      resolvedSummary.summaryJson?.headline
+        || normalizeArray(resolvedSummary.summaryJson?.mainResponsibilities).some((item) =>
           item?.title || item?.plainText || item?.howItPays,
         ),
     );
     if (!hasSummaryContent) return null;
     const digest = String(sourceDigest || '').trim();
-    if (digest && summary.sourceDigest !== digest) return null;
-    return summary;
+    if (digest && resolvedSummary.sourceDigest !== digest) return null;
+    return resolvedSummary;
   }
 
   async function markPolicyDerivedResultsStaleByProductKeys({
@@ -3382,6 +3477,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     knowledgeRecords = [],
     indicatorRecords = [],
     responsibilityCards = [],
+    replaceResponsibilityCards = true,
+    removeIndicatorIds = [],
+    removeResponsibilityCardIds = [],
   } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -3401,13 +3499,19 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const normalizedCardRows = normalizeArray(responsibilityCards)
       .map((row) => normalizedProductResponsibilityCardRow(row))
       .filter(Boolean);
+    const normalizedRemoveIndicatorIds = Array.from(new Set(normalizeArray(removeIndicatorIds).map((id) => String(id || '').trim()).filter(Boolean)));
+    const normalizedRemoveCardIds = Array.from(new Set(normalizeArray(removeResponsibilityCardIds).map((id) => String(id || '').trim()).filter(Boolean)));
     const cardProductKeys = Array.from(new Set(normalizedCardRows.map((row) => row.productKey).filter(Boolean)));
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const record of normalizedKnowledgeRecords) upsertKnowledgeRecordRow(db, record);
+      for (const id of normalizedRemoveIndicatorIds) db.prepare('DELETE FROM insurance_indicator_records WHERE id = ?').run(id);
+      for (const id of normalizedRemoveCardIds) db.prepare('DELETE FROM product_responsibility_cards WHERE id = ?').run(id);
       for (const record of normalizedIndicatorRecords) upsertInsuranceIndicatorRecordRow(db, record);
-      for (const productKey of cardProductKeys) {
-        db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+      if (replaceResponsibilityCards) {
+        for (const productKey of cardProductKeys) {
+          db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+        }
       }
       for (const row of normalizedCardRows) upsertProductResponsibilityCardRow(db, row);
       updateStateMeta(db, nextState, now);
@@ -3431,6 +3535,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       knowledgeRecordCount: normalizedKnowledgeRecords.length,
       indicatorRecordCount: normalizedIndicatorRecords.length,
       responsibilityCardCount: normalizedCardRows.length,
+      removedIndicatorCount: normalizedRemoveIndicatorIds.length,
+      removedResponsibilityCardCount: normalizedRemoveCardIds.length,
       productKeys: cardProductKeys,
     };
   }
@@ -4072,9 +4178,118 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       return seedState;
     }
     const state = createInitialState();
-    Object.assign(state, loadDbOwnedState(db));
+    Object.assign(state, loadDbOwnedState(db, {
+      includeKnowledgeRecords: !lazyKnowledgeRecords,
+      includeResponsibilityIndexes: !lazyKnowledgeRecords,
+      deferFamilyReports: lazyFamilyReports,
+      deferLargeState: lazyLargeState,
+    }));
+    if (lazyFamilyReports || lazyLargeState) {
+      state.familyReports = createLazyArray(() => loadPayloadRows(db, 'family_reports', 'generated_at ASC, id ASC'));
+      state.familyReportIssues = createLazyArray(() => loadPayloadRows(db, 'family_report_issues', 'created_at ASC, id ASC'));
+      state.familyReportCorrections = createLazyArray(() => loadPayloadRows(db, 'family_report_corrections', 'created_at ASC, id ASC'));
+      state.familyReportShares = createLazyArray(() => loadPayloadRows(db, 'family_report_shares', 'created_at ASC, id ASC'));
+      state.familySalesReviews = createLazyArray(() => loadPayloadRows(db, 'family_sales_reviews', 'generated_at ASC, id ASC'));
+      state.familySalesChatThreads = createLazyArray(() => loadPayloadRows(db, 'family_sales_chat_threads', 'updated_at ASC, id ASC'));
+      state.familySalesChatMessages = createLazyArray(() => loadPayloadRows(db, 'family_sales_chat_messages', 'created_at ASC, id ASC'));
+      state.familySalesMemories = createLazyArray(() => loadPayloadRows(db, 'family_sales_memories', 'updated_at ASC, id ASC'));
+      state.reportRefreshEvents = createLazyArray(() => loadPayloadRows(db, 'report_refresh_events', 'created_at ASC, id ASC'));
+      state.productCustomerSummaryGenerationRuns = createLazyArray(() => loadProductCustomerSummaryGenerationRuns(db));
+      state.policyDerivedResults = createLazyArray(() => loadPayloadRows(db, 'policy_derived_results', 'policy_id ASC'));
+      state.indicatorUpdateBatches = createLazyArray(() => loadPayloadRows(db, 'indicator_update_batches', 'created_at ASC, id ASC'));
+      state.productCustomerResponsibilitySummaries = createLazyArray(() => loadPayloadRows(db, 'product_customer_responsibility_summaries', 'product_name ASC, summary_version ASC, id ASC'));
+      state.productIndicatorVersions = createLazyArray(() => loadPayloadRows(db, 'product_indicator_versions', 'product_key ASC'));
+      state.membershipOrders = createLazyArray(() => loadPayloadRows(db, 'membership_orders', 'id ASC'));
+      state.memberships = createLazyArray(() => loadPayloadRows(db, 'memberships', 'user_id ASC'));
+      state.userWechatIdentities = createLazyArray(() => loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'));
+      state.wechatOAuthStates = createLazyArray(() => loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'));
+    }
     state.nextId = resolveNextId({ ...state, nextId: Number(getMeta(db, 'next_id') || 1) });
     return state;
+  }
+
+  async function loadKnowledgeRecords({ company = '', productName = '' } = {}) {
+    const normalizedCompany = String(company || '').trim();
+    const normalizedProductName = String(productName || '').trim();
+    if (!normalizedCompany && !normalizedProductName) {
+      const error = new Error('按需读取知识库必须提供 company 或 productName 条件');
+      error.code = 'KNOWLEDGE_QUERY_REQUIRES_SCOPE';
+      throw error;
+    }
+    const companyPrefix = normalizedCompany.replace(/(?:人寿|财产|健康|养老)?保险.*$/u, '') || normalizedCompany;
+    let rows;
+    if (normalizedCompany && normalizedProductName) {
+      rows = db.prepare(`
+        SELECT payload FROM knowledge_records
+        WHERE (
+            company = ?
+            OR company GLOB ?
+            OR instr(company, ?) > 0
+            OR instr(?, company) > 0
+          )
+          AND (
+            product_name = ?
+            OR instr(product_name, ?) > 0
+            OR instr(?, product_name) > 0
+          )
+        ORDER BY id ASC
+        LIMIT 2_000
+      `).all(
+        normalizedCompany,
+        `${companyPrefix}*`,
+        normalizedCompany,
+        normalizedCompany,
+        normalizedProductName,
+        normalizedProductName,
+        normalizedProductName,
+      );
+    } else if (normalizedCompany) {
+      rows = db.prepare(`
+        SELECT payload FROM knowledge_records
+        WHERE company = ? OR company GLOB ? OR instr(company, ?) > 0 OR instr(?, company) > 0
+        ORDER BY id ASC
+        LIMIT 2_000
+      `).all(normalizedCompany, `${companyPrefix}*`, normalizedCompany, normalizedCompany);
+    } else {
+      rows = db.prepare(`
+        SELECT payload FROM knowledge_records
+        WHERE product_name = ? OR instr(product_name, ?) > 0 OR instr(?, product_name) > 0
+        ORDER BY id ASC
+        LIMIT 2_000
+      `).all(normalizedProductName, normalizedProductName, normalizedProductName);
+    }
+    return rows
+      .map((row) => parseJson(row.payload, null))
+      .filter(Boolean)
+      .map((record) => normalizeKnowledgeRecord(record))
+      .filter(Boolean);
+  }
+
+  async function loadResponsibilityIndexes({ company = '', productName = '' } = {}) {
+    const normalizedCompany = String(company || '').trim();
+    const normalizedProductName = String(productName || '').trim();
+    if (!normalizedCompany && !normalizedProductName) {
+      const error = new Error('按需读取责任指标必须提供 company 或 productName 条件');
+      error.code = 'RESPONSIBILITY_INDEX_QUERY_REQUIRES_SCOPE';
+      throw error;
+    }
+    const where = [];
+    const args = [];
+    if (normalizedCompany) {
+      where.push('company = ?');
+      args.push(normalizedCompany);
+    }
+    if (normalizedProductName) {
+      where.push('(product_name = ? OR instr(product_name, ?) > 0 OR instr(?, product_name) > 0)');
+      args.push(normalizedProductName, normalizedProductName, normalizedProductName);
+    }
+    const filter = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const indicators = db.prepare(`SELECT payload FROM insurance_indicator_records ${filter} ORDER BY id ASC`).all(...args);
+    const optional = db.prepare(`SELECT payload FROM optional_responsibility_records ${filter} ORDER BY id ASC`).all(...args);
+    return {
+      indicatorRecords: indicators.map((row) => parseJson(row.payload, null)).filter(Boolean),
+      optionalResponsibilityRecords: optional.map((row) => parseJson(row.payload, null)).filter(Boolean),
+    };
   }
 
   async function loadAgentIdentityState() {
@@ -4147,6 +4362,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     dbPath,
     seedStatePath,
     load,
+    loadKnowledgeRecords,
+    loadResponsibilityIndexes,
     loadAgentIdentityState,
     loadOfficialDomainProfiles,
     listAuthorizedFamilyProfiles,

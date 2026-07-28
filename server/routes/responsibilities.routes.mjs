@@ -10,6 +10,9 @@ import {
   EXTERNAL_REFERENCE_EVIDENCE_LEVEL,
   evidenceVerificationFields,
 } from '../evidence-classification.service.mjs';
+import {
+  responsibilityCompanyIdentity,
+} from '../product-responsibility-identity.mjs';
 
 function trim(value) {
   return String(value || '').trim();
@@ -113,10 +116,13 @@ export function createResponsibilityRoutes(context) {
     persistResponsibilityLookupArtifacts,
     allocateId,
     db,
+    loadKnowledgeRecords,
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
+    enqueueProductResponsibilityPipeline,
     generateProductCustomerResponsibilitySummary,
+    buildCustomerResponsibilitySummaryFromCards,
     enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
@@ -131,14 +137,13 @@ export function createResponsibilityRoutes(context) {
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
     const existing = String(current || '').trim();
-    if (existing && !(typeof isGeneratedResponsibilityCountReport === 'function' && isGeneratedResponsibilityCountReport(existing))) {
-      return existing;
-    }
     const cardReport = typeof buildResponsibilitySummaryReportFromCards === 'function'
       ? buildResponsibilitySummaryReportFromCards(cards, { optionalResponsibilities })
       : '';
-    if (cardReport) return cardReport;
-    return rows.length ? `已整理 ${rows.length} 项保险责任。` : existing;
+    const generatedCountReport = typeof isGeneratedResponsibilityCountReport === 'function'
+      && isGeneratedResponsibilityCountReport(existing);
+    const legacyCardReport = Boolean(existing && cardReport && existing === cardReport);
+    return existing && !generatedCountReport && !legacyCardReport ? existing : '';
   }
 
   function filteredKnowledgeRecordsForPolicy(policyDraft) {
@@ -213,6 +218,7 @@ export function createResponsibilityRoutes(context) {
       ...payload,
       id: trim(row.id || payload.id),
       productKey: trim(row.product_key || payload.productKey || payload.product_key),
+      canonicalProductId: trim(payload.canonicalProductId || payload.canonical_product_id),
       company: trim(row.company || payload.company),
       productName: trim(row.product_name || payload.productName || payload.product_name),
       title: trim(row.title || payload.title),
@@ -224,7 +230,7 @@ export function createResponsibilityRoutes(context) {
     };
   }
 
-  function cardsFromProductResponsibilityRows(rows = [], { company, productName, productKey } = {}) {
+  function cardsFromProductResponsibilityRows(rows = [], { company, productName, productKey, canonicalProductId } = {}) {
     return (Array.isArray(rows) ? rows : [])
       .map((row) => cardFromProductResponsibilityRow(row))
       .filter((card) => {
@@ -232,7 +238,9 @@ export function createResponsibilityRoutes(context) {
         return (
           trim(card.title) &&
           (
-            (trim(card.company) === company && productNameMatchesQuery(card.productName, productName)) ||
+            (responsibilityCompanyIdentity(card.company) === responsibilityCompanyIdentity(company)
+              && productNameMatchesQuery(card.productName, productName)) ||
+            (canonicalProductId && trim(card.canonicalProductId) === canonicalProductId) ||
             (!hasProductColumns && trim(card.productKey) === productKey)
           )
         );
@@ -242,39 +250,97 @@ export function createResponsibilityRoutes(context) {
   function loadExistingProductResponsibilityCards(policyDraft = {}) {
     const company = trim(policyDraft.company);
     const productName = trim(policyDraft.name || policyDraft.productName);
+    const canonicalProductId = trim(policyDraft.canonicalProductId);
     if (!db || !company || !productName) return [];
-    const productKey = `company_product:${company}:${productName}`;
+    const productKey = canonicalProductId
+      ? `canonical:${canonicalProductId}`
+      : `company_product:${company}:${productName}`;
     try {
-      const exactRows = db.prepare(`
+      if (canonicalProductId) {
+        const canonicalRows = db.prepare(`
+          SELECT *
+          FROM product_responsibility_cards
+          WHERE product_key = ?
+          ORDER BY title ASC, id ASC
+        `).all(productKey);
+        const canonicalCards = cardsFromProductResponsibilityRows(canonicalRows, {
+          company, productName, productKey, canonicalProductId,
+        });
+        if (canonicalCards.length) return canonicalCards;
+      }
+      const companyNames = new Set([company]);
+      if (typeof buildEffectiveOfficialDomainProfiles === 'function') {
+        const companyIdentity = responsibilityCompanyIdentity(company);
+        for (const profile of buildEffectiveOfficialDomainProfiles(state) || []) {
+          const aliases = [
+            profile?.company,
+            ...(Array.isArray(profile?.aliases) ? profile.aliases : []),
+            ...(Array.isArray(profile?.companyAliases) ? profile.companyAliases : []),
+          ].map(trim).filter(Boolean);
+          if (aliases.some((alias) => responsibilityCompanyIdentity(alias) === companyIdentity)) {
+            aliases.forEach((alias) => companyNames.add(alias));
+          }
+        }
+      }
+      const legalCompanyPrefix = productName.match(
+        /^[\u4e00-\u9fff]{2,12}(?:人寿保险|财产保险|健康保险|养老保险|保险)(?:股份)?有限公司/u,
+      )?.[0] || '';
+      if (legalCompanyPrefix) companyNames.add(legalCompanyPrefix);
+      const productSearchNames = new Set([productName]);
+      for (const companyName of companyNames) {
+        if (productName.startsWith(companyName) && productName.length > companyName.length) {
+          productSearchNames.add(productName.slice(companyName.length));
+        }
+      }
+      if (legalCompanyPrefix && productName.startsWith(legalCompanyPrefix)) {
+        productSearchNames.add(productName.slice(legalCompanyPrefix.length));
+      }
+
+      const exactRows = [];
+      for (const companyName of companyNames) {
+        exactRows.push(...db.prepare(`
+          SELECT *
+          FROM product_responsibility_cards
+          WHERE company = ? AND product_name = ?
+          ORDER BY title ASC, id ASC
+        `).all(companyName, productName));
+      }
+      const exactCards = cardsFromProductResponsibilityRows(exactRows, {
+        company, productName, productKey, canonicalProductId,
+      });
+      if (exactCards.length) return exactCards;
+
+      const fuzzyRows = [];
+      for (const companyName of companyNames) {
+        for (const searchName of productSearchNames) {
+          fuzzyRows.push(...db.prepare(`
+            SELECT DISTINCT company, product_name
+            FROM product_responsibility_cards
+            WHERE company = ? AND product_name LIKE ?
+            LIMIT 200
+          `).all(companyName, `%${searchName}%`));
+        }
+      }
+      const rowsByProduct = new Map();
+      for (const row of fuzzyRows) {
+        const rowProductName = productNameFromResponsibilityCardRow(row);
+        if (responsibilityCompanyIdentity(row.company) !== responsibilityCompanyIdentity(company)
+          || !productNameMatchesQuery(rowProductName, productName)) continue;
+        const key = comparableProductName(rowProductName);
+        if (!key) continue;
+        if (!rowsByProduct.has(key)) rowsByProduct.set(key, row);
+      }
+      if (rowsByProduct.size !== 1) return [];
+      const matchedProduct = [...rowsByProduct.values()][0];
+      const matchedRows = db.prepare(`
         SELECT *
         FROM product_responsibility_cards
         WHERE company = ? AND product_name = ?
         ORDER BY title ASC, id ASC
-      `).all(company, productName);
-      const exactCards = cardsFromProductResponsibilityRows(exactRows, { company, productName, productKey });
-      if (exactCards.length) return exactCards;
-
-      const fuzzyRows = db.prepare(`
-        SELECT *
-        FROM product_responsibility_cards
-        WHERE company = ?
-          AND (
-            product_name LIKE ?
-            OR ? LIKE '%' || product_name || '%'
-          )
-        ORDER BY product_name ASC, title ASC, id ASC
-      `).all(company, `%${productName}%`, productName);
-      const rowsByProduct = new Map();
-      for (const row of fuzzyRows) {
-        const rowProductName = productNameFromResponsibilityCardRow(row);
-        if (!productNameMatchesQuery(rowProductName, productName)) continue;
-        const key = comparableProductName(rowProductName);
-        if (!key) continue;
-        if (!rowsByProduct.has(key)) rowsByProduct.set(key, []);
-        rowsByProduct.get(key).push(row);
-      }
-      if (rowsByProduct.size !== 1) return [];
-      return cardsFromProductResponsibilityRows([...rowsByProduct.values()][0], { company, productName, productKey });
+      `).all(matchedProduct.company, matchedProduct.product_name);
+      return cardsFromProductResponsibilityRows(matchedRows, {
+        company, productName, productKey, canonicalProductId,
+      });
     } catch {
       return [];
     }
@@ -348,6 +414,45 @@ export function createResponsibilityRoutes(context) {
         reusedResponsibilityCardCount: responsibilityCards.length,
       },
       modelOutput: null,
+    };
+  }
+
+  function existingResponsibilityCardProductMatch(policyDraft = {}) {
+    const cards = loadExistingProductResponsibilityCards(policyDraft);
+    const firstCard = cards[0];
+    if (!firstCard) return null;
+    const company = trim(firstCard.company || policyDraft.company);
+    const productName = trim(firstCard.productName || policyDraft.name || policyDraft.productName);
+    const sourceUrl = trim(firstCard.sourceUrl);
+    return {
+      company,
+      productName,
+      resolvedProductName: productName,
+      canonicalProductId: trim(firstCard.canonicalProductId),
+      title: trim(firstCard.title) || productName,
+      score: 1,
+      matchReason: '已命中库内保险责任卡',
+      evidenceLabel: '本地保险责任库',
+      evidenceLevel: 'insurer_official',
+      verificationStatus: trim(firstCard.verificationStatus),
+      verificationLabel: trim(firstCard.verificationLabel),
+      sourceKind: 'insurer_official',
+      referenceOnly: false,
+      responsibilityDeferred: false,
+      sourceCount: cards.length,
+      needsConfirmation: false,
+      bestSource: {
+        title: trim(firstCard.sourceTitle) || trim(firstCard.title) || productName,
+        url: sourceUrl,
+        sourceType: trim(firstCard.sourceType),
+        materialType: trim(firstCard.materialType) || 'terms',
+        sourceKind: 'insurer_official',
+        evidenceLevel: 'insurer_official',
+        verificationStatus: trim(firstCard.verificationStatus),
+        verificationLabel: trim(firstCard.verificationLabel),
+        responsibilityDeferred: false,
+        referenceOnly: false,
+      },
     };
   }
 
@@ -679,23 +784,38 @@ export function createResponsibilityRoutes(context) {
   async function queryResponsibilityAssistant({
     company,
     name,
+    canonicalProductId = '',
     preferLocalKnowledgeAnswer = true,
     allowExternalReferences = false,
   } = {}) {
     const routeStartedAt = nowMs();
     const input = normalizeResponsibilityQueryInput({ company, name });
-    const policy = { company: input.company, name: input.name };
+    const policy = { company: input.company, name: input.name, canonicalProductId: trim(canonicalProductId) };
     const scan = { ocrText: `${input.company} ${input.name}`, data: input };
     const analysisStartedAt = nowMs();
     if (allowExternalReferences) {
       await refreshExternalResponsibilityDetails(policy, buildEffectiveOfficialDomainProfiles(state));
     }
-    const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer
+    let hasLocalResponsibilityText = false;
+    if (!allowExternalReferences && preferLocalKnowledgeAnswer && typeof loadKnowledgeRecords === 'function') {
+      try {
+        const records = await loadKnowledgeRecords({ company: input.company, productName: input.name });
+        hasLocalResponsibilityText = (Array.isArray(records) ? records : []).some((record) => /保险责任/u.test(
+          `${trim(record?.pageText)} ${trim(record?.snippet)}`,
+        ));
+      } catch {
+        // The analyzer retains the existing fallback behavior if scoped lookup is unavailable.
+      }
+    }
+    const existingCardAnalysis = !allowExternalReferences && preferLocalKnowledgeAnswer && !hasLocalResponsibilityText
       ? existingResponsibilityCardAnalysis(policy)
       : null;
     const analysis = existingCardAnalysis || await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
     const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
-    const analysisWithCards = allowExternalReferences || existingCardAnalysis ? analysis : attachResponsibilityCards(analysis, policy);
+    const isLocalResponsibilityText = analysis?.rawAnalysis?.generatedBy === 'local_knowledge_fast_path';
+    const analysisWithCards = allowExternalReferences || existingCardAnalysis || isLocalResponsibilityText
+      ? analysis
+      : attachResponsibilityCards(analysis, policy);
     const effectiveAnalysis = allowExternalReferences ? withExternalReviewWarning(analysisWithCards) : analysisWithCards;
     const reusedResponsibilityCardCount = Number(effectiveAnalysis?.rawAnalysis?.reusedResponsibilityCardCount || 0);
     const persistence = reusedResponsibilityCardCount
@@ -704,6 +824,12 @@ export function createResponsibilityRoutes(context) {
           indicatorRecordCount: 0,
           responsibilityCardCount: 0,
           reusedResponsibilityCardCount,
+        }
+      : isLocalResponsibilityText
+      ? {
+          knowledgeRecordCount: 0,
+          indicatorRecordCount: 0,
+          responsibilityCardCount: 0,
         }
       : allowExternalReferences
       ? await persistExternalReviewAnalysisArtifacts(policy, effectiveAnalysis, officialDomainProfiles)
@@ -733,6 +859,7 @@ export function createResponsibilityRoutes(context) {
       const result = await queryResponsibilityAssistant({
         company: input.company,
         name: input.name,
+        canonicalProductId: req.body?.canonicalProductId,
         preferLocalKnowledgeAnswer: req.body?.preferLocalKnowledgeAnswer !== false,
         allowExternalReferences: booleanFromBody(req.body?.allowExternalReferences),
       });
@@ -775,9 +902,38 @@ export function createResponsibilityRoutes(context) {
   router.get('/company-suggestions', async (req, res) => {
     const q = trim(req.query?.q);
     const limit = Number(req.query?.limit);
+    let suggestionState = state;
+    // Knowledge records are intentionally lazy at startup.  Build the small
+    // company-only index on demand so the dropdown does not depend on the
+    // in-memory full knowledge corpus (or trigger a payload scan).
+    if (db?.prepare && q) {
+      try {
+        const companyPrefix = q.replace(/(?:人寿|财产|健康|养老)?保险.*$/u, '') || q;
+        const companyRows = db.prepare(`
+          SELECT DISTINCT company, 1 AS record_count
+          FROM knowledge_records
+          WHERE company IS NOT NULL AND TRIM(company) <> ''
+            AND (company GLOB ? OR instr(company, ?) > 0 OR instr(?, company) > 0)
+          ORDER BY company ASC
+          LIMIT 500
+        `).all(`${companyPrefix}*`, q, q);
+        if (companyRows.length) {
+          const records = [
+            ...(Array.isArray(state?.knowledgeRecords) ? state.knowledgeRecords : []),
+            ...companyRows.map((row) => ({
+              company: trim(row.company),
+              productName: '',
+            })),
+          ];
+          suggestionState = { ...state, knowledgeRecords: records };
+        }
+      } catch {
+        // Keep the in-memory/policy fallback for test stores and legacy DBs.
+      }
+    }
     res.json({
       ok: true,
-      suggestions: buildResponsibilityCompanySuggestions(state, q, Number.isFinite(limit) && limit > 0 ? limit : undefined),
+      suggestions: buildResponsibilityCompanySuggestions(suggestionState, q, Number.isFinite(limit) && limit > 0 ? limit : undefined),
     });
   });
 
@@ -785,17 +941,26 @@ export function createResponsibilityRoutes(context) {
     const company = trim(req.query?.company);
     const q = trim(req.query?.q);
     const limit = Number(req.query?.limit);
+    let knowledgeRecords = state.knowledgeRecords || [];
+    if (q && typeof loadKnowledgeRecords === 'function') {
+      try {
+        knowledgeRecords = await loadKnowledgeRecords({ company, productName: q });
+      } catch {
+        // Keep the in-memory fallback for test stores and legacy runtimes.
+      }
+    }
     res.json({
       ok: true,
       suggestions: buildResponsibilityProductSuggestions(state, {
         company,
         query: q,
         maxResults: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        knowledgeRecords,
       }),
     });
   });
 
-  async function queryCustomerResponsibilitySummary({ company, name }, { privateSourceRecords = [] } = {}) {
+  async function queryCustomerResponsibilitySummary({ company, name, canonicalProductId }, { privateSourceRecords = [] } = {}) {
     const routeStartedAt = nowMs();
     const privateRecord = privateSourceRecords[0];
     const input = normalizeResponsibilityQueryInput(privateRecord ? {
@@ -803,16 +968,31 @@ export function createResponsibilityRoutes(context) {
       name: privateRecord.productName,
     } : { company, name });
     const usesPrivateSource = privateSourceRecords.length > 0;
+
+    let summaryState = state;
+    if (!usesPrivateSource && typeof loadKnowledgeRecords === 'function') {
+      try {
+        const scopedKnowledgeRecords = await loadKnowledgeRecords({
+          company: input.company,
+          productName: input.name,
+        });
+        summaryState = { ...state, knowledgeRecords: scopedKnowledgeRecords };
+      } catch {
+        // Keep the in-memory fallback for test stores and legacy runtimes.
+      }
+    }
     const result = await generateProductCustomerResponsibilitySummary({
-      state,
+      state: summaryState,
       db,
-      input,
+      input: { ...input, canonicalProductId },
       findSummary: usesPrivateSource ? undefined : findProductCustomerResponsibilitySummary,
       persistSummary: usesPrivateSource ? undefined : persistProductCustomerResponsibilitySummary,
       persistGenerationRun: !usesPrivateSource && typeof persistProductCustomerSummaryGenerationRun === 'function'
         ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
         : undefined,
       privateSourceRecords,
+      requireApprovedPipelineArtifact: !usesPrivateSource && typeof enqueueProductResponsibilityPipeline === 'function',
+      enqueueProductResponsibilityPipeline: usesPrivateSource ? undefined : enqueueProductResponsibilityPipeline,
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
       generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
       generateOfficialAnalysis: async ({ company: insurer, productName }) => assistantAnalyzer({
@@ -824,7 +1004,8 @@ export function createResponsibilityRoutes(context) {
       }),
     });
     if (usesPrivateSource && result?.ok) result.source = 'customer_upload';
-    if (!usesPrivateSource && result?.ok && result?.summary && typeof retrieveCustomerResponsibilityMaterials === 'function'
+    if (!usesPrivateSource && result?.source !== 'database' && result?.ok && result?.summary
+      && typeof retrieveCustomerResponsibilityMaterials === 'function'
       && typeof enrichCustomerResponsibilitySummaryWithMaterials === 'function') {
       try {
         const evidencePackage = await retrieveCustomerResponsibilityMaterials({
@@ -881,7 +1062,10 @@ export function createResponsibilityRoutes(context) {
           .sort((left, right) => Number(right.id || 0) - Number(left.id || 0))
           .slice(0, 6);
       }
-      const result = await queryCustomerResponsibilitySummary(input, { privateSourceRecords });
+      const result = await queryCustomerResponsibilitySummary({
+        ...input,
+        canonicalProductId: trim(req.body?.canonicalProductId),
+      }, { privateSourceRecords });
       res.json(result);
     } catch (error) {
       sendError(res, error, 400);
@@ -899,10 +1083,25 @@ export function createResponsibilityRoutes(context) {
     const maxResults = positiveIntegerOrFallback(body?.limit, 3, 50);
     const minScore = scoreThresholdOrFallback(body?.minScore, 0.32);
     const includeOnline = booleanFromBody(body?.includeOnline);
+    const existingCardMatch = existingResponsibilityCardProductMatch(policy);
+    if (existingCardMatch) {
+      return matchResponse({ policy, matches: [existingCardMatch] });
+    }
+    let scopedKnowledgeRecords = state.knowledgeRecords || [];
+    if (typeof loadKnowledgeRecords === 'function') {
+      try {
+        scopedKnowledgeRecords = await loadKnowledgeRecords({
+          company: input.company,
+          productName: input.name,
+        });
+      } catch {
+        // Keep the in-memory fallback for test stores and legacy runtimes.
+      }
+    }
     let savedRecordCount = 0;
     let matches = findKnowledgeProductCandidates({
         policy,
-        records: state.knowledgeRecords || [],
+        records: scopedKnowledgeRecords,
         officialDomainProfiles,
         maxResults,
         minScore,
@@ -913,7 +1112,7 @@ export function createResponsibilityRoutes(context) {
       if (localStatus !== 'exact') {
         const customerPhotoMatches = findKnowledgeProductCandidates({
           policy,
-          records: state.knowledgeRecords || [],
+          records: scopedKnowledgeRecords,
           officialDomainProfiles,
           maxResults,
           minScore,
@@ -928,7 +1127,7 @@ export function createResponsibilityRoutes(context) {
 
       const cachedExternalMatches = findKnowledgeProductCandidates({
         policy,
-        records: state.knowledgeRecords || [],
+        records: scopedKnowledgeRecords,
         officialDomainProfiles,
         maxResults,
         minScore,
@@ -992,9 +1191,10 @@ export function createResponsibilityRoutes(context) {
           if (saved.length) {
             savedRecordCount += saved.length;
             await persistLookupArtifacts({ knowledgeRecords: saved });
+            scopedKnowledgeRecords = [...scopedKnowledgeRecords, ...saved];
             matches = findKnowledgeProductCandidates({
               policy,
-              records: state.knowledgeRecords || [],
+              records: scopedKnowledgeRecords,
               officialDomainProfiles,
               maxResults,
               minScore,
