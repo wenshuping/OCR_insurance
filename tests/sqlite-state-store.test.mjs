@@ -52,6 +52,41 @@ function baseKnowledgeState() {
   };
 }
 
+test('sqlite store can defer large knowledge indexes and load matching product rows on demand', async (t) => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const seedStatePath = path.join(dir, 'state.json');
+  await writeJson(seedStatePath, baseKnowledgeState());
+  const writer = await createSqliteStateStore({ dbPath, seedStatePath });
+  await writer.load();
+  writer.db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    6,
+    '新华人寿保险股份有限公司',
+    '已有保单',
+    'https://example.test/legal-terms',
+    JSON.stringify({
+      id: 6,
+      company: '新华人寿保险股份有限公司',
+      productName: '已有保单',
+      url: 'https://example.test/legal-terms',
+    }),
+  );
+  writer.close();
+
+  const store = await createSqliteStateStore({ dbPath, lazyKnowledgeRecords: true });
+  t.after(() => store.close());
+  const state = await store.load();
+  assert.deepEqual(state.knowledgeRecords, []);
+  assert.deepEqual(state.insuranceIndicatorRecords, []);
+  const records = await store.loadKnowledgeRecords({ company: '新华保险', productName: '已有保单' });
+  assert.deepEqual(records.map((row) => row.company), ['新华保险', '新华人寿保险股份有限公司']);
+  const indexes = await store.loadResponsibilityIndexes({ company: '新华保险', productName: '已有保单' });
+  assert.deepEqual(indexes.indicatorRecords.map((row) => row.liability), ['满期返还']);
+});
+
 test('sqlite store loads only authorized family rows for Agent queries', async (t) => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
@@ -1075,6 +1110,41 @@ test('sqlite state store persists product customer summary generation runs', asy
   }
 });
 
+test('sqlite state store recovers a ready customer summary from a passed generation run', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  try {
+    const state = await store.load();
+    await store.persistProductCustomerSummaryGenerationRun({
+      state,
+      run: {
+        id: 'customer_summary_run:company_product:测试保险:测试年金:v25:1',
+        productKey: 'company_product:测试保险:测试年金',
+        company: '测试保险',
+        productName: '测试年金',
+        summaryVersion: 'customer-summary-v25-planner-routing',
+        status: 'passed',
+        sourceDigest: 'source-digest',
+        rawPreview: JSON.stringify({
+          headline: '提供生存保险金和身故保障',
+          responsibilities: [{ title: '生存保险金', plainText: '被保险人生存时给付。', paymentRule: '按基本保额给付' }],
+          contentBlocks: [{ blockKey: 'productPurpose', title: '产品主要做什么', content: '长期年金保障。' }],
+        }),
+      },
+    });
+    const recovered = await store.findProductCustomerResponsibilitySummary({
+      productKey: 'company_product:测试保险:测试年金',
+      summaryVersion: 'customer-summary-v25-planner-routing',
+    });
+    assert.equal(recovered?.summaryJson?.headline, '提供生存保险金和身故保障');
+    assert.equal(recovered?.summaryJson?.mainResponsibilities?.[0]?.howItPays, '按基本保额给付');
+    assert.equal(recovered?.summaryJson?.contentBlocks?.[0]?.title, '产品主要做什么');
+  } finally {
+    store.close();
+  }
+});
+
 test('sqlite state store reloads product customer summary generation runs from db columns', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');
@@ -1392,6 +1462,41 @@ test('sqlite state store persists responsibility lookup artifacts into knowledge
     assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 1);
     const cardPayload = JSON.parse(store.db.prepare('SELECT payload FROM product_responsibility_cards LIMIT 1').get().payload);
     assert.equal(cardPayload.title, '重大疾病保险金');
+
+    const customerCardId = 'customer_upload:1:mild:card';
+    const customerIndicatorId = 'customer_upload:1:mild:indicator:1';
+    await store.persistResponsibilityLookupArtifacts({
+      state,
+      replaceResponsibilityCards: false,
+      responsibilityCards: [{
+        id: customerCardId,
+        productKey: 'company_product:测试保险:测试重疾保险',
+        company: '测试保险',
+        productName: '测试重疾保险',
+        title: '轻度疾病保险金',
+        payload: { title: '轻度疾病保险金', reviewedCustomerUpload: true },
+      }],
+      indicatorRecords: [{
+        id: customerIndicatorId,
+        company: '测试保险',
+        productName: '测试重疾保险',
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+      }],
+    });
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 2);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 2);
+
+    const removed = await store.persistResponsibilityLookupArtifacts({
+      state,
+      replaceResponsibilityCards: false,
+      removeResponsibilityCardIds: [customerCardId],
+      removeIndicatorIds: [customerIndicatorId],
+    });
+    assert.equal(removed.removedResponsibilityCardCount, 1);
+    assert.equal(removed.removedIndicatorCount, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 1);
 
     const reloaded = await store.load();
     assert.equal(reloaded.knowledgeRecords[0].productName, '测试重疾保险');

@@ -685,6 +685,7 @@ export function CustomerApp() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantCompany, setAssistantCompany] = useState('');
   const [assistantName, setAssistantName] = useState('');
+  const [assistantCanonicalProductId, setAssistantCanonicalProductId] = useState('');
   const [assistantAnalysis, setAssistantAnalysis] = useState<PolicyAnalysisResult | null>(null);
   const [assistantCustomerSummary, setAssistantCustomerSummary] = useState<CustomerResponsibilitySummary | null>(null);
   const [assistantCustomerSummaryLoading, setAssistantCustomerSummaryLoading] = useState(false);
@@ -2896,6 +2897,7 @@ export function CustomerApp() {
   function openResponsibilityAssistant() {
     setAssistantCompany((current) => current || formData.company.trim());
     setAssistantName((current) => current || formData.name.trim());
+    setAssistantCanonicalProductId((current) => current || String(formData.canonicalProductId || '').trim());
     setAssistantOpen(true);
   }
 
@@ -2908,6 +2910,7 @@ export function CustomerApp() {
   async function handleAssistantQuery() {
     const company = assistantCompany.trim();
     const name = assistantName.trim();
+    const canonicalProductId = assistantCanonicalProductId.trim();
     if (!company || !name || assistantLoading) {
       setAssistantMessage('请输入保险公司和保险名称');
       return;
@@ -2921,6 +2924,15 @@ export function CustomerApp() {
     setAssistantLocalSearched(false);
     setAssistantMessage('正在匹配本地产品');
     try {
+      if (canonicalProductId) {
+        await loadAssistantResponsibilities({
+          company,
+          name,
+          canonicalProductId,
+          startedAt,
+        });
+        return;
+      }
       const matched = await matchPolicyResponsibilities({
         company,
         name,
@@ -2938,8 +2950,14 @@ export function CustomerApp() {
         const displayName = policyKnowledgeMatchDisplayName(exactMatch) || resolvedName;
         setAssistantCompany(resolvedCompany);
         setAssistantName(displayName);
+        setAssistantCanonicalProductId(exactMatch.canonicalProductId || '');
         setAssistantMessage(`已按官方名称校正为：${displayName}`);
-        await loadAssistantResponsibilities({ company: resolvedCompany, name: resolvedName, startedAt });
+        await loadAssistantResponsibilities({
+          company: resolvedCompany,
+          name: resolvedName,
+          canonicalProductId: exactMatch.canonicalProductId,
+          startedAt,
+        });
         return;
       }
       if (matches.length) {
@@ -2983,6 +3001,7 @@ export function CustomerApp() {
   async function loadAssistantResponsibilities(input: {
     company: string;
     name: string;
+    canonicalProductId?: string;
     startedAt: number;
     preferLocalKnowledgeAnswer?: boolean;
     allowExternalReferences?: boolean;
@@ -2992,6 +3011,7 @@ export function CustomerApp() {
     const payload = await queryPolicyResponsibilities({
       company: input.company,
       name: input.name,
+      canonicalProductId: input.canonicalProductId,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
       allowExternalReferences: input.allowExternalReferences,
     });
@@ -3014,7 +3034,7 @@ export function CustomerApp() {
       });
       return;
     }
-    setAssistantMessage('正在生成客户可读摘要');
+    setAssistantMessage('正在读取库内保险责任摘要');
     setAssistantCustomerSummaryLoading(true);
     setAssistantCustomerSummary(null);
     setAssistantCustomerSummaryMessage('');
@@ -3022,6 +3042,7 @@ export function CustomerApp() {
       const summaryPayload = await getProductCustomerResponsibilitySummary({
         company: input.company,
         name: input.name,
+        canonicalProductId: input.canonicalProductId,
       });
       if (summaryPayload.ok) {
         setAssistantCustomerSummary(summaryPayload.summary);
@@ -3062,6 +3083,7 @@ export function CustomerApp() {
       const selectedKey = assistantMatchKey(match);
       setAssistantCompany(company);
       setAssistantName(displayName);
+      setAssistantCanonicalProductId(match.canonicalProductId || '');
       setAssistantAnalysis(null);
       setAssistantSelectedMatchKey(selectedKey);
       resetAssistantCustomerSummary('');
@@ -3096,6 +3118,7 @@ export function CustomerApp() {
     const startedAt = clientPerfNow();
     setAssistantCompany(company);
     setAssistantName(displayName);
+    setAssistantCanonicalProductId(match.canonicalProductId || '');
     setAssistantAnalysis(null);
     setAssistantSelectedMatchKey('');
     resetAssistantCustomerSummary('');
@@ -3103,7 +3126,12 @@ export function CustomerApp() {
     setAssistantLoading(true);
     setAssistantMessage('正在查询所选产品');
     try {
-      await loadAssistantResponsibilities({ company, name, startedAt });
+      await loadAssistantResponsibilities({
+        company,
+        name,
+        canonicalProductId: match.canonicalProductId,
+        startedAt,
+      });
     } catch (error) {
       setAssistantAnalysis(null);
       resetAssistantCustomerSummary(error instanceof Error ? error.message : '客户摘要生成失败，请稍后重试');
@@ -3152,10 +3180,12 @@ export function CustomerApp() {
         const resolvedName = (exactMatch.resolvedProductName || exactMatch.productName).trim();
         setAssistantCompany(resolvedCompany);
         setAssistantName(resolvedName);
+        setAssistantCanonicalProductId(exactMatch.canonicalProductId || '');
         setAssistantMessage(`已按官方名称校正为：${resolvedName}`);
         await loadAssistantResponsibilities({
           company: resolvedCompany,
           name: resolvedName,
+          canonicalProductId: exactMatch.canonicalProductId,
           startedAt,
           preferLocalKnowledgeAnswer: false,
         });
@@ -4461,6 +4491,7 @@ export function CustomerApp() {
       selectedMatchKey={assistantSelectedMatchKey}
       onChangeCompany={(value) => {
         setAssistantCompany(value);
+        setAssistantCanonicalProductId('');
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
@@ -4470,6 +4501,7 @@ export function CustomerApp() {
       }}
       onChangeName={(value) => {
         setAssistantName(value);
+        setAssistantCanonicalProductId('');
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
@@ -4483,6 +4515,7 @@ export function CustomerApp() {
       onSearchMore={() => void handleAssistantSearchMore()}
       onSelectCompany={(company) => {
         setAssistantCompany(company);
+        setAssistantCanonicalProductId('');
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
@@ -4494,6 +4527,7 @@ export function CustomerApp() {
       onSelectProduct={(suggestion, displayName) => {
         setAssistantCompany(suggestion.company);
         setAssistantName(displayName || productSuggestionDisplayName(suggestion) || suggestion.productName);
+        setAssistantCanonicalProductId(suggestion.canonicalProductId || '');
         setAssistantAnalysis(null);
         resetAssistantCustomerSummary('');
         setAssistantMatches([]);
