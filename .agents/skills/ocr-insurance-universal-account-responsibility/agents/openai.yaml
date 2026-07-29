@@ -1,0 +1,4 @@
+interface:
+  display_name: "万能账户责任解析"
+  short_description: "从官方保险条款提取万能账户利率结算费用规则并校验展示"
+  default_prompt: "Use $ocr-insurance-universal-account-responsibility to parse and verify universal-account responsibilities from official policy terms."

@@ -162,13 +162,28 @@ function loadProductListFilter(productListPath = '', productList = []) {
     )).filter((key) => key !== '\u001f'));
   }
   const resolvedPath = text(productListPath);
-  if (!resolvedPath) return null;
+  if (!resolvedPath) return [];
   const rows = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8'));
   if (!Array.isArray(rows)) throw new Error('--product-list must be a JSON array');
-  return new Set(rows.map((row) => productMapKey(
+  return rows;
+}
+
+function loadProductListFilter(productListRows = []) {
+  if (!Array.isArray(productListRows) || !productListRows.length) return null;
+  return new Set(productListRows.map((row) => productMapKey(
     row.company,
     row.productName || row.product_name,
   )).filter((key) => key !== '\u001f'));
+}
+
+function productListByProductKey(productListRows = []) {
+  const mapped = new Map();
+  for (const row of productListRows) {
+    const key = productMapKey(row.company, row.productName || row.product_name);
+    if (key === '\u001f') continue;
+    mapped.set(key, row);
+  }
+  return mapped;
 }
 
 function loadSourceRows(db) {
@@ -340,6 +355,12 @@ export function materializeProductResponsibilityCards({
 
     const productResults = products.map((product) => {
       const key = productMapKey(product.company, product.productName);
+      const productInput = productListInputs.get(key) || {};
+      const responsibilityMode = text(productInput.responsibilityMode || productInput.knowledgeResponsibilityMode);
+      const authoritativeOnly = responsibilityMode === 'authoritative_only';
+      const authoritativeResponsibilities = Array.isArray(productInput.authoritativeResponsibilities)
+        ? productInput.authoritativeResponsibilities
+        : [];
       const knowledgeRecords = knowledgeByProduct.get(key) || [];
       const coverageIndicators = indicatorsByProduct.get(key) || [];
       const optionalResponsibilityRecords = optionalByProduct.get(key) || [];
@@ -350,9 +371,11 @@ export function materializeProductResponsibilityCards({
           productName: product.productName,
           name: product.productName,
         },
+        responsibilities: authoritativeOnly ? authoritativeResponsibilities : undefined,
         knowledgeRecords,
         coverageIndicators,
-        optionalResponsibilityRecords,
+        optionalResponsibilityRecords: authoritativeOnly ? [] : optionalResponsibilityRecords,
+        knowledgeResponsibilityMode: authoritativeOnly ? 'authoritative_only' : 'auto',
       });
       const rows = cards.map((card, index) => materializedCardRow({ card, product, productKey, index, now }));
       if (rows.length) productsWithCards += 1;

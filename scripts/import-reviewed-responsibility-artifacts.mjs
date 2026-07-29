@@ -15,6 +15,10 @@ const projectRoot = path.resolve(__dirname, '..');
 const DEFAULT_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 const VERSION = '2026-06-23-reviewed-responsibility-artifact-import';
 
+function productKeyFor(company, productName) {
+  return `company_product:${text(company)}:${text(productName)}`;
+}
+
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
   const inline = process.argv.find((arg) => arg.startsWith(prefix));
@@ -230,7 +234,7 @@ function inferCoverageType(responsibility = {}, check = {}) {
 }
 
 function basisFor(responsibility = {}, check = {}) {
-  const explicit = text(responsibility.basis || check.basis);
+  const explicit = text(check.basis || responsibility.basis);
   if (explicit) return explicit;
   const basisKey = text(check.basisKey);
   if (basisKey === 'medical_expense') return '实际费用、免赔额、赔付比例和责任限额';
@@ -243,7 +247,7 @@ function basisFor(responsibility = {}, check = {}) {
 }
 
 function formulaFor(responsibility = {}, check = {}) {
-  const explicit = text(responsibility.formulaText || check.formulaText);
+  const explicit = text(check.formulaText || responsibility.formulaText);
   if (explicit) return explicit;
   const liability = responsibilityLiability(responsibility);
   const obligation = text(responsibility.insurerObligation);
@@ -298,6 +302,8 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     responsibilityScope: text(responsibility.responsibilityScope || check.responsibilityScope || 'basic_or_unspecified'),
     selectionStatus: normalizedSelectionStatus(responsibility.selectionStatus),
     selectionEvidence: text(responsibility.selectionEvidence || 'manual_skill_review'),
+    reviewedResponsibilityIndex: responsibilityIndex,
+    reviewedIndicatorIndex: indicatorIndex,
     quantificationStatus: 'quantified',
     extractionMethod: 'manual_skill_review',
     sourceRecordId,
@@ -305,6 +311,8 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     sourceTitle,
     sourceExcerpt,
     sourceEvidenceLevel: sourceUrl ? 'official_excerpt' : 'missing_source_url',
+    responsibilityArtifactId: text(product.artifactId),
+    responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
     reviewVersion: VERSION,
     responsibilityArtifactId: text(product.artifactId),
     responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
@@ -517,6 +525,114 @@ function pruneIndicatorsToAcceptedResponsibilities(dbPath, product = {}, expecte
   }
 }
 
+function ensureSingleProductWriteTables(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS insurance_indicator_records (
+      id TEXT PRIMARY KEY,
+      company TEXT,
+      product_name TEXT,
+      coverage_type TEXT,
+      liability TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      cashflow_treatment TEXT,
+      calculation_status TEXT,
+      calculation_reason TEXT,
+      responsibility_scope TEXT,
+      selection_status TEXT,
+      source_url TEXT,
+      generated_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS product_responsibility_artifacts (
+      id TEXT PRIMARY KEY,
+      company TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL,
+      source_url TEXT,
+      published_at TEXT NOT NULL,
+      publisher_version TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+  `);
+}
+
+function targetKnowledgeRows(db, product = {}) {
+  return db.prepare(`
+    SELECT id, company, product_name, url, payload
+      FROM knowledge_records
+     WHERE company = ? AND product_name = ?
+     ORDER BY id ASC
+  `).all(text(product.company), text(product.productName)).map((row) => {
+    const payload = JSON.parse(row.payload || '{}');
+    return {
+      ...payload,
+      id: payload.id ?? row.id,
+      company: text(payload.company || row.company),
+      productName: text(payload.productName || payload.product_name || payload.name || row.product_name),
+      url: text(payload.url || row.url),
+    };
+  });
+}
+
+function materializedRowsForProduct(db, product = {}, indicators = [], now) {
+  const company = text(product.company);
+  const productName = text(product.productName);
+  const productKey = productKeyFor(company, productName);
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: { company, productName, name: productName },
+    responsibilities: rows(product.acceptedResponsibilities),
+    coverageIndicators: indicators,
+    knowledgeRecords: targetKnowledgeRows(db, product),
+    optionalResponsibilityRecords: [],
+    knowledgeResponsibilityMode: 'authoritative_only',
+  });
+  return cards.map((card, index) => {
+    const indicatorCheck = indicatorCheckForResponsibilityCard(card);
+    const id = `product_responsibility_card:${productKey}:${String(index).padStart(4, '0')}:${text(card.title).normalize('NFKC').replace(/\s+/gu, '') || '保险责任'}`;
+    return {
+      id,
+      productKey,
+      company: text(card.company || company),
+      productName: text(card.productName || productName),
+      title: text(card.title),
+      category: text(card.category),
+      cashflowTreatment: text(card.cashflowTreatment),
+      calculationStatus: text(card.calculationStatus),
+      calculationReason: text(card.calculationReason),
+      responsibilityScope: text(card.responsibilityScope),
+      selectionStatus: text(card.selectionStatus),
+      sourceUrl: text(card.sourceUrl),
+      generatedAt: now,
+      updatedAt: now,
+      payload: {
+        ...card,
+        productKey,
+        generatedAt: now,
+        sourceCardId: text(card.id),
+        sourceGate: card.sourceUrl ? 'source_url_present' : 'missing_source_url',
+        liabilityGate: card.title && card.cashflowTreatment !== 'not_cashflow' ? 'accepted' : 'needs_review',
+        indicatorCheckStatus: indicatorCheck.status,
+        indicatorCheckIssues: indicatorCheck.issues,
+        indicatorCheckSummary: indicatorCheck.summary,
+        indicatorCheckVersion: '2026-06-23-responsibility-card-indicator-check',
+      },
+    };
+  });
+}
+
 export function importReviewedResponsibilityArtifacts({
   artifacts = [],
   dbPath = DEFAULT_DB_PATH,
@@ -600,6 +716,8 @@ export function importReviewedResponsibilityArtifacts({
       productName: text(product.productName),
       sourceDigest: sourceDigestForProduct(product),
       acceptedCount: accepted.length,
+      responsibilityMode: unifiedResponsibilities ? 'authoritative_only' : 'auto',
+      authoritativeResponsibilities: accepted,
     });
     if (accepted.length) productsByKey.set(productIdentityKey(product), product);
     if (samples.length < sampleLimit) {
@@ -615,10 +733,132 @@ export function importReviewedResponsibilityArtifacts({
 
   let materializeResult = null;
   const indicatorPruneResults = [];
+  const artifactWriteResults = [];
   if (write && indicators.length) {
     const db = new DatabaseSync(path.resolve(dbPath));
     try {
-      upsertIndicators(db, indicators, now);
+      ensureSingleProductWriteTables(db);
+      const insertIndicator = db.prepare(`
+        INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      const insertCard = db.prepare(`
+        INSERT INTO product_responsibility_cards (
+          id, product_key, company, product_name, title, category, cashflow_treatment,
+          calculation_status, calculation_reason, responsibility_scope, selection_status,
+          source_url, generated_at, updated_at, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const insertArtifact = db.prepare(`
+        INSERT INTO product_responsibility_artifacts (
+          id, company, product_name, source_digest, source_url, published_at, publisher_version, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      const deleteIndicators = db.prepare('DELETE FROM insurance_indicator_records WHERE company = ? AND product_name = ?');
+      const deleteCards = db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ? OR (company = ? AND product_name = ?)');
+      const deleteArtifacts = db.prepare('DELETE FROM product_responsibility_artifacts WHERE company = ? AND product_name = ?');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const product of productsForMaterialize.values()) {
+          const productKey = `${product.company}\u001f${product.productName}`;
+          const productIndicators = indicators.filter((indicator) => (
+            text(indicator.company) === product.company && text(indicator.productName) === product.productName
+          ));
+          const expectedIndicatorIds = indicatorIdsByProduct.get(productKey) || new Set();
+          const existingIndicatorIds = db.prepare(`
+            SELECT id
+              FROM insurance_indicator_records
+             WHERE company = ? AND product_name = ?
+          `).all(product.company, product.productName).map((row) => text(row.id));
+          const staleIndicatorIds = existingIndicatorIds.filter((id) => !expectedIndicatorIds.has(id));
+          indicatorPruneResults.push({
+            company: product.company,
+            productName: product.productName,
+            deletedIndicators: staleIndicatorIds.length,
+            keptIndicators: existingIndicatorIds.length - staleIndicatorIds.length,
+          });
+          const before = {
+            cards: Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards WHERE product_key = ? OR (company = ? AND product_name = ?)').get(productKeyFor(product.company, product.productName), product.company, product.productName)?.count || 0),
+            indicators: Number(db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records WHERE company = ? AND product_name = ?').get(product.company, product.productName)?.count || 0),
+            artifacts: Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_artifacts WHERE company = ? AND product_name = ?').get(product.company, product.productName)?.count || 0),
+          };
+          const cards = materializedRowsForProduct(db, {
+            ...productsByKey.get(productKey),
+            ...product,
+          }, productIndicators, now);
+          deleteIndicators.run(product.company, product.productName);
+          deleteCards.run(productKeyFor(product.company, product.productName), product.company, product.productName);
+          deleteArtifacts.run(product.company, product.productName);
+          for (const indicator of productIndicators) {
+            insertIndicator.run(
+              indicator.id,
+              indicator.company,
+              indicator.productName,
+              indicator.coverageType,
+              indicator.liability,
+              JSON.stringify(indicator),
+            );
+          }
+          for (const card of cards) {
+            insertCard.run(
+              card.id,
+              card.productKey,
+              card.company,
+              card.productName,
+              card.title,
+              card.category,
+              card.cashflowTreatment,
+              card.calculationStatus,
+              card.calculationReason,
+              card.responsibilityScope,
+              card.selectionStatus,
+              card.sourceUrl,
+              card.generatedAt,
+              card.updatedAt,
+              JSON.stringify(card.payload),
+            );
+          }
+          const reviewedProduct = productsByKey.get(productKey) || product;
+          const reviewedSourceDigest = text(
+            reviewedProduct.sourceDigest || reviewedProduct.productIdentity?.sourceDigest,
+          );
+          const reviewedSourceUrl = text(
+            reviewedProduct.sourceUrl || reviewedProduct.productIdentity?.sourceUrl,
+          );
+          const artifactId = text(reviewedProduct.artifactId)
+            || `responsibility_artifact_${sha1([reviewedProduct.company, reviewedProduct.productName, reviewedSourceDigest, VERSION].join('\u001f')).slice(0, 20)}`;
+          insertArtifact.run(
+            artifactId,
+            reviewedProduct.company,
+            reviewedProduct.productName,
+            reviewedSourceDigest,
+            reviewedSourceUrl,
+            now,
+            text(reviewedProduct.publisherVersion || VERSION),
+            JSON.stringify(reviewedProduct),
+          );
+          const after = {
+            cards: Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards WHERE product_key = ? OR (company = ? AND product_name = ?)').get(productKeyFor(product.company, product.productName), product.company, product.productName)?.count || 0),
+            indicators: Number(db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records WHERE company = ? AND product_name = ?').get(product.company, product.productName)?.count || 0),
+            artifacts: Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_artifacts WHERE company = ? AND product_name = ?').get(product.company, product.productName)?.count || 0),
+          };
+          artifactWriteResults.push({ company: product.company, productName: product.productName, before, after });
+        }
+        db.prepare(`
+          INSERT INTO app_meta (key, value)
+          VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `).run('reviewed_responsibility_artifact_imported_at', now);
+        db.prepare(`
+          INSERT INTO app_meta (key, value)
+          VALUES (?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        `).run('product_responsibility_cards_materialized_at', now);
+        db.exec('COMMIT');
+      } catch (error) {
+        db.exec('ROLLBACK');
+        throw error;
+      }
     } finally {
       db.close();
     }

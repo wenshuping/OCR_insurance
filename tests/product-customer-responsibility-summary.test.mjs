@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import {
@@ -139,6 +140,128 @@ function baseState() {
     ],
   };
 }
+
+test('public customer summary waits for an approved responsibility pipeline artifact', async () => {
+  let modelCalls = 0;
+  const queued = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    input: { company, name: productName },
+    requireApprovedPipelineArtifact: true,
+    enqueueProductResponsibilityPipeline: async (job) => {
+      queued.push(job);
+      return { status: 'queued', attempts: 0 };
+    },
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return structuredLifeSummary();
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'responsibility_pipeline_queued');
+  assert.match(result.message, /已加入/u);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].company, company);
+  assert.equal(queued[0].productName, productName);
+  assert.equal(queued[0].sourceUrl, sourceUrl);
+  assert.equal(modelCalls, 0);
+});
+
+test('unversioned product does not reuse or enqueue a similarly named versioned product', async () => {
+  const baseProductName = '新华人寿保险股份有限公司多倍保障重大疾病保险';
+  const versionedProductName = `${baseProductName}（智享版）`;
+  const baseSourceUrl = 'https://example.test/base-terms.pdf';
+  const queued = [];
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [
+        {
+          company,
+          productName: baseProductName,
+          url: baseSourceUrl,
+          pageText: '保险责任 疾病保险金和身故保险金。',
+        },
+        {
+          company,
+          productName: versionedProductName,
+          url: 'https://example.test/versioned-terms.pdf',
+          pageText: '保险责任 智享版轻度疾病保险金。',
+        },
+        {
+          company,
+          productName: versionedProductName,
+          url: 'https://example.test/versioned-manual.pdf',
+          pageText: '保险责任 智享版中度疾病保险金。',
+        },
+      ],
+      insuranceIndicatorRecords: [],
+    },
+    input: { company, name: baseProductName },
+    requireApprovedPipelineArtifact: true,
+    enqueueProductResponsibilityPipeline: async (job) => {
+      queued.push(job);
+      return { status: 'queued', attempts: 0 };
+    },
+  });
+
+  assert.equal(result.status, 'responsibility_pipeline_queued');
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].productName, baseProductName);
+  assert.equal(queued[0].sourceUrl, baseSourceUrl);
+  assert.doesNotMatch(queued[0].existingResponsibilityHint, /智享版/u);
+});
+
+test('public customer summary surfaces manual review instead of claiming pipeline work is still running', async () => {
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    input: { company, name: productName },
+    requireApprovedPipelineArtifact: true,
+    enqueueProductResponsibilityPipeline: async () => ({
+      status: 'manual_review',
+      attempts: 4,
+      lastError: 'validator rejected responsibility evidence',
+    }),
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'responsibility_pipeline_manual_review');
+  assert.match(result.message, /人工审核/u);
+});
+
+test('approved artifact is recognized through its official source URL when company names use aliases', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE product_responsibility_artifacts (
+      id TEXT PRIMARY KEY, company TEXT NOT NULL, product_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL, source_url TEXT, published_at TEXT NOT NULL,
+      publisher_version TEXT NOT NULL, payload TEXT NOT NULL
+    )
+  `);
+  db.prepare(`
+    INSERT INTO product_responsibility_artifacts
+      (id, company, product_name, source_digest, source_url, published_at, publisher_version, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('artifact_1', '新华人寿保险股份有限公司', '盛世荣耀终身寿险', 'sha256:test', sourceUrl,
+    '2026-07-22T00:00:00.000Z', 'test', JSON.stringify({ audit: { status: 'approved' } }));
+  let queued = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db,
+    input: { company, name: productName },
+    requireApprovedPipelineArtifact: true,
+    enqueueProductResponsibilityPipeline: async () => {
+      queued += 1;
+      return { status: 'queued' };
+    },
+    generateWithDeepSeek: async () => structuredLifeSummary(),
+    persistSummary: async (summary) => summary,
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(queued, 0);
+  db.close();
+});
 
 function structuredLifeSummary(overrides = {}) {
   return {
@@ -308,6 +431,107 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
   ]);
   assert.equal(result.summary.mainResponsibilities[0].calculationKey, undefined);
   assert.equal(modelCalls, 0);
+});
+
+test('canonical product queries fall back to the exact company-product summary cache', async () => {
+  const canonicalProductId = 'product_canonical_1';
+  const existing = {
+    id: `customer_summary:${productKey}:${CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION}`,
+    productKey,
+    company,
+    productName,
+    summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+    status: 'ready',
+    headline: '按产品名称缓存的摘要。',
+    summaryJson: {
+      company,
+      productName,
+      headline: '按产品名称缓存的摘要。',
+      mainResponsibilities: [{ title: '身故或身体全残保险金', plainText: '按合同约定给付。' }],
+      notices: [],
+      requiredPolicyFields: [],
+      sourceUrls: [sourceUrl],
+      contentBlocks: [],
+    },
+    sourceDigest: '',
+  };
+  const findKeys = [];
+  let modelCalls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithCards(),
+    input: { company, name: productName, canonicalProductId, plannerMode: 'off' },
+    findSummary: async ({ productKey: requestedKey }) => {
+      findKeys.push(requestedKey);
+      return requestedKey === productKey ? existing : null;
+    },
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return structuredLifeSummary();
+    },
+  });
+
+  assert.deepEqual(findKeys, [`canonical:${canonicalProductId}`, productKey]);
+  assert.equal(result.source, 'database');
+  assert.equal(result.summary.headline, '按产品名称缓存的摘要。');
+  assert.equal(modelCalls, 0);
+});
+
+test('concurrent requests for one product share a single summary generation', async () => {
+  let modelCalls = 0;
+  const options = {
+    state: baseState(),
+    db: dbWithCards(),
+    input: { company, name: productName, plannerMode: 'off' },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return structuredLifeSummary();
+    },
+  };
+
+  const [first, second] = await Promise.all([
+    generateProductCustomerResponsibilitySummary(options),
+    generateProductCustomerResponsibilitySummary(options),
+  ]);
+
+  assert.equal(modelCalls, 1);
+  assert.equal(first.ok, true);
+  assert.equal(second.ok, true);
+  assert.equal(first.summary.headline, second.summary.headline);
+});
+
+test('concurrent canonical and name-only requests share a single summary generation', async () => {
+  let modelCalls = 0;
+  const baseOptions = {
+    state: baseState(),
+    db: dbWithCards(),
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return structuredLifeSummary();
+    },
+  };
+
+  const [canonical, nameOnly] = await Promise.all([
+    generateProductCustomerResponsibilitySummary({
+      ...baseOptions,
+      input: { company, name: productName, canonicalProductId: 'product_canonical_1' },
+    }),
+    generateProductCustomerResponsibilitySummary({
+      ...baseOptions,
+      input: { company, name: productName },
+    }),
+  ]);
+
+  assert.equal(modelCalls, 1);
+  assert.equal(canonical.ok, true);
+  assert.equal(nameOnly.ok, true);
+  assert.equal(canonical.summary.headline, nameOnly.summary.headline);
 });
 
 test('customer responsibility summary version skips previously cached v1 summaries', async () => {
