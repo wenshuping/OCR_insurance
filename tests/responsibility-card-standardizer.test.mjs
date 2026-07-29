@@ -1886,3 +1886,26 @@ test('buildResponsibilityCardsForPolicy ignores AIA claim application and benefi
   ]);
   assert.equal(cards.every((card) => card.indicatorCheckStatus === 'verified_claim_contingent'), true);
 });
+
+test('standardizeResponsibilityIndicator preserves scalar formula operands', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '中邮人寿',
+    productName: '中邮年年好邮保一生A款终身寿险',
+    coverageType: '人寿保障',
+    liability: '身故、全残保险金',
+    basis: '现金价值、已交保险费和基本保险金额的条件化比较',
+    formulaText: 'max(已交保险费,现金价值,基本保险金额×(1+3.5%)^(n-1))',
+    normalizedFormula: 'max(paid_premium,cash_value,basic_amount*policy_year_factor)',
+    operands: ['cumulative_paid_premium_at_event', 'cash_value', 'basic_insurance_amount'],
+    branches: [{ branchId: 'after_payment_end', formula: 'max(...)' }],
+    sourceUrl: 'https://www.chinapost-life.com/example.pdf',
+    sourceExcerpt: '身故、全残保险金按已交保险费、现金价值和基本保险金额的较大者给付。',
+  }, { policy: { company: '中邮人寿', name: '中邮年年好邮保一生A款终身寿险' } });
+
+  assert.deepEqual(result.operands, [
+    'cumulative_paid_premium_at_event',
+    'cash_value',
+    'basic_insurance_amount',
+  ]);
+  assert.deepEqual(result.branches, [{ branchId: 'after_payment_end', formula: 'max(...)' }]);
+});
