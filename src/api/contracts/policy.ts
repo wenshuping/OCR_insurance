@@ -66,8 +66,18 @@ export type Policy = {
   userMobile?: string;
   cashflowEntries?: CashflowEntry[];
   scenarioEntries?: ScenarioEntry[];
+  responsibilityCalculations?: ResponsibilityCalculation[];
   totalCashflow?: number;
   cashValues?: CashValueRow[];
+};
+
+export type ResponsibilityCalculation = {
+  indicatorId: string;
+  liability: string;
+  amount: number;
+  isMinimumEstimate: boolean;
+  calculationText: string;
+  uncertaintyNote?: string;
 };
 
 export type PolicyPlan = {

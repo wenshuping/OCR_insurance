@@ -3,6 +3,12 @@ import { isPolicyOfficialSourceUrl } from './c-policy-analysis.service.mjs';
 import { findKnowledgeRecordsForPolicy, normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
+export const RESPONSIBILITY_PROJECTION_VERSION = '2026-07-30-current-indicator-hydration';
+
+export function isCurrentResponsibilityProjection(derived = {}) {
+  return String(derived?.responsibilityProjectionVersion || '').trim() === RESPONSIBILITY_PROJECTION_VERSION;
+}
+
 function normalizeKeyPart(value) {
   return String(value || '').trim().replace(/\s+/gu, '');
 }
@@ -150,6 +156,7 @@ export function buildPolicyDerivedResult({
     responsibilityCards,
     indicatorVersions,
     knowledgeVersion: 0,
+    responsibilityProjectionVersion: RESPONSIBILITY_PROJECTION_VERSION,
     status: 'ready',
     staleReason: '',
     generatedAt: now,
@@ -176,6 +183,7 @@ export function mergePolicyDerivedResult(policy = {}, derived = null) {
     derivedStatus: String(derived.status || 'stale'),
     derivedStaleReason: String(derived.staleReason || ''),
     derivedGeneratedAt: String(derived.generatedAt || ''),
+    derivedResponsibilityProjectionVersion: String(derived.responsibilityProjectionVersion || ''),
     derivedError: String(derived.error || ''),
   };
 }

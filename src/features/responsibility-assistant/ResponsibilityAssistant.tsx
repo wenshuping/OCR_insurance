@@ -28,6 +28,18 @@ function cleanSummaryList(values: string[] | undefined) {
   return Array.isArray(values) ? values.map((value) => cleanSummaryText(value)).filter(Boolean) : [];
 }
 
+function customerCalculationStatusLabel(value: string | undefined) {
+  const [status, reason] = cleanSummaryText(value).split(/[：:]/u, 2).map(cleanSummaryText);
+  const label = {
+    claim_contingent: '出险后按实际情况计算',
+    scheduled_cashflow: '待结合保单信息计算',
+    display_only: '待结合保单信息计算',
+    needs_table: '需结合条款表核验',
+    needs_claim_facts: '需结合出险事实计算',
+  }[status] || status;
+  return [label, reason].filter(Boolean).join('：');
+}
+
 function hostFromUrl(url: string) {
   try {
     return new URL(url).hostname || url;
@@ -522,7 +534,7 @@ export function ResponsibilityAssistant(props: {
                                 {item.plainText ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{item.plainText}</p> : null}
                                 {item.triggerCondition ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">触发条件：{item.triggerCondition}</p> : null}
                                 {item.howItPays ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700">{item.howItPays}</p> : null}
-                                {item.calculationStatus ? <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">calculationStatus: {item.calculationStatus}</p> : null}
+                                {item.calculationStatus ? <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">{customerCalculationStatusLabel(item.calculationStatus)}</p> : null}
                                 {item.sourceRefs.length ? (
                                   <div className="mt-2 flex flex-wrap gap-1.5">
                                     {item.sourceRefs.map((sourceRef) => (

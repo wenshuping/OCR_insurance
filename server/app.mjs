@@ -103,7 +103,11 @@ import {
   normalizeOfficialDomainProfile,
 } from './c-policy-analysis.service.mjs';
 import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
-import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
+import {
+  computePolicyCashflow,
+  computePolicyResponsibilityCalculations,
+  computeScenarioEntries,
+} from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
 import {
@@ -114,8 +118,8 @@ import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { createProductRagService } from './product-rag.service.mjs';
 import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
 import { createInsuranceExpertAgentPlanner } from './insurance-expert-agent-planner.service.mjs';
-import { createInsuranceExpertSkillRegistry } from './insurance-expert-skill-registry.service.mjs';
 import {
+  buildCustomerResponsibilitySummaryFromCards,
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
 } from './product-customer-responsibility-summary.service.mjs';
@@ -1108,13 +1112,14 @@ function clearPolicyReportForRegeneration(state, policy) {
 function normalizeResponsibilityQueryInput(value = {}) {
   const company = trim(value?.company).slice(0, 80);
   const name = trim(value?.name).slice(0, 160);
+  const canonicalProductId = trim(value?.canonicalProductId).slice(0, 200);
   if (!company || !name) {
     const error = new Error('请输入保险公司和保险名称');
     error.code = 'POLICY_RESPONSIBILITY_QUERY_INPUT_REQUIRED';
     error.status = 400;
     throw error;
   }
-  return { company, name };
+  return { company, name, canonicalProductId };
 }
 
 function policyInputMetrics(body = {}) {
@@ -1603,7 +1608,12 @@ function isProductSuggestionKnowledgeRecord(record = {}) {
   );
 }
 
-function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults } = {}) {
+function buildResponsibilityProductSuggestions(state, {
+  company = '',
+  query = '',
+  maxResults,
+  knowledgeRecords,
+} = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const parentheticalCode = String(query || '')
@@ -1614,7 +1624,10 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     ? String(query || '').normalize('NFKC').replace(/\([A-Z0-9][A-Z0-9_-]{1,23}\)/iu, '')
     : query;
   const normalizedNameQuery = normalizeSuggestionText(nameQuery) || normalizedQuery;
-  const suggestionIndex = getResponsibilitySuggestionIndex(state);
+  const suggestionState = Array.isArray(knowledgeRecords)
+    ? { ...state, knowledgeRecords }
+    : state;
+  const suggestionIndex = getResponsibilitySuggestionIndex(suggestionState);
   const candidatesByKey = new Map();
   for (const companyKey of companyKeysForSuggestionIndex(company, suggestionIndex.officialDomainProfiles)) {
     for (const row of suggestionIndex.productRowsByCompanyKey.get(companyKey) || []) {
@@ -2338,6 +2351,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: true,
       }));
@@ -2349,6 +2363,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer !== false,
         allowExternalReferences: Boolean(input.allowExternalReferences),
@@ -2510,6 +2525,49 @@ export function createPolicyOcrApp(options = {}) {
     }
   }
 
+  function hydrateCashflowIndicatorsFromCurrentProductIndex(policy, indicators = []) {
+    const existing = Array.isArray(indicators) ? indicators : [];
+    const needsHydration = !existing.length || existing.some((indicator) => (
+      String(indicator?.basisKey || '').startsWith('contract_defined_') && !indicator?.basisDefinition
+    ));
+    if (!needsHydration || !cashflowDb || ownsCashflowDb) return existing;
+
+    const productNames = [...new Set([
+      policy?.name,
+      ...(Array.isArray(policy?.plans) ? policy.plans.map((plan) => plan?.matchedProductName || plan?.productName || plan?.name) : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean))];
+    if (!productNames.length) return existing;
+
+    try {
+      const placeholders = productNames.map(() => '?').join(', ');
+      const rows = cashflowDb.prepare(`
+        SELECT payload FROM insurance_indicator_records
+        WHERE product_name IN (${placeholders})
+      `).all(...productNames);
+      const current = rows
+        .map((row) => {
+          try { return JSON.parse(row.payload || ''); } catch { return null; }
+        })
+        .filter(Boolean);
+      if (!current.length) return existing;
+      if (!existing.length) return current;
+
+      const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
+      return existing.map((indicator) => {
+        const latest = byId.get(String(indicator?.id || ''));
+        if (!latest) return indicator;
+        return {
+          ...latest,
+          responsibilityScope: indicator.responsibilityScope || latest.responsibilityScope,
+          selectionStatus: indicator.selectionStatus || latest.selectionStatus,
+          selectionEvidence: indicator.selectionEvidence || latest.selectionEvidence,
+        };
+      });
+    } catch {
+      return existing;
+    }
+  }
+
   /**
    * Compute cashflow entries for a policy and persist them to the cashflow store.
    * Returns { cashflowEntries, scenarioEntries, totalCashflow }.
@@ -2520,7 +2578,9 @@ export function createPolicyOcrApp(options = {}) {
     const policyIndicators = derivedResult && Array.isArray(policyForCashflow.coverageIndicators)
       ? policyForCashflow.coverageIndicators
       : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
-    const selectedIndicators = selectedCoverageIndicators(policyIndicators);
+    const selectedIndicators = selectedCoverageIndicators(
+      hydrateCashflowIndicatorsFromCurrentProductIndex(policyForCashflow, policyIndicators),
+    );
     const template = findProductCashflowTemplate(policyForCashflow, state.knowledgeRecords);
     const cashflowEntries = computePolicyCashflow(policyForCashflow, template, selectedIndicators);
     const scenarioEntries = computeScenarioEntries(selectedIndicators, policyForCashflow);
@@ -2598,6 +2658,8 @@ export function createPolicyOcrApp(options = {}) {
     resolveOcrServiceUrl,
     resolveOcrProviderForScenario,
     computeAndStoreCashflow,
+    computePolicyResponsibilityCalculations,
+    hydrateCashflowIndicatorsFromCurrentProductIndex,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,
@@ -2713,10 +2775,12 @@ export function createPolicyOcrApp(options = {}) {
     wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
+    loadKnowledgeRecords: options.loadKnowledgeRecords,
     findKnowledgeProductCandidates,
     legacyExternalProductReferenceRecords,
     withPolicyProductMatchStatus,
     generateProductCustomerResponsibilitySummary,
+    buildCustomerResponsibilitySummaryFromCards,
     enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek: options.generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek: options.generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
@@ -2893,8 +2957,7 @@ export function createPolicyOcrApp(options = {}) {
     && typeof agentStore.createAgentActionConfirmation === 'function'
     && typeof agentStore.transferPolicyBetweenFamilies === 'function';
   const insuranceExpertEnv = options.env || process.env;
-  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry
-    || createInsuranceExpertSkillRegistry();
+  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry || null;
   const insuranceExpertPlanner = options.insuranceExpertPlanner
     || (insuranceExpertEnv.DEEPSEEK_API_KEY
       ? createInsuranceExpertAgentPlanner({

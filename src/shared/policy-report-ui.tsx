@@ -294,12 +294,6 @@ export function ResponsibilityCardList({
                 {quantifiedIndicators.length ? (
                   <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                     <p className="text-xs font-black text-blue-700">量化指标（{quantifiedIndicators.length}项）</p>
-                    {usesPolicyAmount && Number(baseAmount) > 0 ? (
-                      <p className="mt-1 text-xs font-black text-cyan-800">本保单保险金额：{Number(baseAmount).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
-                    ) : null}
-                    {usesPolicyPremium && Number(firstPremium) > 0 ? (
-                      <p className="mt-1 text-xs font-black text-cyan-800">本保单首期保费：{Number(firstPremium).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
-                    ) : null}
                     <div className="mt-1.5 space-y-1">
                       {quantifiedIndicators.map(({ indicator, formula }, indicatorIndex) => (
                         <p key={indicator.id || `${indicator.liability}-${indicatorIndex}`} className="text-xs font-bold leading-5 text-slate-600">
@@ -307,6 +301,12 @@ export function ResponsibilityCardList({
                         </p>
                       ))}
                     </div>
+                    {usesPolicyAmount && Number(baseAmount) > 0 ? (
+                      <p className="mt-1.5 text-[11px] font-semibold text-slate-500">计算参照：本保单保险金额 {Number(baseAmount).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
+                    ) : null}
+                    {usesPolicyPremium && Number(firstPremium) > 0 ? (
+                      <p className="mt-1 text-[11px] font-semibold text-slate-500">计算参照：本保单首期保费 {Number(firstPremium).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
+                    ) : null}
                   </div>
                 ) : null}
               </div>

@@ -10,6 +10,8 @@ import {
 } from '../customer-policy-photo-knowledge.service.mjs';
 import { parseCustomerUploadResponsibilityArtifact } from '../customer-upload-responsibility-pipeline.service.mjs';
 import { evidenceVerificationFields } from '../evidence-classification.service.mjs';
+import { hydratePolicyCoverageIndicators } from '../policy-ocr.domain.mjs';
+import { isCurrentResponsibilityProjection } from '../policy-derived-results.service.mjs';
 
 function recognizePendingScanKey({ user, guestId }) {
   const userId = String(user?.id || '').trim();
@@ -75,6 +77,8 @@ export function createPolicyRoutes(context) {
     recordPolicySourceRecords,
     clearGuestPendingScans,
     computeAndStoreCashflow,
+    computePolicyResponsibilityCalculations,
+    hydrateCashflowIndicatorsFromCurrentProductIndex,
     startPolicyReportGeneration,
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
@@ -353,20 +357,49 @@ export function createPolicyRoutes(context) {
   }
 
   function attachPolicyCashflowData(policy) {
+    const currentProductIndicators = typeof hydrateCashflowIndicatorsFromCurrentProductIndex === 'function'
+      ? hydrateCashflowIndicatorsFromCurrentProductIndex(policy, policy.coverageIndicators)
+      : policy.coverageIndicators;
+    const coverageIndicators = hydratePolicyCoverageIndicators(
+      currentProductIndicators,
+      state.insuranceIndicatorRecords,
+    );
+    const policyWithCurrentIndicators = {
+      ...policy,
+      coverageIndicators,
+    };
+    const shouldRebuildResponsibilityCards = !isCurrentResponsibilityProjection({
+      responsibilityProjectionVersion: policy.derivedResponsibilityProjectionVersion,
+    });
+    const rebuiltResponsibilityCards = shouldRebuildResponsibilityCards && typeof buildResponsibilityCardsForPolicy === 'function'
+      ? buildResponsibilityCardsForPolicy({
+        policy: policyWithCurrentIndicators,
+        responsibilities: policy.responsibilities,
+        coverageIndicators,
+        optionalResponsibilityRecords: policy.optionalResponsibilities,
+      })
+      : [];
+    const policyWithCurrentProjection = rebuiltResponsibilityCards.length
+      ? { ...policyWithCurrentIndicators, responsibilityCards: rebuiltResponsibilityCards }
+      : policyWithCurrentIndicators;
+    const responsibilityCalculations = typeof computePolicyResponsibilityCalculations === 'function'
+      ? computePolicyResponsibilityCalculations(policyWithCurrentProjection, coverageIndicators)
+      : [];
     const entries = cashflowStore.getEntries(policy.id);
     const cashValues = cashValueStore.getValues(policy.id);
     const totalCashflow = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
     let scenarioEntries = [];
     try {
-      const policyIndicators = Array.isArray(policy.coverageIndicators)
-        ? policy.coverageIndicators
-        : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
-      scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), policy);
+      const policyIndicators = coverageIndicators.length
+        ? coverageIndicators
+        : findPolicyCoverageIndicators(policyWithCurrentProjection, state.insuranceIndicatorRecords);
+      scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), policyWithCurrentProjection);
     } catch (_err) {
       // non-fatal: scenarioEntries stays empty
     }
     return {
-      ...policy,
+      ...policyWithCurrentProjection,
+      responsibilityCalculations,
       cashflowEntries: entries.length ? entries : undefined,
       cashValues,
       scenarioEntries: scenarioEntries.length ? scenarioEntries : undefined,

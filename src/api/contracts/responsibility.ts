@@ -268,6 +268,7 @@ async function requestResponsibility<T>(path: string, options: Parameters<typeof
 export function queryPolicyResponsibilities(input: {
   company: string;
   name: string;
+  canonicalProductId?: string;
   preferLocalKnowledgeAnswer?: boolean;
   allowExternalReferences?: boolean;
 }) {
@@ -278,6 +279,7 @@ export function queryPolicyResponsibilities(input: {
     body: {
       company: input.company,
       name: input.name,
+      canonicalProductId: input.canonicalProductId,
       preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer,
       allowExternalReferences: input.allowExternalReferences,
     },
@@ -317,6 +319,7 @@ export function matchPolicyResponsibilities(input: { company: string; name: stri
 export function getProductCustomerResponsibilitySummary(input: {
   company: string;
   name: string;
+  canonicalProductId?: string;
   policyId?: number;
   token?: string;
   guestId?: string;
@@ -326,6 +329,7 @@ export function getProductCustomerResponsibilitySummary(input: {
     body: {
       company: input.company,
       name: input.name,
+      canonicalProductId: input.canonicalProductId,
       policyId: input.policyId,
       guestId: input.guestId,
     },

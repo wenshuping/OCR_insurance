@@ -2150,6 +2150,35 @@ test('buildFamilyReport keeps dividend and universal account uncertainty out of 
   assert.equal(universalPolicy.attentionItems.some((item) => /缺少现金价值表/u.test(item)), false);
 });
 
+test('buildFamilyReport keeps a contract-backed minimum cashflow while labeling its unresolved upside', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 34,
+      insured: '妈妈',
+      name: '阳光少儿两全保险（分红型）',
+      date: '2024-11-24',
+      amount: 99888,
+      cashflowEntries: [{
+        year: 2048,
+        age: 60,
+        amount: 99888,
+        cumulative: 99888,
+        liability: '养老金',
+        policyId: 34,
+        productName: '阳光少儿两全保险（分红型）',
+        isMinimumEstimate: true,
+        uncertaintyNote: '已按条款公式可确认最低值计算，未计入待补充的非负金额。',
+      }],
+    }),
+  ]);
+
+  const policy = report.wealth.memberReports.find((item) => item.member === '妈妈').policies.find((item) => item.policyId === 34);
+  assert.equal(policy.cashflowRows[0].amount, 99888);
+  assert.equal(policy.minimumEstimateCashflowRows.length, 1);
+  assert.match(policy.uncertaintyNote, /已按条款公式可确认最低值统计1笔给付/u);
+  assert.match(policy.attentionItems.join(' '), /未确定增量未计入/u);
+});
+
 test('buildFamilyReport explains future deterministic payout totals by liability and year range', () => {
   const report = buildFamilyReport([
     makePolicy({

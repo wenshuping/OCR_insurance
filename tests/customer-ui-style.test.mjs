@@ -1003,7 +1003,8 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.match(summaryBranch, /customerSummaryRows\.map/);
   assert.match(summaryBranch, /责任明细/);
   assert.match(summaryBranch, /触发条件：/);
-  assert.match(summaryBranch, /calculationStatus:/);
+  assert.match(summaryBranch, /customerCalculationStatusLabel\(item\.calculationStatus\)/);
+  assert.doesNotMatch(summaryBranch, /calculationStatus:\s*\{item\.calculationStatus\}/);
   assert.match(summaryBranch, /sourceRefs\.map/);
   assert.match(summaryBranch, /customerSummaryNotices\.map/);
   assert.match(summaryBranch, /customerSummarySourceUrls\.slice/);
@@ -1021,6 +1022,13 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.ok(source.indexOf(') : shouldShowOfficialResponsibilityTextFallback ? (') < source.indexOf(') : customerSummaryMessage ? ('));
   assert.ok(source.indexOf(') : customerSummaryMessage ? (') < source.indexOf(') : shouldShowResponsibilityRows ? ('));
   assert.doesNotMatch(source, /CustomerResponsibilitySummaryCard/);
+});
+
+test('responsibility assistant reads the cached customer responsibility summary after a local responsibility match', () => {
+  const source = componentSource('CustomerApp', null);
+  assert.match(source, /正在读取库内保险责任摘要/);
+  assert.match(source, /getProductCustomerResponsibilitySummary/);
+  assert.doesNotMatch(source, /正在生成客户可读摘要/);
 });
 
 test('ResponsibilityAssistant keeps Planner mode out of customer controls', () => {
@@ -1211,7 +1219,7 @@ test('customer policy detail uses customer responsibility summary instead of leg
   assert.match(sharedReportUiSource, /policy\.coverageIndicators/);
   assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{[\s\S]*company,[\s\S]*name,[\s\S]*policyId: policy\.id,[\s\S]*token,[\s\S]*guestId,[\s\S]*\}\)/);
   assert.match(detailSource, /本保单客户上传的保险责任/);
-  assert.match(detailSource, /<CustomerResponsibilitySummaryCard[\s\S]*summary=\{customerSummary\}[\s\S]*cashflowEntries=\{cashflowEntries\}[\s\S]*scenarioEntries=\{policy\.scenarioEntries\}[\s\S]*\/>/);
+  assert.match(detailSource, /<CustomerResponsibilitySummaryCard[\s\S]*summary=\{customerSummary\}[\s\S]*cashflowEntries=\{cashflowEntries\}[\s\S]*scenarioEntries=\{policy\.scenarioEntries\}[\s\S]*responsibilityCalculations=\{policy\.responsibilityCalculations\}[\s\S]*\/>/);
   assert.doesNotMatch(detailSource, /ResponsibilityCardList/);
   assert.doesNotMatch(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
   assert.doesNotMatch(detailSource, /官网地址/);
@@ -1248,7 +1256,7 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(detailSource, /policy\.optionalResponsibilities/);
   assert.match(detailSource, /indicators=\{policy\.coverageIndicators\}/);
   assert.match(detailSource, /baseAmount=\{policy\.amount\}/);
-  assert.match(detailSource, /CustomerResponsibilitySummaryCard[\s\S]*baseAmount=\{policy\.amount\}/);
+  assert.match(detailSource, /CustomerResponsibilitySummaryCard[\s\S]*responsibilityCalculations=\{policy\.responsibilityCalculations\}/);
   assert.match(detailSource, /onUpdateOptionalResponsibility/);
   assert.match(reviewSource, /可选责任确认/);
   assert.match(reviewSource, /量化指标/);
@@ -1267,13 +1275,25 @@ test('customer calculation cards do not expose internal model and code implement
   assert.match(source, /量化指标/);
 });
 
+test('customer responsibility cards retain the established policy calculation inputs and scenario result path', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const cardSource = fs.readFileSync(new URL('../src/shared/CustomerResponsibilitySummaryCard.tsx', import.meta.url), 'utf8');
+
+  assert.match(detailSource, /<CustomerResponsibilitySummaryCard[\s\S]*baseAmount=\{policy\.amount\}[\s\S]*firstPremium=\{policy\.firstPremium\}[\s\S]*scenarioEntries=\{policy\.scenarioEntries\}/);
+  assert.match(cardSource, /baseAmount = 0/);
+  assert.match(cardSource, /firstPremium = 0/);
+  assert.match(cardSource, /计算参照：本保单保险金额/);
+  assert.match(cardSource, /计算参照：本保单首期保费/);
+  assert.match(cardSource, /calculatedScenario/);
+});
+
 test('responsibility cards keep formula-based indicators visible even before a final amount is calculable', () => {
   const source = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
   assert.match(source, /quantifiedIndicators/);
   assert.match(source, /hasQuantifiedCalculationSignal/);
   assert.match(source, /量化指标（/);
-  assert.match(source, /本保单保险金额/);
-  assert.match(source, /本保单首期保费/);
+  assert.match(source, /计算参照：本保单保险金额/);
+  assert.match(source, /计算参照：本保单首期保费/);
 });
 
 test('ocr recognition stays on entry form while carrying matched responsibility draft', () => {
@@ -1719,7 +1739,7 @@ test('family report wealth section explains dividend and universal account stati
   assert.match(familySource, /report\.wealth\.statisticsScopeNote/);
   assert.match(familySource, /report\.wealth\.excludedPolicies/);
   assert.match(familySource, /不确定未计入/);
-  assert.match(familySource, /已排除\{uncertaintyLabels\}不确定金额/);
+  assert.match(familySource, /已排除\$\{uncertaintyLabels\}不确定金额/);
   assert.match(familySource, /仅统计确定领取现金流/);
   assert.match(familySource, /未计入 \{excludedCount\} 张/);
   assert.match(typeSource, /FamilyWealthUncertaintyItem/);

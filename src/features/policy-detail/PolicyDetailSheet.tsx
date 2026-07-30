@@ -141,6 +141,7 @@ export function PolicyDetailSheet({
     getProductCustomerResponsibilitySummary({
       company,
       name,
+      canonicalProductId: policy.canonicalProductId,
       policyId: policy.id,
       token,
       guestId,
@@ -456,9 +457,10 @@ export function PolicyDetailSheet({
             <CustomerResponsibilitySummaryCard
               summary={customerSummary}
               cashflowEntries={cashflowEntries}
-              scenarioEntries={policy.scenarioEntries}
               baseAmount={policy.amount}
               firstPremium={policy.firstPremium}
+              scenarioEntries={policy.scenarioEntries}
+              responsibilityCalculations={policy.responsibilityCalculations}
             />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">

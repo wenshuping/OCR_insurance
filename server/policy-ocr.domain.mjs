@@ -1004,6 +1004,43 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
   ).map((record) => annotateCoverageIndicatorSelection(policy, record));
 }
 
+// Derived policy results may retain an older, reduced projection of an
+// indicator. Rehydrate it from the current product record by id so current
+// formula semantics (for example a compound basis definition) are not lost.
+export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecords = []) {
+  const indicatorId = (value) => String(value || '').trim();
+  const expandPayload = (record) => {
+    if (!record || typeof record !== 'object') return {};
+    if (typeof record.payload !== 'string') return record;
+    try {
+      const payload = JSON.parse(record.payload);
+      return payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...record, ...payload }
+        : record;
+    } catch {
+      return record;
+    }
+  };
+  const latestById = new Map(
+    (Array.isArray(indicatorRecords) ? indicatorRecords : [])
+      .map(expandPayload)
+      .filter((record) => indicatorId(record?.id))
+      .map((record) => [indicatorId(record.id), record]),
+  );
+  return (Array.isArray(indicators) ? indicators : []).map((indicator) => {
+    const latest = latestById.get(indicatorId(indicator?.id));
+    if (!latest) return indicator;
+    return {
+      ...latest,
+      responsibilityScope: indicatorId(indicator.responsibilityScope) || latest.responsibilityScope,
+      selectionStatus: indicatorId(indicator.selectionStatus) || latest.selectionStatus,
+      selectionEvidence: indicatorId(indicator.selectionEvidence) || latest.selectionEvidence,
+      quantificationStatus: indicatorId(indicator.quantificationStatus) || latest.quantificationStatus,
+      canonicalProductId: indicatorId(indicator.canonicalProductId) || latest.canonicalProductId,
+    };
+  });
+}
+
 export function attachPolicyCoverageIndicators(policy = {}, indicatorRecords = [], knowledgeRecords = [], optionalResponsibilityRecords = []) {
   const normalizedPolicy = {
     ...policy,

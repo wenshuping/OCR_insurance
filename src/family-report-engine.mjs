@@ -1,5 +1,5 @@
 import { resolvePolicyValidityStatus } from './policy-validity.mjs';
-import { resolveIndicatorAmountForCurrentContext, resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
+import { formulaVariablesFromIndicators, resolveIndicatorAmountForCurrentContext, resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
 
 function asNumber(value) {
   const number = Number(value);
@@ -709,7 +709,9 @@ function indicatorCalculationInputs(indicator, policy) {
     baseAmount: indicatorBaseAmount(indicator, policy),
     firstPremium: premium,
     paymentYears,
+    policyYear: finiteNumber(policy?.policyYear) ?? undefined,
     currentAge: ageFromBirthday(policy?.insuredBirthday),
+    formulaVariables: formulaVariablesFromIndicators(policy?.coverageIndicators),
   };
 }
 
@@ -1698,6 +1700,8 @@ function cashflowRows(policy) {
         cumulative: asNumber(row?.cumulative),
         liability: String(row?.liability || ''),
         calculationText: String(row?.calculationText || row?.calcText || ''),
+        isMinimumEstimate: Boolean(row?.isMinimumEstimate),
+        uncertaintyNote: String(row?.uncertaintyNote || ''),
         policyId: row?.policyId ?? policy?.id,
         productName: String(row?.productName || policy?.name || ''),
       };
@@ -1905,13 +1909,19 @@ function wealthUncertaintyItems(policy) {
   return items;
 }
 
-function wealthUncertaintyAttentionText(items) {
+function wealthUncertaintyAttentionText(items, minimumEstimateCount = 0) {
   if (!items.length) return '';
+  if (minimumEstimateCount > 0) {
+    return `${items.map((item) => item.label).join('、')}存在不确定因素，${minimumEstimateCount}笔给付已按可确认最低值统计，未确定增量未计入`;
+  }
   return `${items.map((item) => item.label).join('、')}存在不确定因素，未进入财富统计`;
 }
 
-function wealthUncertaintyNote(items) {
+function wealthUncertaintyNote(items, minimumEstimateCount = 0) {
   if (!items.length) return '';
+  if (minimumEstimateCount > 0) {
+    return `${items.map((item) => item.reason).join('；')}。已按条款公式可确认最低值统计${minimumEstimateCount}笔给付，未确定增量未计入。`;
+  }
   return `${items.map((item) => item.reason).join('；')}。当前财富统计仅包含已识别的确定领取现金流，现金价值仅在保单明细展示。`;
 }
 
@@ -1979,7 +1989,8 @@ function buildWealthPolicyReport(policy) {
   const values = deterministicCashValueRows(policy);
   const excludedCashValueRows = excludedUncertainCashValueRows(policy);
   const uncertaintyItems = wealthUncertaintyItems(policy);
-  const uncertaintyAttention = wealthUncertaintyAttentionText(uncertaintyItems);
+  const minimumEstimateCashflowRows = payouts.filter((row) => row.isMinimumEstimate);
+  const uncertaintyAttention = wealthUncertaintyAttentionText(uncertaintyItems, minimumEstimateCashflowRows.length);
   const excludedStatisticRowsCount = excludedCashflowRows.length + excludedCashValueRows.length;
   const cashValueGapRanges = cashValuePolicyYearGapRanges(values);
   const annualRows = annualCashflowRows(policy, payouts, values);
@@ -2006,9 +2017,10 @@ function buildWealthPolicyReport(policy) {
     cashValueRows: values,
     excludedCashflowRows,
     excludedCashValueRows,
+    minimumEstimateCashflowRows,
     annualCashflowRows: annualRows,
     uncertaintyItems,
-    uncertaintyNote: wealthUncertaintyNote(uncertaintyItems),
+    uncertaintyNote: wealthUncertaintyNote(uncertaintyItems, minimumEstimateCashflowRows.length),
     hasUncertainWealthFactors: uncertaintyItems.length > 0,
     attentionItems,
     keyPoints: [

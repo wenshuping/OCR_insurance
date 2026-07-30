@@ -15,6 +15,8 @@ const CREATE_TABLE_SQL = `
     cumulative  REAL    NOT NULL,
     liability   TEXT    NOT NULL,
     calc_text   TEXT,
+    is_minimum_estimate INTEGER NOT NULL DEFAULT 0,
+    uncertainty_note TEXT,
     created_at  TEXT    DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_cashflows_policy ON policy_cashflows(policy_id);
@@ -22,13 +24,20 @@ const CREATE_TABLE_SQL = `
 
 export function ensureCashflowTable(db) {
   db.exec(CREATE_TABLE_SQL);
+  const columns = new Set(db.prepare('PRAGMA table_info(policy_cashflows)').all().map((row) => row.name));
+  if (!columns.has('is_minimum_estimate')) {
+    db.exec('ALTER TABLE policy_cashflows ADD COLUMN is_minimum_estimate INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!columns.has('uncertainty_note')) {
+    db.exec('ALTER TABLE policy_cashflows ADD COLUMN uncertainty_note TEXT');
+  }
 }
 
 export function createCashflowStore(db) {
   ensureCashflowTable(db);
 
   const selectEntries = db.prepare(`
-    SELECT year, age, amount, cumulative, liability, calc_text
+    SELECT year, age, amount, cumulative, liability, calc_text, is_minimum_estimate, uncertainty_note
       FROM policy_cashflows
      WHERE policy_id = ?
      ORDER BY year ASC
@@ -39,8 +48,8 @@ export function createCashflowStore(db) {
   `);
 
   const insertEntry = db.prepare(`
-    INSERT INTO policy_cashflows (policy_id, year, age, amount, cumulative, liability, calc_text)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO policy_cashflows (policy_id, year, age, amount, cumulative, liability, calc_text, is_minimum_estimate, uncertainty_note)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const selectDistinctPolicyIds = db.prepare(`
@@ -63,6 +72,8 @@ export function createCashflowStore(db) {
       liability: row.liability,
       calculationText: row.calc_text || '',
       calcText: row.calc_text,
+      isMinimumEstimate: Boolean(row.is_minimum_estimate),
+      uncertaintyNote: row.uncertainty_note || '',
       policyId,
       productName: '',
       cashValue: null,
@@ -85,6 +96,8 @@ export function createCashflowStore(db) {
           entry.cumulative,
           entry.liability,
           entry.calcText ?? entry.calculationText ?? null,
+          entry.isMinimumEstimate ? 1 : 0,
+          entry.uncertaintyNote || null,
         );
       }
       db.exec('COMMIT');

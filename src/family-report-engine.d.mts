@@ -115,6 +115,8 @@ export type FamilyWealthPolicyCashflowRow = {
   cumulative: number;
   liability: string;
   calculationText?: string;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
   policyId: number;
   productName: string;
 };
@@ -167,6 +169,7 @@ export type FamilyWealthPolicyReport = {
   cashValueRows: FamilyWealthPolicyCashValueRow[];
   excludedCashflowRows: FamilyWealthPolicyCashflowRow[];
   excludedCashValueRows: FamilyWealthPolicyCashValueRow[];
+  minimumEstimateCashflowRows: FamilyWealthPolicyCashflowRow[];
   annualCashflowRows: FamilyWealthPolicyAnnualCashflowRow[];
   uncertaintyItems: FamilyWealthUncertaintyItem[];
   uncertaintyNote: string;

@@ -5439,6 +5439,9 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
       analyzerCalls += 1;
       throw new Error('analyzer should not run when product cards already exist');
     },
+    onlineResponsibilityProductMatcher: async () => {
+      throw new Error('online matcher should not run when product cards already exist');
+    },
     persistResponsibilityLookupArtifacts: async (input) => {
       persistenceCalls += 1;
       return {
@@ -5482,13 +5485,40 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
     assert.equal(partialNameResult.payload.persistence.reusedResponsibilityCardCount, 1);
     assert.equal(analyzerCalls, 0);
     assert.equal(persistenceCalls, 0);
+
+    const legalPrefixResult = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '测试保险股份有限公司安心一号',
+      }),
+    });
+    assert.equal(legalPrefixResult.response.status, 200);
+    assert.equal(legalPrefixResult.payload.analysis.rawAnalysis.generatedBy, 'existing_responsibility_cards_fast_path');
+    assert.equal(legalPrefixResult.payload.analysis.responsibilityCards[0].productName, '安心一号');
+    assert.equal(analyzerCalls, 0);
+    assert.equal(persistenceCalls, 0);
+
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '安心一号',
+        includeOnline: true,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.status, 'exact');
+    assert.equal(matched.payload.matches.length, 1);
+    assert.equal(matched.payload.matches[0].productName, '安心一号');
+    assert.equal(matched.payload.matches[0].needsConfirmation, false);
   } finally {
     await server.close();
     db.close();
   }
 });
 
-test('customer responsibility summary generates once and then reads from database', async () => {
+test('customer responsibility summary reads existing responsibility cards without model generation', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE policies (
@@ -5566,6 +5596,7 @@ test('customer responsibility summary generates once and then reads from databas
   const persistedSummaries = new Map();
   let modelCalls = 0;
   let materialModelCalls = 0;
+  let materialRetrieveCalls = 0;
   const app = createPolicyOcrApp({
     state,
     db,
@@ -5598,17 +5629,20 @@ test('customer responsibility summary generates once and then reads from databas
       };
     },
     productRagService: {
-      retrieve: () => ({
-        evidenceChunks: [{
-          evidenceId: 'M1',
-          content: '上传课件介绍了保单检视服务。',
-          sourceAuthority: 'company_material',
-          reviewStatus: 'published',
-          pageStart: 6,
-          pageEnd: 6,
-          citation: { fileName: '产品培训课件.pptx', pageStart: 6, pageEnd: 6 },
-        }],
-      }),
+      retrieve: () => {
+        materialRetrieveCalls += 1;
+        return {
+          evidenceChunks: [{
+            evidenceId: 'M1',
+            content: '上传课件介绍了保单检视服务。',
+            sourceAuthority: 'company_material',
+            reviewStatus: 'published',
+            pageStart: 6,
+            pageEnd: 6,
+            citation: { fileName: '产品培训课件.pptx', pageStart: 6, pageEnd: 6 },
+          }],
+        };
+      },
     },
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek: async ({ prompt }) => {
       materialModelCalls += 1;
@@ -5629,13 +5663,15 @@ test('customer responsibility summary generates once and then reads from databas
     });
     assert.equal(first.response.status, 200);
     assert.equal(first.payload.ok, true);
-    assert.equal(first.payload.source, 'generated');
-    assert.equal(first.payload.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
-    assert.equal(first.payload.summary.contentBlocks.at(-1).title, '保单服务');
-    assert.deepEqual(first.payload.summary.contentBlocks.at(-1).sourceRefs, ['M1']);
-    assert.equal(modelCalls, 1);
-    assert.equal(materialModelCalls, 1);
-    assert.equal(persistedSummaries.size, 1);
+    assert.equal(first.payload.source, 'database');
+    assert.match(first.payload.summary.headline, /身故或身体全残保险金/u);
+    assert.equal(first.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(first.payload.summary.mainResponsibilities[0].plainText, '发生身故或身体全残时给付保险金。');
+    assert.equal(first.payload.summary.mainResponsibilities[0].howItPays, '金额结合已交保险费、基本保险金额和保单年度计算。');
+    assert.equal(modelCalls, 0);
+    assert.equal(materialModelCalls, 0);
+    assert.equal(materialRetrieveCalls, 0);
+    assert.equal(persistedSummaries.size, 0);
 
     const second = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
       method: 'POST',
@@ -5645,9 +5681,10 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.source, 'database');
     assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
-    assert.equal(second.payload.summary.contentBlocks.at(-1).title, '保单服务');
-    assert.equal(modelCalls, 1);
-    assert.equal(materialModelCalls, 2);
+    assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(modelCalls, 0);
+    assert.equal(materialModelCalls, 0);
+    assert.equal(materialRetrieveCalls, 0);
   } finally {
     await server.close();
     db.close();
@@ -13879,6 +13916,9 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
     ownerGuestId: 'guest-family-stale-life-reference',
     status: 'active',
     source: 'code',
+    // A persisted report produced by the prior cashflow contract must be
+    // refreshed even when its old version was previously considered current.
+    engineVersion: 4,
     generatedAt: '2026-06-17T01:02:00.000Z',
     createdAt: '2026-06-17T01:02:00.000Z',
     updatedAt: '2026-06-17T01:02:00.000Z',
@@ -13949,7 +13989,7 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
   try {
     const fetched = await jsonFetch(server.baseUrl, '/api/family-profiles/230/report?guestId=guest-family-stale-life-reference');
     assert.equal(fetched.response.status, 200);
-    assert.equal(fetched.payload.reportRecord.engineVersion > 0, true);
+    assert.equal(fetched.payload.reportRecord.engineVersion, 5);
     const life = fetched.payload.reportRecord.report.radar.members[0].scores.find((score) => score.key === 'life');
     assert.equal(life.amount, 0);
     assert.equal(life.coveragePresent, true);
@@ -13957,6 +13997,15 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
     assert.equal(life.amountDetails[0].referenceOnly, true);
     assert.equal(state.familyReportIssues.some((issue) => issue.status === 'open' && issue.category === 'coverage_gap' && issue.dimension === 'life'), false);
     assert.equal(persistCalls.length, 1);
+
+    // A report can already have the same rendered payload while its persisted
+    // engine version is stale. It still must be marked current so subsequent
+    // reads do not keep retrying the stale snapshot path.
+    state.familyReports[0].engineVersion = 4;
+    const versionOnlyRefresh = await jsonFetch(server.baseUrl, '/api/family-profiles/230/report?guestId=guest-family-stale-life-reference');
+    assert.equal(versionOnlyRefresh.response.status, 200);
+    assert.equal(versionOnlyRefresh.payload.reportRecord.engineVersion, 5);
+    assert.equal(persistCalls.length, 2);
   } finally {
     await server.close();
   }

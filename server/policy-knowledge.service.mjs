@@ -2146,7 +2146,15 @@ export function findKnowledgeRecordsForPolicy({
   const productName = trimString(policy.name || policy.productName);
   const company = trimString(policy.company);
   if (!company || !productName) return [];
-  const matched = (Array.isArray(records) ? records : [])
+  const allRecords = Array.isArray(records) ? records : [];
+  const lightweightCandidates = allRecords.filter((record) => {
+    const rawCompany = trimString(record?.company);
+    const rawProductName = trimString(record?.productName || record?.name || record?.title);
+    if (rawCompany && !companiesMatch(company, rawCompany, officialDomainProfiles)) return false;
+    return !rawProductName || productMatchesText(productName, rawProductName);
+  });
+  const candidateRecords = lightweightCandidates.length ? lightweightCandidates : allRecords;
+  const matched = candidateRecords
     .map((record) => normalizeKnowledgeRecord(record, { officialDomainProfiles }))
     .filter(Boolean)
     .filter((record) => {

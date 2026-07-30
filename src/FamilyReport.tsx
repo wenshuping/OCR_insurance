@@ -1926,6 +1926,7 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
                 <thead>
                   <tr>
                     <th className={`${compactThClassName} rounded-tl-[14px]`}>年份</th>
+                    <th className={compactThClassName}>现金流</th>
                     <th className={compactThClassName}>领取金额</th>
                     <th className={compactThClassName}>累计领取</th>
                     <th className={`${compactThClassName} rounded-tr-[14px]`}>现金价值参考</th>
@@ -1935,6 +1936,9 @@ function PolicyAnnualCashflowTable({ policy }: { policy: FamilyWealthPolicyRepor
                   {column.map((row) => (
                     <tr key={`${policy.policyId}-${row.year}`} className={row.isContractTerminatingPayout ? 'bg-orange-50' : undefined}>
                       <td className={`${compactTdClassName} font-black text-[#425570]`}>{row.year}/{row.age === null ? '-' : row.age}</td>
+                      <td className={`${compactTdClassName} text-[#5E7290]`}>
+                        {row.liabilities.length ? row.liabilities.join('、') : '—'}
+                      </td>
                       <td className={`${compactTdClassName} text-right`}>
                         {row.amount > 0 ? (
                           <span className={`inline-block rounded px-1 text-[11px] font-black ${row.isContractTerminatingPayout ? 'bg-orange-50 text-orange-600' : 'bg-blue-50 text-blue-600'}`}>
@@ -2018,7 +2022,7 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
             <h4 className="min-w-0 break-words text-sm font-black text-[#102033]">{emptyText(policy.productName)}</h4>
             {policy.hasUncertainWealthFactors ? (
               <span className="shrink-0 rounded-full bg-[#FFF8EB] px-1.5 py-0.5 text-[10px] font-black text-[#A6531B] ring-1 ring-[#F3D9B4]">
-                不确定未计入
+                {policy.minimumEstimateCashflowRows.length > 0 ? '含不确定因素，按最低值统计' : '不确定未计入'}
               </span>
             ) : null}
           </div>
@@ -2049,12 +2053,25 @@ function WealthPolicyCard({ policy }: { policy: FamilyWealthPolicyReport }) {
             <h5 className="text-xs font-black text-slate-700">个人现金流明细</h5>
             {policy.hasUncertainWealthFactors ? (
               <p className="mt-0.5 break-words text-[11px] font-semibold leading-4 text-[#72849A]">
-                已排除{uncertaintyLabels}不确定金额{excludedStatisticRowsCount > 0 ? ` ${excludedStatisticRowsCount}条` : ''}
+                {policy.minimumEstimateCashflowRows.length > 0
+                  ? `${policy.minimumEstimateCashflowRows.length}笔给付按可确认最低值统计，未计入${uncertaintyLabels}不确定增量`
+                  : `已排除${uncertaintyLabels}不确定金额${excludedStatisticRowsCount > 0 ? ` ${excludedStatisticRowsCount}条` : ''}`}
               </p>
             ) : null}
           </div>
           <span className="text-[11px] font-bold text-[#7890AA]">(单位:元)</span>
         </div>
+        {policy.minimumEstimateCashflowRows.length ? (
+          <div className="mb-2 space-y-1.5 rounded-[14px] border border-[#F3D9B4] bg-[#FFF8EB] px-3 py-2 text-[11px] leading-4 text-[#6B4B2A]">
+            {policy.minimumEstimateCashflowRows.map((row) => (
+              <div key={`${policy.policyId}-minimum-${row.year}-${row.liability}`}>
+                <p className="font-black">最低值计算 · {row.year}/{row.age === null ? '-' : row.age} · {row.liability || '给付'}</p>
+                <p className="mt-0.5 font-semibold">{row.calculationText || `最低可确认金额 ${formatMoney(row.amount)}`}</p>
+                {row.uncertaintyNote ? <p className="mt-0.5 text-[#9A4A16]">备注：{row.uncertaintyNote}</p> : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
         <PolicyAnnualCashflowTable policy={policy} />
       </div>
     </article>

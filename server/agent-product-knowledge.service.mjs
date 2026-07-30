@@ -1,4 +1,4 @@
-import { listProductCatalogCompanies, searchProductCatalog } from './product-catalog-search.mjs';
+import { searchProductCatalog } from './product-catalog-search.mjs';
 import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { chunkProductDocument } from './product-chunker.service.mjs';
 import { parseProductDocument } from './product-document-parser.service.mjs';
@@ -1125,8 +1125,16 @@ export function createAgentProductKnowledgeSearch({
     WHERE company = ? AND official_name = ?
     LIMIT 1
   `) : null;
-  const summarySources = db.prepare("SELECT source_urls_json FROM product_customer_responsibility_summaries WHERE status = 'ready'").all();
-  const allowedOrigins = safeOrigins(summarySources);
+  const summarySourceStatement = db.prepare(`
+    SELECT source_urls_json
+    FROM product_customer_responsibility_summaries
+    WHERE company = ? AND product_name = ? AND status = 'ready'
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `);
+  // Origins are populated only for products participating in the current
+  // request. Do not load every ready summary at service startup.
+  const allowedOrigins = [];
   const apiKey = text(env.DEEPSEEK_API_KEY);
   const baseUrl = text(env.DEEPSEEK_BASE_URL) || 'https://api.deepseek.com';
   const model = text(env.DINGTALK_PRODUCT_EXPERT_MODEL || env.DEEPSEEK_MODEL) || 'deepseek-v4-flash';
@@ -1363,12 +1371,24 @@ export function createAgentProductKnowledgeSearch({
     allowExternalReferences = false,
   } = {}) {
     const query = [text(requestedCompany), text(productName), text(question)].filter(Boolean).join(' ');
-    const companies = listProductCatalogCompanies({ db, visibility: 'public' });
-    const verifiedCompany = text(requestedCompany);
-    const company = companies.some((item) => text(item.company) === verifiedCompany)
-      ? verifiedCompany
-      : companyFromQuery(query, companies, officialDomainProfiles);
     const productQuery = text(productName) || query;
+    const requestedCompanyText = text(requestedCompany);
+    const probeQuery = searchText(productQuery, requestedCompanyText);
+    const probeProducts = searchProductCatalog({
+      db,
+      company: requestedCompanyText,
+      query: probeQuery,
+      limit: 20,
+      visibility: 'public',
+    });
+    const companies = [...new Set([
+      requestedCompanyText,
+      ...probeProducts.map((item) => text(item.company)),
+    ].filter(Boolean))].map((companyName) => ({ company: companyName }));
+    const verifiedCompany = requestedCompanyText && companies.some((item) => text(item.company) === requestedCompanyText)
+      ? requestedCompanyText
+      : '';
+    const company = verifiedCompany || companyFromQuery(query, companies, officialDomainProfiles);
     const catalogQuery = searchText(productQuery, company);
     const requestedProductName = text(productName);
     const explicitProductQuery = requestedProductName.replace(company, '').trim().replace(/^的/u, '').trim();
@@ -1421,6 +1441,11 @@ export function createAgentProductKnowledgeSearch({
       }
     }
     const products = [...productsByIdentity.values()];
+    for (const candidate of products.slice(0, 20)) {
+      for (const origin of safeOrigins(summarySourceStatement.all(candidate.company, candidate.productName))) {
+        if (!allowedOrigins.includes(origin)) allowedOrigins.push(origin);
+      }
+    }
     const topScore = Number(products[0]?.score || 0);
     const ambiguous = products.filter((product) => Number(product.score || 0) >= topScore - 20);
     const requestedIdentity = catalogIdentity(explicitProductQuery);
