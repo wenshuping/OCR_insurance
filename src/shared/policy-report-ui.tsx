@@ -262,7 +262,8 @@ export function ResponsibilityCardList({
             indicator.sourceExcerpt,
           ].filter(Boolean).join(' ')));
         const quantifiedText = quantifiedIndicators.map(({ formula, indicator }) => `${indicator.liability || ''} ${formula}`).join(' ');
-        const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(quantifiedText);
+        const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额)/u.test(quantifiedText)
+          && !/有效保险金额/u.test(quantifiedText);
         const usesPolicyPremium = /(?:首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费)/u.test(quantifiedText);
         const verificationLabel = responsibilityCardVerificationLabel(card);
         return (

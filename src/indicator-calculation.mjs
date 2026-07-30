@@ -479,46 +479,6 @@ function evaluateFormulaAst(node) {
   return { known: false };
 }
 
-const NON_NEGATIVE_FORMULA_VARIABLES = new Set([
-  'accumulated_dividend_insured_amount',
-  'accumulated_dividend_amount',
-  'cash_value',
-  'account_value',
-]);
-
-function formulaLowerBound(node) {
-  if (!node) return { lower: null, exact: false, nonNegative: false, unresolved: new Set() };
-  if (node.type === 'number') return { lower: node.value, exact: true, nonNegative: node.value >= 0, unresolved: new Set() };
-  if (node.type === 'variable') {
-    const safe = NON_NEGATIVE_FORMULA_VARIABLES.has(node.name);
-    return { lower: safe ? 0 : null, exact: false, nonNegative: safe, unresolved: new Set([node.name]) };
-  }
-  if (node.type === 'negate') return { lower: null, exact: false, nonNegative: false, unresolved: formulaLowerBound(node.argument).unresolved };
-  if (node.type === 'sqrt') {
-    const argument = formulaLowerBound(node.argument);
-    return argument.nonNegative && argument.lower !== null
-      ? { lower: Math.sqrt(argument.lower), exact: argument.exact, nonNegative: true, unresolved: argument.unresolved }
-      : { lower: null, exact: false, nonNegative: false, unresolved: argument.unresolved };
-  }
-
-  const left = formulaLowerBound(node.left);
-  const right = formulaLowerBound(node.right);
-  const unresolved = new Set([...left.unresolved, ...right.unresolved]);
-  if (node.operator === '+' && left.lower !== null && right.lower !== null) {
-    return { lower: left.lower + right.lower, exact: left.exact && right.exact, nonNegative: left.nonNegative && right.nonNegative, unresolved };
-  }
-  if (node.operator === '*' && left.lower !== null && right.lower !== null && left.nonNegative && right.nonNegative) {
-    return { lower: left.lower * right.lower, exact: left.exact && right.exact, nonNegative: true, unresolved };
-  }
-  if (node.operator === '/' && left.lower !== null && left.nonNegative && right.exact && right.lower > 0) {
-    return { lower: left.lower / right.lower, exact: left.exact, nonNegative: true, unresolved };
-  }
-  if (node.operator === '^' && left.lower !== null && left.nonNegative && right.exact && right.lower >= 0) {
-    return { lower: left.lower ** right.lower, exact: left.exact, nonNegative: true, unresolved };
-  }
-  return { lower: null, exact: false, nonNegative: false, unresolved };
-}
-
 function formulaExpressionFromBasisDefinition(definition = {}) {
   const source = displayText(definition.normalizedFormula || definition.formulaText);
   if (!source) return '';
@@ -602,18 +562,16 @@ function resolveNormalizedFormula(indicator = {}, inputs = {}) {
     };
   }
   const displayExpression = partialFormulaExpression(expression);
-  const lowerBound = formulaLowerBound(ast);
-  const minimumAmount = lowerBound.lower !== null && lowerBound.lower > 0
-    ? roundMoney(lowerBound.lower)
-    : 0;
-  const unresolvedLabels = [...lowerBound.unresolved].map(formulaLabel).join('、');
+  const unresolvedLabels = [...new Set(
+    [...String(expression || '').matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu)]
+      .map((match) => match[1])
+      .filter((name) => formulaNumber(formulaValueForVariable(name, inputs)) === null),
+  )].map(formulaLabel).join('、');
   return {
     resolved: false,
     partial: true,
     amount: 0,
-    minimumAmount,
-    isMinimumEstimate: minimumAmount > 0,
-    calculationText: `${label} = ${displayFormulaExpression(displayExpression)}${minimumAmount > 0 ? `；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入${unresolvedLabels || '待补充金额'}）` : ''}`,
+    calculationText: `${label} = ${displayFormulaExpression(displayExpression)}；缺少${unresolvedLabels || '待补充输入'}，暂不计算`,
   };
 }
 

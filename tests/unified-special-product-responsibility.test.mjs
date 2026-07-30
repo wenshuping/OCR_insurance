@@ -135,6 +135,42 @@ test('universal lane accepts an exact 万能型 product identity with official p
   assert.equal(result.evidenceGates.universalAccount.officialUniversalIdentity, true);
 });
 
+test('universal lane reads account fields from structured artifact product overview', () => {
+  const evidence = universalChain('sha256:universal-structured-overview');
+  const universalProductName = '示例两全保险（万能型）';
+  evidence.artifacts = evidence.artifacts.map((artifact) => ({
+    ...artifact,
+    productName: universalProductName,
+    sourceExcerpt: '第十条 本合同个人账户价值按本条款计算。',
+    productOverview: {
+      mainFunctions: ['保单账户价值按条款规则积累增长', '最低保证利率为年利率1%'],
+      importantLimits: [
+        '初始费用：一次性支付3%，约定追加1%，自主追加3%',
+        '部分领取/退保费用在保单年度前5年递增至0%',
+      ],
+    },
+  }));
+  evidence.cards = evidence.cards.map((card) => ({
+    ...card,
+    productName: universalProductName,
+    sourceExcerpt: '第十条 身故保险金按合同给付。',
+  }));
+  evidence.indicators = evidence.indicators.map((indicator) => ({
+    ...indicator,
+    productName: universalProductName,
+    sourceExcerpt: '第十条 身故保险金按合同给付。',
+    formulaText: '身故保险金按合同给付。',
+  }));
+
+  const result = routeEvidence(evidence, universalProductName);
+  assert.equal(result.category, 'universal_account');
+  assert.equal(result.universalAccount.eligible, true);
+  assert.equal(result.universalAccount.fields.minimumGuaranteedRate.value, '1%');
+  assert.match(result.universalAccount.fields.singlePremiumInitialCharge.value, /3%/u);
+  assert.match(result.universalAccount.fields.additionalPremiumInitialCharge.value, /1%/u);
+  assert.match(result.universalAccount.fields.accountValueRule.value, /积累增长/u);
+});
+
 test('universal lane retains substantive clauses that mention a product summary later in the source', () => {
   const evidence = universalChain('sha256:universal-with-summary-word');
   evidence.cards = evidence.cards.map((card) => ({ ...card, sourceExcerpt: `${card.sourceExcerpt}\n产品摘要以正式条款为准。` }));

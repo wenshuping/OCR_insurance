@@ -1334,9 +1334,8 @@ export function buildCustomerResponsibilitySummaryFromCards({
       sourceRecords: specialSourceRecords,
     },
   });
-  // The existing incremental-life renderer owns its purpose wording.  Only the
-  // universal-account lane needs this fast-path enrichment for account fields.
-  const summaryJson = special.evaluation?.category === 'universal_account'
+  // Special-product renderers own their purpose wording and quantified fields.
+  const summaryJson = ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
     ? special.summary
     : summary;
   return safeCustomerSummary({ summaryJson, payload: { officialResponsibilityText } });

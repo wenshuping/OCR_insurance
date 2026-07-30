@@ -244,6 +244,9 @@ function resolveIndicatorCashflowCalculation(indicator, policy) {
       calculationText: structured.calculationText,
     };
   }
+  if (structured.partial) {
+    return { amount: 0, blocked: true, calculationText: structured.calculationText };
+  }
   if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return { amount: 0 };
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''} ${indicator.liability || ''}`;
   if (/实际交纳|已交保费|所交保费/.test(text)) {
@@ -262,7 +265,8 @@ function resolveIndicatorCashflowCalculation(indicator, policy) {
 }
 
 function resolveIndicatorAmountForCashflow(indicator, policy) {
-  return resolveIndicatorCashflowCalculation(indicator, policy).amount;
+  const calculation = resolveIndicatorCashflowCalculation(indicator, policy);
+  return calculation.blocked ? 0 : calculation.amount;
 }
 
 /** Format calculation text for an indicator. */
@@ -353,6 +357,7 @@ function resolveScenarioAmount(indicator, policy) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
   const structured = resolveScenarioCalculation(indicator, scopedPolicy);
   if (structured.resolved) return structured.amount;
+  if (structured.partial) return 0;
   const value = Number(indicator.value);
   const amount = Number(scopedPolicy.amount || 0);
 
@@ -979,6 +984,7 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
   const entries = [];
   let cumulative = 0;
   const indicatorCalculation = resolveIndicatorCashflowCalculation(indicator, scopedPolicy);
+  if (indicatorCalculation.blocked) return [];
   const indicatorAmount = indicatorCalculation.amount;
   for (const sec of effectiveSections) {
     if (/身故/u.test(sec.name)) continue;
@@ -1403,6 +1409,7 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
         normalizeCashflowLookupText(candidate?.liability) === normalizeCashflowLookupText(item.liability || sec.name)
       );
       const calculation = indicator ? resolveIndicatorCashflowCalculation(indicator, policy) : null;
+      if (calculation?.blocked) continue;
       const amount = calculation?.isMinimumEstimate ? calculation.amount : item.amount;
       cumulative += amount;
       entries.push({
@@ -1553,6 +1560,7 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
     if (!String(indicator?.liability || indicator?.coverageType || '').trim()) return [];
     const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const result = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+    if (result?.partial) return [];
     if (!result?.resolved && !result?.isMinimumEstimate) return [];
     const amount = result.isMinimumEstimate ? result.minimumAmount : result.amount;
     if (!(Number(amount) > 0)) return [];
@@ -1594,6 +1602,7 @@ export function computeScenarioEntries(indicators, policy) {
     const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
     if (indicator.calculationKey === 'not_calculable') continue;
+    if (resolved.partial) continue;
     // Legacy imports may mark a liability non-calculable even though its stored
     // formula has a safe lower bound from the policy's known inputs. Preserve
     // that lower bound and its uncertainty instead of discarding the scenario.

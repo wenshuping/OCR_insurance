@@ -106,10 +106,19 @@ function collectTextValues(value, result = [], path = []) {
     'officialResponsibilityText', 'official_responsibility_text', 'formulaText', 'formula_text',
     'calculationText', 'calculation_text', 'plainSummary', 'plain_summary', 'payoutSummary',
     'payout_summary', 'customerSummary', 'customer_summary', 'content',
+    'mainFunctions', 'importantLimits', 'productFunctions',
   ]);
   for (const [key, nested] of Object.entries(value)) {
-    if (acceptedKeys.has(key) && typeof nested === 'string' && text(nested)) {
-      result.push({ text: text(nested), path: [...path, key] });
+    if (acceptedKeys.has(key)) {
+      if (typeof nested === 'string' && text(nested)) {
+        result.push({ text: text(nested), path: [...path, key] });
+      } else if (Array.isArray(nested)) {
+        nested.forEach((item, index) => {
+          if (typeof item === 'string' && text(item)) {
+            result.push({ text: text(item), path: [...path, key, String(index)] });
+          }
+        });
+      }
     }
     collectTextValues(nested, result, [...path, key]);
   }
@@ -148,7 +157,12 @@ function substantiveTextItems(entries) {
     articleBody: /(?:第\s*[一二三四五六七八九十百千万0-9]+\s*条|本合同|合同约定)/u.test(item.text),
   })));
   const preferred = items.filter((item) => item.articleBody && !isNavigationOnlyText(item.text));
-  return preferred.length ? preferred : items.filter((item) => !isNavigationOnlyText(item.text));
+  const structuredAccountItems = items.filter((item) => item.kind === 'artifact'
+    && item.path.some((segment) => /^(?:mainFunctions|importantLimits|productFunctions)$/u.test(segment))
+    && !isNavigationOnlyText(item.text));
+  return preferred.length
+    ? uniqueValues([...preferred, ...structuredAccountItems])
+    : items.filter((item) => !isNavigationOnlyText(item.text));
 }
 
 function sentenceFor(textValue, pattern) {
@@ -163,8 +177,12 @@ function fieldEvidence(items, pattern, { numeric = false } = {}) {
   const candidates = items
     .map((item) => ({ ...item, excerpt: sentenceFor(item.text, pattern) }))
     .filter((item) => item.excerpt);
-  if (!numeric) return candidates[0] || null;
-  return candidates.find((item) => /\d+(?:\.\d+)?\s*%/u.test(item.excerpt)) || candidates[0] || null;
+  const structured = candidates.find((item) => item.path.includes('mainFunctions') || item.path.includes('importantLimits') || item.path.includes('productFunctions'));
+  if (!numeric) return structured || candidates[0] || null;
+  return structured
+    || candidates.find((item) => /\d+(?:\.\d+)?\s*%/u.test(item.excerpt))
+    || candidates[0]
+    || null;
 }
 
 function rateFromExcerpt(excerpt, pattern = null) {
@@ -196,12 +214,12 @@ function universalFields(items) {
   };
   add('minimumGuaranteedRate', '最低保证利率', /最低保证利率|保证利率/u, { numeric: true, ratePattern: /(?:最低保证利率|保证利率)[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
   add('settlement', '账户结算', /结算(?:利率|频率|方式|方法)|公布.*结算|按月.*结算|按日.*结算/u);
-  add('singlePremiumInitialCharge', '趸交/一次交清初始费用', /(?:一次交清|一次性交纳|一次性缴纳|趸交|单笔).*?(?:初始费用|费用|手续费)|(?:初始费用|费用|手续费).*?(?:一次交清|一次性交纳|一次性缴纳|趸交|单笔)/u, { numeric: true, ratePattern: /(?:一次交清|一次性交纳|一次性缴纳|趸交|单笔)[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
-  add('additionalPremiumInitialCharge', '追加初始费用', /追加.*?(?:初始费用|费用|手续费)|(?:初始费用|费用|手续费).*?追加/u, { numeric: true, ratePattern: /追加[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
+  add('singlePremiumInitialCharge', '趸交/一次交清初始费用', /(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔).*?(?:初始费用|费用|手续费)|(?:初始费用|费用|手续费).*?(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔)/u, { numeric: true, ratePattern: /(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔)[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
+  add('additionalPremiumInitialCharge', '追加初始费用', /追加[^。；;，,]{0,80}?(?:初始费用|费用|手续费|\d+(?:\.\d+)?\s*%)|(?:初始费用|费用|手续费)[^。；;，,]{0,80}?追加/u, { numeric: true, ratePattern: /追加[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
   add('managementAndRiskFees', '管理费/风险费', /(?:保单管理费|账户管理费|管理费|风险保险费|风险费|投资管理费)/u);
   add('withdrawalAndSurrenderCharges', '部分领取/退保手续费', /(?:部分领取|部分提取|退保).*?(?:手续费|费用|费率|比例)|(?:手续费|费用|费率|比例).*?(?:部分领取|部分提取|退保)/u);
   add('withdrawalEligibilityAndLimits', '领取/退保条件与限额', /(?:部分领取|部分提取|退保).*?(?:条件|资格|最低|限额|余额|次数|频率|保单年度)|(?:条件|资格|最低|限额|余额|次数|频率|保单年度).*?(?:部分领取|部分提取|退保)/u);
-  add('accountValueRule', '账户价值规则', /账户价值.*?(?:等于|计算|扣除|加上|余额)|(?:等于|计算|扣除|加上|余额).*?账户价值/u);
+  add('accountValueRule', '账户价值规则', /账户价值.*?(?:等于|计算|扣除|加上|余额|积累|增长)|(?:等于|计算|扣除|加上|余额|积累|增长).*?账户价值/u);
   const withdrawalRates = clausesFromOfficialText(items, /部分领取手续费率|部分领取.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
   if (withdrawalRates.length) {
     const percentages = unique(withdrawalRates.flatMap((clause) => [...clause.matchAll(/\d+(?:\.\d+)?\s*%/gu)].map((match) => match[0].replace(/\s+/gu, ''))));
@@ -228,7 +246,7 @@ function accountIdentity(items) {
   return items.find((item) => {
     const body = item.originalText || item.text;
     const productIdentity = text(item.productName);
-    return item.articleBody
+    return (item.articleBody || item.kind === 'artifact')
       && ACCOUNT_BODY_RE.test(body)
       && (ACCOUNT_IDENTITY_RE.test(body) || ACCOUNT_IDENTITY_RE.test(productIdentity));
   }) || null;
@@ -670,7 +688,7 @@ export function routeUnifiedSpecialProductResponsibility({
     incrementalWholeLife: {
       ...incremental,
       productPurpose: incremental.eligible
-        ? `本产品提供终身身故、全残保障，有效保险金额是责任计算基础；r/递增因子为每年 ${incremental.rate}% 的有效保险金额增长因子，不是收益率或现金价值增长率。`
+        ? `${incremental.productPurpose}有效保险金额是责任计算基础；r/递增因子为每年 ${incremental.rate}% 的有效保险金额增长因子，不是收益率或现金价值增长率。`
         : '',
       formula,
       semanticRole: incremental.eligible
@@ -711,9 +729,13 @@ export function applyUnifiedSpecialProductEvaluation(summary = {}, evaluation = 
     const formula = evaluation.incrementalWholeLife?.formula?.normalizedFormula?.[0]
       || evaluation.incrementalWholeLife?.formula?.formulaText?.[0]
       || '';
+    const verifiedPurpose = text(evaluation.incrementalWholeLife?.productPurpose);
     const purpose = [
-      '本产品提供终身身故、全残保障，有效保险金额是责任计算基础。',
-      rate ? `条款中的 r/递增因子为每年 ${rate}% 的有效保险金额增长因子，不是收益率或现金价值增长率。` : '',
+      verifiedPurpose || '本产品提供终身身故、全残保障，有效保险金额是责任计算基础。',
+      verifiedPurpose && !/有效保险金额/u.test(verifiedPurpose) ? '有效保险金额是责任计算基础。' : '',
+      rate && !/不是收益率/u.test(verifiedPurpose)
+        ? `条款中的 r/递增因子为每年 ${rate}% 的有效保险金额增长因子，不是收益率或现金价值增长率。`
+        : '',
       formula ? `责任计算公式：${formula}` : '',
     ].filter(Boolean).join('');
     next.headline = purpose;

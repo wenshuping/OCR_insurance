@@ -512,7 +512,7 @@ test('computeScenarioEntries resolves a responsibility formula through a stored 
   assert.match(entries[0].calculationText, /100,000 × \(1 \+ 0\.035\) \^ \(3 - 1\).* = 214,245元/u);
 });
 
-test('computeScenarioEntries keeps a formula-derived minimum when legacy metadata says it is not directly calculable', () => {
+test('computeScenarioEntries blocks a formula when a required basis term is unresolved', () => {
   const entries = computeScenarioEntries([{
     coverageType: '疾病保障',
     liability: '身故保险金',
@@ -525,10 +525,7 @@ test('computeScenarioEntries keeps a formula-derived minimum when legacy metadat
     },
   }], { id: 90, name: '分红型两全保险', amount: 99888 });
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].amount, 599328);
-  assert.equal(entries[0].isMinimumEstimate, true);
-  assert.match(entries[0].calculationText, /身故保险金 = \(99,888 \+ 累计红利保险金额（待补充）\) × 6/u);
+  assert.deepEqual(entries, []);
 });
 
 test('computeScenarioEntries treats 基本保险金 as coverage amount instead of premium', () => {
@@ -1462,7 +1459,7 @@ test('computePolicyCashflow: normalizes maturity source excerpt names before mer
   assert.equal(entries[0].liability, '满期生存保险金');
 });
 
-test('computePolicyCashflow: uses the official minimum when an unresolved basis component can only increase a benefit', () => {
+test('computePolicyCashflow: blocks a benefit when an unresolved basis component is required', () => {
   const policy = {
     id: 34,
     company: '测试保险',
@@ -1491,14 +1488,10 @@ test('computePolicyCashflow: uses the official minimum when an unresolved basis 
     },
   }]);
 
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].year, 2048);
-  assert.equal(entries[0].amount, 99888);
-  assert.equal(entries[0].isMinimumEstimate, true);
-  assert.match(entries[0].calcText, /最低可确认金额 99,888元/u);
+  assert.deepEqual(entries, []);
 });
 
-test('responsibility calculation projection keeps a formula minimum even when its scheduled payment date has passed', () => {
+test('responsibility calculation projection blocks a formula with an unresolved required input', () => {
   const policy = {
     id: 35,
     company: '测试保险',
@@ -1519,14 +1512,7 @@ test('responsibility calculation projection keeps a formula minimum even when it
     },
   }]);
 
-  assert.deepEqual(calculations, [{
-    indicatorId: 'development',
-    liability: '发展金',
-    amount: 99888,
-    isMinimumEstimate: true,
-    calculationText: '发展金 = (99,888 + 累计红利保险金额（待补充）) × 1；最低可确认金额 99,888元（未计入累计红利保险金额）',
-    uncertaintyNote: '已按条款公式可确认最低值计算，未计入待补充的非负金额。',
-  }]);
+  assert.deepEqual(calculations, []);
 });
 
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {

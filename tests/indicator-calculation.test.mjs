@@ -238,7 +238,7 @@ test('resolves a stored normalized formula with parentheses, division, powers, a
   assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
 });
 
-test('keeps an unresolved normalized formula symbolic after substituting known policy values', () => {
+test('blocks an unresolved normalized formula after substituting known policy values', () => {
   const formulaVariables = formulaVariablesFromIndicators([{
     normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
   }]);
@@ -254,13 +254,14 @@ test('keeps an unresolved normalized formula symbolic after substituting known p
   assert.equal(result.resolved, false);
   assert.equal(result.partial, true);
   assert.equal(result.amount, 0);
-  assert.equal(result.minimumAmount, 99888);
-  assert.equal(result.isMinimumEstimate, true);
+  assert.equal(result.minimumAmount, undefined);
+  assert.equal(result.isMinimumEstimate, undefined);
   assert.match(result.calculationText, /养老金 = \(99,888 \+ 累计红利保险金额（待补充）\) × 1/u);
   assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
+  assert.match(result.calculationText, /暂不计算/u);
 });
 
-test('derives a minimum from an official basis definition when the unresolved term can only increase the payout', () => {
+test('blocks an official basis definition when a required term is unresolved', () => {
   const result = resolveIndicatorAmountFromCalculation({
     liability: '养老金',
     formulaText: '该保单生效对应日有效保险金额 × 100%',
@@ -276,13 +277,14 @@ test('derives a minimum from an official basis definition when the unresolved te
   }, { baseAmount: 99888 });
 
   assert.equal(result.resolved, false);
-  assert.equal(result.minimumAmount, 99888);
-  assert.equal(result.isMinimumEstimate, true);
-  assert.match(result.calculationText, /最低可确认金额 99,888元/u);
+  assert.equal(result.amount, 0);
+  assert.equal(result.minimumAmount, undefined);
+  assert.equal(result.isMinimumEstimate, undefined);
+  assert.match(result.calculationText, /暂不计算/u);
   assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
 });
 
-test('derives a minimum from a plain multiplication formula when a legacy record omits the multiplier unit', () => {
+test('blocks a plain multiplication formula when a required basis term is unresolved', () => {
   const result = resolveIndicatorAmountFromCalculation({
     liability: '身故保险金',
     formulaText: '身故时有效保险金额 × 6',
@@ -293,9 +295,11 @@ test('derives a minimum from a plain multiplication formula when a legacy record
   }, { baseAmount: 99888 });
 
   assert.equal(result.resolved, false);
-  assert.equal(result.isMinimumEstimate, true);
-  assert.equal(result.minimumAmount, 599328);
+  assert.equal(result.isMinimumEstimate, undefined);
+  assert.equal(result.minimumAmount, undefined);
+  assert.equal(result.amount, 0);
   assert.match(result.calculationText, /累计红利保险金额（待补充）.*× 6/u);
+  assert.match(result.calculationText, /暂不计算/u);
 });
 
 test('resolves a normalized formula stored as a bare basic-responsibility expression', () => {
