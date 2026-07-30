@@ -155,7 +155,7 @@ export function CustomerResponsibilitySummaryCard({
             ));
             const hasMinimumScenarioEstimate = calculatedScenario?.isMinimumEstimate === true;
             const calculatedResponsibility = responsibilityCalculations.find((entry) => (
-              responsibilityTitlesMatch(item.title, entry.liability) && Number(entry.amount) > 0
+              responsibilityTitlesMatch(item.title, entry.liability)
             ));
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
@@ -217,16 +217,26 @@ export function CustomerResponsibilitySummaryCard({
                       </div>
                     ) : calculatedResponsibility ? (
                       <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
-                        calculatedResponsibility.isMinimumEstimate
+                        calculatedResponsibility.isPending
+                          ? 'bg-blue-50 text-blue-800 ring-blue-100'
+                          : calculatedResponsibility.isMinimumEstimate
                           ? 'bg-amber-50 text-amber-800 ring-amber-200'
                           : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
                       }`}>
                         <p className="font-black">
-                          {calculatedResponsibility.isMinimumEstimate
+                          {calculatedResponsibility.isPending
+                            ? '已代入本保单数据，待补充事故条件'
+                            : calculatedResponsibility.isMinimumEstimate
                             ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
                             : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}
                         </p>
-                        <p className={`mt-1 text-[11px] ${calculatedResponsibility.isMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                        <p className={`mt-1 text-[11px] ${
+                          calculatedResponsibility.isPending
+                            ? 'text-blue-700'
+                            : calculatedResponsibility.isMinimumEstimate
+                              ? 'text-amber-700'
+                              : 'text-cyan-700'
+                        }`}>
                           {calculatedResponsibility.calculationText}
                         </p>
                         {cleanText(calculatedResponsibility.uncertaintyNote) ? (

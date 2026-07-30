@@ -76,6 +76,7 @@ export type ResponsibilityCalculation = {
   liability: string;
   amount: number;
   isMinimumEstimate: boolean;
+  isPending?: boolean;
   calculationText: string;
   uncertaintyNote?: string;
 };

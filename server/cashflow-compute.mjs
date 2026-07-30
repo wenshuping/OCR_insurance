@@ -1560,7 +1560,17 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
     if (!String(indicator?.liability || indicator?.coverageType || '').trim()) return [];
     const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const result = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
-    if (result?.partial && !result?.isMinimumEstimate) return [];
+    if (result?.partial && !result?.isMinimumEstimate) {
+      return [{
+        indicatorId: String(indicator.id || ''),
+        liability: String(indicator.liability || indicator.coverageType || '').trim(),
+        amount: 0,
+        isMinimumEstimate: false,
+        isPending: true,
+        calculationText: String(result.calculationText || ''),
+        uncertaintyNote: '',
+      }];
+    }
     if (!result?.resolved && !result?.isMinimumEstimate) return [];
     const amount = result.isMinimumEstimate ? result.minimumAmount : result.amount;
     if (!(Number(amount) > 0)) return [];

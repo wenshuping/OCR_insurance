@@ -524,7 +524,7 @@ function formulaLowerBound(node) {
 }
 
 function formulaExpressionFromBasisDefinition(definition = {}) {
-  const source = displayText(definition.normalizedFormula || definition.formulaText);
+  const source = displayText(definition?.normalizedFormula || definition?.formulaText);
   if (!source) return '';
   const expression = source
     .normalize('NFKC')
@@ -626,13 +626,28 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
   const normalizedFormulaResult = resolveNormalizedFormula(indicator, inputs);
   if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
   if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
-  if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
 
   const baseAmount = Number(inputs.baseAmount || 0) || 0;
   const firstPremium = Number(inputs.firstPremium || 0) || 0;
   const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
   const totalPremium = firstPremium * paymentYears;
   const value = Number(meta.value || 0);
+
+  const formulaText = displayText(indicator.formulaText || indicator.basis || indicator.sourceExcerpt);
+  const needsEventPayoutRate = /(?:伤残|残疾)[^。；;]{0,32}(?:等级|给付比例)|(?:伤残|残疾)等级[^。；;]{0,32}给付比例/u.test(formulaText)
+    && !/\d+(?:\.\d+)?\s*%/u.test(formulaText);
+  if (needsEventPayoutRate && baseAmount > 0) {
+    const label = displayText(indicator.liability) || '保险金';
+    return {
+      resolved: false,
+      partial: true,
+      amount: 0,
+      meta,
+      calculationText: `${label} = 伤残/残疾等级给付比例（待确定） × 基本保险金额${formatMoney(baseAmount)}元；缺少伤残/残疾等级给付比例，暂不计算`,
+    };
+  }
+
+  if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
 
   let amount = 0;
   let calculationText = '';
