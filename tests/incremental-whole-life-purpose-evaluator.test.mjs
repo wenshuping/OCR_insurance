@@ -81,6 +81,20 @@ test('explicit expanded formula is a separate accepted path', () => {
   assert.equal(result.gates.sourceDigestAligned, true);
 });
 
+test('benefit comparison accepts the official basic insured amount wording', () => {
+  const evidence = chain({ productName: productNames[9] });
+  const basicAmountBenefit = '若被保险人身故或全残，按已交保险费、现金价值、本年度基本保险金额三者中的较大者给付。';
+  evidence.artifacts[0].responsibilities[0].sourceExcerpt = basicAmountBenefit;
+  evidence.cards[0].sourceExcerpt = basicAmountBenefit;
+  evidence.indicators[0].sourceExcerpt = basicAmountBenefit;
+  const result = evaluateIncrementalWholeLifePurpose(evidence);
+
+  assert.equal(result.eligible, true);
+  assert.equal(result.path, 'equivalent_recurrence');
+  assert.equal(result.gates.benefitAssociation, true);
+  assert.equal(result.gates.paidCashComparison, true);
+});
+
 for (const [order, productName] of Object.entries(productNames)) {
   test(`locked canary ${order} accepts the equivalent recurrence path`, () => {
     const result = evaluateIncrementalWholeLifePurpose(chain({ productName, rate: order === '5' ? 1.75 : order === '6' ? 2.5 : order === '7' ? 4 : 3.5, growthRole: order === '5' ? 'artifact' : order === '6' ? 'card' : 'indicator' }));

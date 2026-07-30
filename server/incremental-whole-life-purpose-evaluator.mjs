@@ -137,7 +137,7 @@ function ratesFromRecurrence(value) {
 
 function isBenefitComparison(value) {
   const source = text(value);
-  return /(有效保险金额|有效保额|effective_insured_amount)/iu.test(source)
+  return /(有效保险金额|有效保额|基本保险金额|基本保额|基本保险金|effective_insured_amount|basic_insured_amount)/iu.test(source)
     && /(身故|全残|death|disability)/iu.test(source)
     && /(较大者|最大者|max\(|MAX\(|比较|取.*(?:大|最大))/iu.test(source);
 }
