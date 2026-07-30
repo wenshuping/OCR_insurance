@@ -54,6 +54,7 @@ export function createFamilyRoutes(context) {
     cashflowStore,
     cashValueStore,
     computeAndStoreCashflow,
+    computeCurrentPolicyCashflow,
     createFamilyMember,
     createFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -823,9 +824,12 @@ export function createFamilyRoutes(context) {
         snapshot.optionalResponsibilityRecords,
       );
     }
-    const cashflowEntries = typeof cashflowStore?.getEntries === 'function'
-      ? cashflowStore.getEntries(policy.id)
-      : [];
+    // Family reports must consume the same current projection as policy detail.
+    // A persisted cashflow row can be older than the responsibility formula or
+    // policy inputs, so it is only a compatibility fallback.
+    const cashflowEntries = typeof computeCurrentPolicyCashflow === 'function'
+      ? computeCurrentPolicyCashflow(displayed)
+      : (typeof cashflowStore?.getEntries === 'function' ? cashflowStore.getEntries(policy.id) : []);
     const cashValues = typeof cashValueStore?.getValues === 'function'
       ? cashValueStore.getValues(policy.id)
       : [];

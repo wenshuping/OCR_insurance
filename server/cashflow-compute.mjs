@@ -543,6 +543,13 @@ function isDeterministicWealthBenefitSection(section = {}) {
   return true;
 }
 
+function sectionUsesEffectiveInsuranceAmount(section = {}) {
+  return /有效保险金额/u.test(normalizeCashflowLookupText([
+    section.name,
+    section.content,
+  ].join(' ')));
+}
+
 /** Parse a single benefit section into yearly items. */
 function parseBenefitSection(sec, ctx) {
   const { effectiveYear, birthYear, coverageEndYear, pensionStartAge, amount, policy } = ctx;
@@ -1071,10 +1078,14 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
       amount: ctx.basicAmount,
       policy: scopedPolicy,
     });
+    const requiresEffectiveInsuranceAmount = sectionUsesEffectiveInsuranceAmount(sec);
+    // “有效保险金额” cannot inherit the basic amount.  It is usable only when
+    // the indicator formula resolves it exactly or establishes a lower bound.
+    if (requiresEffectiveInsuranceAmount && !indicatorCalculation.formulaResolved) continue;
     for (const item of parsed) {
-      const shouldUseIndicatorAmount = indicatorAmount > 0
+      const shouldUseIndicatorAmount = requiresEffectiveInsuranceAmount || (indicatorAmount > 0
         && Number(item.amount) === Number(ctx.basicAmount)
-        && (indicatorCalculation.isMinimumEstimate || indicatorAmount !== Number(ctx.basicAmount));
+        && (indicatorCalculation.isMinimumEstimate || indicatorAmount !== Number(ctx.basicAmount)));
       const amount = shouldUseIndicatorAmount ? indicatorAmount : item.amount;
       cumulative += amount;
       entries.push({
@@ -1474,20 +1485,24 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
     if (/身故/.test(sec.name)) continue;
     if (sec.scope === 'optional' && !isSelectedOptionalResponsibilitySection(policy, sec)) continue;
 
-    const parsed = parseBenefitSection(sec, {
-      effectiveYear, birthYear, coverageEndYear, pensionStartAge,
-      amount, policy,
-    });
+      const parsed = parseBenefitSection(sec, {
+        effectiveYear, birthYear, coverageEndYear, pensionStartAge,
+        amount, policy,
+      });
+      const requiresEffectiveInsuranceAmount = sectionUsesEffectiveInsuranceAmount(sec);
 
-    for (const item of parsed) {
-      const indicator = cashflowIndicators.find((candidate) =>
-        normalizeCashflowLookupText(candidate?.liability) === normalizeCashflowLookupText(item.liability || sec.name)
-      );
-      const calculation = indicator ? resolveIndicatorCashflowCalculation(indicator, policy) : null;
-      if (calculation?.blocked) continue;
-      const amount = calculation?.isMinimumEstimate ? calculation.amount : item.amount;
-      cumulative += amount;
-      entries.push({
+      for (const item of parsed) {
+        const indicator = cashflowIndicators.find((candidate) =>
+          normalizeCashflowLookupText(candidate?.liability) === normalizeCashflowLookupText(item.liability || sec.name)
+        );
+        const calculation = indicator ? resolveIndicatorCashflowCalculation(indicator, policy) : null;
+        if (calculation?.blocked) continue;
+        if (requiresEffectiveInsuranceAmount && !calculation?.formulaResolved) continue;
+        const amount = (requiresEffectiveInsuranceAmount || calculation?.isMinimumEstimate)
+          ? calculation.amount
+          : item.amount;
+        cumulative += amount;
+        entries.push({
         year: item.year,
         age: item.age ?? ageAtCalendarYear(policy, item.year, item.year - birthYear),
         amount,
@@ -1495,8 +1510,10 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
         liability: item.liability || sec.name,
         policyId: policy.id,
         productName,
-        calcText: calculation?.isMinimumEstimate ? calculation.calculationText : item.calculationText,
-        isMinimumEstimate: Boolean(calculation?.isMinimumEstimate),
+          calcText: (requiresEffectiveInsuranceAmount || calculation?.isMinimumEstimate)
+            ? calculation.calculationText
+            : item.calculationText,
+          isMinimumEstimate: Boolean(calculation?.isMinimumEstimate),
         uncertaintyNote: calculation?.uncertaintyNote || '',
         _cashflowSource: 'responsibility',
       });

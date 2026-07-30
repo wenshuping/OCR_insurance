@@ -213,7 +213,7 @@ test('computePolicyCashflow: duplicate generic and concrete anniversary indicato
   assert.equal(entries.at(-1).cumulative, 24000);
 });
 
-test('computePolicyCashflow: single-age policy effective dates use the insured age year', () => {
+test('computePolicyCashflow: does not substitute basic amount for undefined effective insured amount', () => {
   const policy = {
     id: 500556,
     name: '成长阳光少儿两全保险(A款)（分红型）',
@@ -244,9 +244,7 @@ test('computePolicyCashflow: single-age policy effective dates use the insured a
 
   const entries = computePolicyCashflow(policy, null, indicators);
 
-  assert.deepEqual(entries.map((entry) => entry.year), [2029, 2032]);
-  assert.deepEqual(entries.map((entry) => entry.amount), [99012, 132016]);
-  assert.deepEqual(entries.map((entry) => entry.liability), ['深造金', '立业金']);
+  assert.deepEqual(entries, []);
 });
 
 test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
@@ -584,9 +582,12 @@ test('computeScenarioEntries: skips optional indicators unless selected', () => 
   const indicators = [
     { coverageType: '意外保障', liability: '可选航空意外', value: 20, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'unknown' },
     { coverageType: '意外保障', liability: '可选交通意外', value: 10, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'not_selected' },
-    { coverageType: '意外保障', liability: '已投保航空意外', value: 5, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'selected', quantificationStatus: 'quantified' },
+    { id: 'air-selected', coverageType: '意外保障', liability: '已投保航空意外', value: 5, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', optionalResponsibilityId: 'air-selected', selectionStatus: 'selected', quantificationStatus: 'quantified' },
   ];
-  const entries = computeScenarioEntries(indicators, changxingPolicy);
+  const entries = computeScenarioEntries(indicators, {
+    ...changxingPolicy,
+    optionalResponsibilities: [{ id: 'air-selected', selectionStatus: 'selected', coverageAmount: 60000 }],
+  });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].scenario, '已投保航空意外');
   assert.equal(entries[0].amount, 300000);
@@ -758,11 +759,21 @@ test('computePolicyCashflow: skips optional cashflow indicators unless selected'
     responsibilityScope: 'optional',
     selectionStatus: 'unknown',
   };
-  const selectedMaturity = { ...optionalMaturity, liability: '已投保满期金', selectionStatus: 'selected', quantificationStatus: 'quantified' };
+  const selectedMaturity = {
+    ...optionalMaturity,
+    id: 'maturity-selected',
+    liability: '已投保满期金',
+    optionalResponsibilityId: 'maturity-selected',
+    selectionStatus: 'selected',
+    quantificationStatus: 'quantified',
+  };
 
   assert.deepEqual(computePolicyCashflow(shengshiPolicy, null, [optionalMaturity]), []);
 
-  const entries = computePolicyCashflow(shengshiPolicy, null, [selectedMaturity]);
+  const entries = computePolicyCashflow({
+    ...shengshiPolicy,
+    optionalResponsibilities: [{ id: 'maturity-selected', selectionStatus: 'selected', coverageAmount: shengshiPolicy.amount }],
+  }, null, [selectedMaturity]);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].liability, '已投保满期金');
   assert.equal(entries[0].amount, shengshiPolicy.amount);
@@ -1091,7 +1102,7 @@ test('computePolicyCashflow: responsibility text path cumulative is correct', ()
   assert.equal(entries[entries.length - 1].cumulative, entries.length * 10000);
 });
 
-test('computePolicyCashflow: responsibility text path expands child education staged benefits', () => {
+test('computePolicyCashflow: leaves staged effective-insured-amount benefits uncomputed without a basis definition', () => {
   const policy = {
     id: 508870,
     company: '新华保险',
@@ -1117,19 +1128,10 @@ test('computePolicyCashflow: responsibility text path expands child education st
 
   const entries = computePolicyCashflow(policy, null, []);
 
-  assert.deepEqual(entries.map((entry) => [entry.year, entry.age, entry.liability, entry.amount]), [
-    [2031, 18, '大学教育金', 7752],
-    [2032, 19, '大学教育金', 7752],
-    [2033, 20, '大学教育金', 7752],
-    [2034, 21, '大学教育金', 7752],
-    [2035, 22, '深造金', 23256],
-    [2038, 25, '立业金', 31008],
-    [2041, 28, '婚嫁金', 31008],
-  ]);
-  assert.equal(entries.at(-1).cumulative, 116280);
+  assert.deepEqual(entries, []);
 });
 
-test('computePolicyCashflow: expands OCR-spaced explicit age milestones in one survival clause', () => {
+test('computePolicyCashflow: does not infer OCR-spaced effective-insured-amount payments without a basis definition', () => {
   const policy = {
     id: 516630,
     company: '新华保险',
@@ -1154,9 +1156,7 @@ test('computePolicyCashflow: expands OCR-spaced explicit age milestones in one s
 
   const entries = computePolicyCashflow(policy, null, []);
 
-  assert.deepEqual(entries.map((entry) => [entry.year, entry.liability, entry.amount]), [
-    [2048, '养老金', 99888],
-  ]);
+  assert.deepEqual(entries, []);
 });
 
 test('computePolicyCashflow: responsibility parser ignores OCR-split decimal multipliers', () => {
@@ -1495,6 +1495,38 @@ test('computePolicyCashflow: retains the lower-bound benefit when a basis compon
   assert.equal(entries[0].amount, 99888);
   assert.equal(entries[0].isMinimumEstimate, true);
   assert.match(entries[0].calcText, /最低可确认金额 99,888元/u);
+});
+
+test('computePolicyCashflow: schedules an effective-insured-amount benefit at its proven lower bound', () => {
+  const policy = {
+    id: 3401,
+    company: '测试保险',
+    name: '测试分红两全保险',
+    amount: 99888,
+    date: '2024-11-24',
+    insuredBirthday: '2018-12-16',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: '一、婚嫁金 被保险人生存至25周岁的保单生效对应日，本公司按该保单生效对应日有效保险金额的50%给付婚嫁金。',
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [{
+    id: 'marriage',
+    coverageType: '现金流',
+    liability: '婚嫁金',
+    formulaText: '该保单生效对应日有效保险金额 × 50%',
+    unit: '公式',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+    },
+  }]);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.amount, entry.isMinimumEstimate]), [[2043, 49944, true]]);
+  assert.match(entries[0].calcText, /\(99,888 \+ 累计红利保险金额（待补充）\) × 0\.5/u);
+  assert.match(entries[0].uncertaintyNote, /未计入待补充的非负金额/u);
 });
 
 test('responsibility calculation projection retains a lower bound with an unresolved required input', () => {
