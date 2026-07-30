@@ -1,5 +1,9 @@
 import { resolvePolicyValidityStatus } from './policy-validity.mjs';
-import { formulaVariablesFromIndicators, resolveIndicatorAmountForCurrentContext, resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
+import {
+  formulaVariablesFromIndicators,
+  resolveIndicatorAmountForCurrentContext,
+  resolveIndicatorAmountFromCalculation,
+} from './indicator-calculation.mjs';
 
 function asNumber(value) {
   const number = Number(value);
@@ -10,6 +14,50 @@ function finiteNumber(value) {
   if (value === null || value === undefined || String(value).trim() === '') return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function normalizedProjectionTitle(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
+}
+
+function hasResponsibilityDetailProjection(policy = {}) {
+  return Object.prototype.hasOwnProperty.call(policy, 'responsibilityCalculations');
+}
+
+function detailProjectionForIndicator(policy = {}, indicator = {}) {
+  if (!hasResponsibilityDetailProjection(policy)) return null;
+  const indicatorId = String(indicator?.id || '').trim();
+  const liability = normalizedProjectionTitle(indicator?.liability || indicator?.coverageType);
+  const scenarios = Array.isArray(policy?.scenarioEntries) ? policy.scenarioEntries : [];
+  const calculations = Array.isArray(policy?.responsibilityCalculations) ? policy.responsibilityCalculations : [];
+  const scenario = scenarios.find((entry) => (
+    liability && normalizedProjectionTitle(entry?.scenario) === liability
+  ));
+  if (scenario && finiteNumber(scenario.amount) !== null) {
+    return {
+      matched: true,
+      amount: Math.max(0, Number(scenario.amount)),
+      isMinimumEstimate: scenario.isMinimumEstimate === true,
+      isPending: false,
+      calculationText: String(scenario.calculationText || ''),
+      uncertaintyNote: String(scenario.uncertaintyNote || ''),
+    };
+  }
+  const calculation = calculations.find((entry) => (
+    (indicatorId && String(entry?.indicatorId || '').trim() === indicatorId)
+    || (liability && normalizedProjectionTitle(entry?.liability) === liability)
+  ));
+  if (calculation) {
+    return {
+      matched: true,
+      amount: Math.max(0, Number(calculation.amount || 0)),
+      isMinimumEstimate: calculation.isMinimumEstimate === true,
+      isPending: calculation.isPending === true,
+      calculationText: String(calculation.calculationText || ''),
+      uncertaintyNote: String(calculation.uncertaintyNote || ''),
+    };
+  }
+  return { matched: false };
 }
 
 function parseDateParts(value) {
@@ -770,6 +818,8 @@ function medicalIndicatorCannotContributeFixedAmount(indicator = {}) {
 }
 
 function resolveIndicatorAmount(indicator, policy) {
+  const detailProjection = detailProjectionForIndicator(policy, indicator);
+  if (detailProjection) return detailProjection.matched ? detailProjection.amount : 0;
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').normalize('NFKC');
   const text = indicatorText(indicator).normalize('NFKC');
@@ -817,6 +867,8 @@ function resolveIndicatorAmount(indicator, policy) {
 }
 
 function indicatorAmountCalculationText(indicator, policy, amount) {
+  const detailProjection = detailProjectionForIndicator(policy, indicator);
+  if (detailProjection?.matched && detailProjection.calculationText) return detailProjection.calculationText;
   const structured = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(indicator, policy));
   if (structured.resolved && Math.abs(structured.amount - asNumber(amount)) < 0.01) return structured.calculationText;
 
@@ -1187,6 +1239,7 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = [], co
   for (const policy of memberPolicies) {
     if (
       policyImpliesCriticalIllness(policy)
+      && !hasResponsibilityDetailProjection(policy)
       && !usableCriticalFirstPolicies.has(policy)
       && !formulaCriticalFirstPolicies.has(policy)
       && !inactiveCriticalPolicies.has(policy)
@@ -1552,7 +1605,7 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
       }
     }
 
-    if (indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
+    if (!hasResponsibilityDetailProjection(policy) && indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
       const indicator = fallbackPolicyIndicator(policy);
       const definitions = classifyAccidentIndicatorDefinitions(indicator);
       const fallbackDefinitions = definitions.length ? definitions : [ACCIDENT_ROWS.find((item) => item.key === 'general_accident')];
@@ -1708,6 +1761,46 @@ function cashflowRows(policy) {
     })
     .filter(Boolean)
     .sort((a, b) => a.year - b.year);
+}
+
+function isCashflowResponsibility(indicator = {}) {
+  const text = [
+    indicator?.coverageType,
+    indicator?.liability,
+    indicator?.cashflowTreatment,
+    indicator?.calculationStatus,
+  ].filter(Boolean).join(' ').normalize('NFKC');
+  return /现金流|scheduled_cashflow|年金|生存金|教育金|深造金|婚嫁金|养老金|祝寿金|满期/u.test(text);
+}
+
+function missingInputsForCashflowIndicator(indicator = {}, projection = {}) {
+  const explicit = [
+    ...(Array.isArray(indicator?.requiredInputs) ? indicator.requiredInputs : []),
+    ...(Array.isArray(indicator?.requiredPolicyFields) ? indicator.requiredPolicyFields : []),
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  if (explicit.length) return [...new Set(explicit)];
+  const match = String(projection?.calculationText || '').match(/缺少([^；。；\n]+)/u);
+  if (match?.[1]) return [match[1].trim()];
+  return ['待补充输入（条款未结构化）'];
+}
+
+function uncomputedCashflowItems(policy = {}) {
+  const scheduledRows = cashflowRows(policy);
+  return selectedCoverageIndicators(policy?.coverageIndicators)
+    .filter(isCashflowResponsibility)
+    .flatMap((indicator) => {
+      const projection = detailProjectionForIndicator(policy, indicator);
+      const liability = String(indicator?.liability || indicator?.coverageType || '').trim();
+      if (!projection?.matched || !projection.isPending || !liability) return [];
+      if (scheduledRows.some((row) => normalizedProjectionTitle(row.liability) === normalizedProjectionTitle(liability))) return [];
+      return [{
+        policyId: policy?.id,
+        productName: String(policy?.name || ''),
+        liability,
+        missingInputs: missingInputsForCashflowIndicator(indicator, projection),
+        calculationText: projection.calculationText,
+      }];
+    });
 }
 
 function insuredBirthYear(policy) {
@@ -1985,6 +2078,7 @@ function premiumOutflows(policy) {
 
 function buildWealthPolicyReport(policy) {
   const payouts = deterministicCashflowRows(policy);
+  const confirmedCashflowRows = payouts.filter((row) => !row.isMinimumEstimate);
   const excludedCashflowRows = excludedUncertainCashflowRows(policy);
   const values = deterministicCashValueRows(policy);
   const excludedCashValueRows = excludedUncertainCashValueRows(policy);
@@ -2014,10 +2108,12 @@ function buildWealthPolicyReport(policy) {
     company: String(policy?.company || ''),
     annualPremium: asNumber(policy?.firstPremium),
     cashflowRows: payouts,
+    confirmedCashflowRows,
     cashValueRows: values,
     excludedCashflowRows,
     excludedCashValueRows,
     minimumEstimateCashflowRows,
+    uncomputedCashflowItems: uncomputedCashflowItems(policy),
     annualCashflowRows: annualRows,
     uncertaintyItems,
     uncertaintyNote: wealthUncertaintyNote(uncertaintyItems, minimumEstimateCashflowRows.length),
@@ -2085,6 +2181,14 @@ export function buildWealthSection(policies = []) {
       reasons: policyReport.uncertaintyItems.map((item) => item.label),
       note: policyReport.uncertaintyNote,
     })));
+  const allPolicyReports = memberReports.flatMap((memberReport) => memberReport.policies);
+  const exactCashflowTotal = allPolicyReports
+    .flatMap((policyReport) => policyReport.confirmedCashflowRows)
+    .reduce((total, row) => total + row.amount, 0);
+  const minimumCashflowTotal = allPolicyReports
+    .flatMap((policyReport) => policyReport.minimumEstimateCashflowRows)
+    .reduce((total, row) => total + row.amount, 0);
+  const uncomputedCashflowItems = allPolicyReports.flatMap((policyReport) => policyReport.uncomputedCashflowItems);
 
   const aggregateMap = new Map();
   const ensureRow = (year) => {
@@ -2149,6 +2253,12 @@ export function buildWealthSection(policies = []) {
   return {
     memberReports,
     excludedPolicies,
+    cashflowSummary: {
+      exactAmount: exactCashflowTotal,
+      minimumAmount: minimumCashflowTotal,
+      uncomputedCount: uncomputedCashflowItems.length,
+    },
+    uncomputedCashflowItems,
     statisticsScopeNote: excludedPolicies.length
       ? '分红、万能账户存在收益或账户价值不确定因素，无法进入现金流统计；当前统计仅包含已识别的确定领取现金流，现金价值仅在保单明细展示。'
       : '',
@@ -2329,6 +2439,8 @@ function indicatorIsFormulaOnly(indicator, policy = {}) {
 }
 
 function indicatorAmountForPolicy(indicator, policy) {
+  const detailProjection = detailProjectionForIndicator(policy, indicator);
+  if (detailProjection) return detailProjection.matched && !detailProjection.isPending ? detailProjection.amount : 0;
   if (indicatorCannotContributeRadarAmount(indicator)) return 0;
   if (indicatorIsFormulaOnly(indicator, policy)) return 0;
   return resolveIndicatorAmount(indicator, policy);
