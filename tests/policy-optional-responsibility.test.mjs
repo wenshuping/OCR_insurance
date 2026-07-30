@@ -62,6 +62,67 @@ test('optional responsibility review preserves manual selection and excludes uns
   assert.equal(reviewItems[0].selectionStatus, 'not_selected');
 });
 
+test('findPolicyCoverageIndicators matches legal insurer prefixes through the shared responsibility identity', () => {
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    plans: [{
+      company: '新华保险',
+      name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+      matchedProductName: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+      canonicalProductId: 'stale_ocr_match',
+    }],
+  }, [{
+    id: 'maturity_indicator',
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    liability: '满期保险金',
+    normalizedFormula: 'basic_insurance_amount',
+    formulaText: '基本责任的保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://static-cdn.newchinalife.com/terms.pdf',
+    sourceExcerpt: '按基本责任保险金额给付满期保险金。',
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['maturity_indicator']);
+});
+
+test('policy optional responsibility state overrides a legacy indicator that omitted its optional scope', () => {
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    optionalResponsibilities: [{
+      id: 'optional_longevity',
+      company: '新华人寿保险股份有限公司',
+      productName: '尊尚人生两全保险（分红型）',
+      liability: '祝寿金',
+      responsibilityScope: 'optional',
+      selectionStatus: 'unknown',
+      selectionEvidence: 'official_terms',
+      quantificationStatus: 'pending_review',
+    }],
+  }, [{
+    id: 'longevity_indicator',
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    liability: '祝寿金',
+    responsibilityScope: 'basic_or_unspecified',
+    selectionStatus: 'unknown',
+    quantificationStatus: 'quantified',
+    formulaText: '可选责任的保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://static-cdn.newchinalife.com/terms.pdf',
+    sourceExcerpt: '按可选责任的保险金额给付祝寿金。',
+  }]);
+
+  assert.equal(indicators[0].responsibilityScope, 'optional');
+  assert.equal(indicators[0].selectionStatus, 'unknown');
+  assert.equal(indicators[0].quantificationStatus, 'pending_review');
+  assert.equal(selectedCoverageIndicators(indicators).length, 0);
+});
+
 test('OCR evidence resolves a previously unknown optional responsibility draft', () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）';
   const policy = {

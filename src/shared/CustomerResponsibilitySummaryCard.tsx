@@ -139,7 +139,8 @@ export function CustomerResponsibilitySummaryCard({
           </div>
           {responsibilities.map((item, index) => {
             const hasQuantifiedIndicator = hasQuantifiedCalculationSignal(item.howItPays);
-            const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(item.howItPays);
+            const isOptionalResponsibility = /可选(?:保险)?责任|可选择(?:的)?保险责任/u.test(`${item.title} ${item.plainText} ${item.howItPays}`);
+            const usesPolicyAmount = !isOptionalResponsibility && /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(item.howItPays);
             const usesPolicyPremium = /(?:首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费)/u.test(item.howItPays);
             const calculatedRows = cashflowEntries
               .filter((entry) => item.title && responsibilityTitlesMatch(item.title, entry.liability))

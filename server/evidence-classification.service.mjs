@@ -12,6 +12,11 @@ export const EXTERNAL_REFERENCE_EVIDENCE_LEVEL = 'external_legacy_reference';
 export const EXTERNAL_REFERENCE_EVIDENCE_LABEL = '非官方资料，待保险公司确认';
 
 const EXTERNAL_REFERENCE_SOURCE_KINDS = new Set(['legacy_external_reference', 'open_web_reference']);
+const INSURER_OFFICIAL_EVIDENCE_LEVELS = new Set([
+  INSURER_OFFICIAL_EVIDENCE_LEVEL,
+  'official_excerpt',
+  'official_terms',
+]);
 
 function text(value) {
   return String(value ?? '').trim();
@@ -22,7 +27,7 @@ function sourceKindOf(source = {}) {
 }
 
 function evidenceLevelOf(source = {}) {
-  return text(source.evidenceLevel || source.sourceLevel);
+  return text(source.evidenceLevel || source.sourceLevel || source.sourceEvidenceLevel);
 }
 
 export function isExternalReferenceEvidence(source = {}) {
@@ -55,7 +60,7 @@ export function isInsurerOfficialEvidence(source = {}) {
   const sourceKind = sourceKindOf(source);
   const evidenceLevel = evidenceLevelOf(source);
   if (isExternalReferenceEvidence(source) || isRegulatoryIndustryTermsEvidence(source)) return false;
-  return sourceKind === INSURER_OFFICIAL_SOURCE_KIND || evidenceLevel === INSURER_OFFICIAL_EVIDENCE_LEVEL || source.official === true;
+  return sourceKind === INSURER_OFFICIAL_SOURCE_KIND || INSURER_OFFICIAL_EVIDENCE_LEVELS.has(evidenceLevel) || source.official === true;
 }
 
 export function evidenceVerificationFields(source = {}) {
