@@ -1,0 +1,4 @@
+interface:
+  display_name: "Official Insurance Source Acquisition"
+  short_description: "Acquire official clauses through browser and OCR routes"
+  default_prompt: "Use $ocr-insurance-official-source-acquisition to obtain an exact-version official insurance source with auditable evidence before responsibility parsing."

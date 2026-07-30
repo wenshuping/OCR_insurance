@@ -1,0 +1,141 @@
+{
+  "fixtureId": "total-and-independent-children",
+  "sourceText": "本合同为主险合同。综合医疗保险金：被保险人发生下列医疗费用，我们在综合医疗保险金年度累计限额100万元内承担给付责任。住院医疗保险金：被保险人住院治疗，我们给付合理住院医疗费用。门诊手术医疗保险金：被保险人接受门诊手术，我们给付合理门诊手术医疗费用。两项子责任的给付金额均计入综合医疗保险金年度累计限额。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例综合医疗保险",
+    "sourceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "comprehensive-medical",
+        "liability": "综合医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人发生下列医疗费用",
+        "insurerObligation": "我们在综合医疗保险金年度累计限额100万元内承担给付责任",
+        "sourceExcerpt": "综合医疗保险金：被保险人发生下列医疗费用，我们在综合医疗保险金年度累计限额100万元内承担给付责任。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [],
+          "careSettings": [],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [
+              {
+                "valueText": "100万元",
+                "scopeText": "综合医疗保险金年度累计限额100万元",
+                "sourceExcerpt": "综合医疗保险金年度累计限额100万元"
+              }
+            ],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      },
+      {
+        "responsibilityId": "inpatient",
+        "parentResponsibilityId": "comprehensive-medical",
+        "liability": "住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人住院治疗",
+        "insurerObligation": "我们给付合理住院医疗费用",
+        "sourceExcerpt": "住院医疗保险金：被保险人住院治疗，我们给付合理住院医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [
+              {
+                "valueText": "100万元",
+                "scopeText": "综合医疗保险金年度累计限额100万元",
+                "sourceExcerpt": "两项子责任的给付金额均计入综合医疗保险金年度累计限额"
+              }
+            ],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      },
+      {
+        "responsibilityId": "outpatient-surgery",
+        "parentResponsibilityId": "comprehensive-medical",
+        "liability": "门诊手术医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人接受门诊手术",
+        "insurerObligation": "我们给付合理门诊手术医疗费用",
+        "sourceExcerpt": "门诊手术医疗保险金：被保险人接受门诊手术，我们给付合理门诊手术医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "门诊手术医疗费用"
+          ],
+          "careSettings": [
+            "outpatient_surgery"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [
+              {
+                "valueText": "100万元",
+                "scopeText": "综合医疗保险金年度累计限额100万元",
+                "sourceExcerpt": "两项子责任的给付金额均计入综合医疗保险金年度累计限额"
+              }
+            ],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "综合医疗保险金",
+      "住院医疗保险金",
+      "门诊手术医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

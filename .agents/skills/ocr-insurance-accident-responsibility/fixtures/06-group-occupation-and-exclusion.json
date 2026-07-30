@@ -1,0 +1,50 @@
+{
+  "fixtureId": "group-occupation-and-exclusion",
+  "realSample": true,
+  "identity": {
+    "company": "北大方正人寿保险有限公司",
+    "productName": "团体建筑工程意外伤害保险",
+    "sourceDigest": "sha256:d85e1120c95c77dbe1aa4c0858a5114573b4a673f7d4584f4268529f7cb5d63c"
+  },
+  "contractTopology": "group",
+  "topologyEvidence": {
+    "memberEligibility": {
+      "entryRule": "从事建筑施工或与建筑施工相关的工作，或处于施工期间指定生活区域",
+      "exitRule": "",
+      "sourceExcerpt": "被保险人在从事建筑施工或与建筑施工相关的工作，或在施工期间指定的生活区域内"
+    },
+    "planTier": {
+      "tierId": "",
+      "insuredAmountOrLimitSource": "合同约定的保险金额",
+      "sourceExcerpt": ""
+    }
+  },
+  "sections": [
+    {
+      "sectionId": "construction-accident-death",
+      "heading": "意外身故保险金",
+      "role": "responsibility",
+      "triggerCondition": "施工相关工作或指定生活区域内遭受意外伤害事故并在180日内身故",
+      "insurerObligation": "按保险金额给付并扣除已给付的残疾保险金",
+      "sourceExcerpt": "自意外伤害事故发生之日起180天内，若被保险人因该意外伤害事故而导致身故，本公司按合同约定的保险金额给付意外身故保险金。"
+    },
+    {
+      "sectionId": "construction-occupation-scope",
+      "heading": "施工工作和生活区域",
+      "role": "occupation_rule",
+      "sourceExcerpt": "被保险人在从事建筑施工或与建筑施工相关的工作，或在施工期间指定的生活区域内"
+    },
+    {
+      "sectionId": "exclusion-refund-fragment",
+      "heading": "责任免除情形导致身故时退还未满期保险费",
+      "role": "exclusion",
+      "sourceExcerpt": "若因责任免除条款所列情形导致被保险人身故，本公司在退还该被保险人未满期保险费后，对该被保险人的保险责任终止。"
+    }
+  ],
+  "expected": {
+    "status": "review",
+    "responsibilityIds": ["construction-accident-death"],
+    "supportingSectionIds": ["construction-occupation-scope", "exclusion-refund-fragment"],
+    "issueCodes": ["group_member_eligibility_missing", "group_plan_tier_missing"]
+  }
+}

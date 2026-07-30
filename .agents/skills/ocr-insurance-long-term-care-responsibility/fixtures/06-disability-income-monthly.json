@@ -1,0 +1,20 @@
+{
+  "id": "disability-income-monthly",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "total_disability_income",
+      "liability": "完全失能收入损失保险金",
+      "triggerCondition": "被保险人因疾病或意外完全不能从事约定职业并经过90日免责期。",
+      "insurerObligation": "保险人每月按基本保险金额给付失能收入损失保险金。",
+      "sourceExcerpt": "被保险人因疾病或意外完全不能从事约定职业并持续超过90日免责期的，我们每月按基本保险金额给付，给付至恢复工作、身故、累计24个月或保险期间届满。",
+      "careTrigger": {"cause": {"diseaseText": "疾病", "accidentText": "意外", "disabilityText": "完全不能从事约定职业"}, "waitingPeriod": {"durationText": "90日免责期"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "benefitPeriodText": "累计24个月", "terminationText": "恢复工作、身故、累计24个月或保险期间届满"},
+      "formula": {"formulaText": "月失能收入损失保险金=基本保险金额", "normalizedFormula": "monthly_disability_income = basic_sum_insured", "requiredInputs": ["basic_sum_insured", "disability_status"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "occupation_definition", "classification": "care_state_definition", "text": "职业失能定义属于触发证据。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["care_state_definition"]}
+}

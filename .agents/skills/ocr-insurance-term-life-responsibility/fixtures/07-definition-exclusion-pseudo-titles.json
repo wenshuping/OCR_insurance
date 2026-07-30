@@ -1,0 +1,57 @@
+{
+  "fixtureId": "term-life-definition-exclusion-pseudo-titles",
+  "title": "定义免责伪标题",
+  "sourceText": "身故保险金：被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。身故释义：身故是指被保险人的生命终止。责任免除：因投保人故意行为导致被保险人身故，我们不承担给付责任。保险金申请：受益人申请时应提交证明材料。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "definition_exclusion_rejection",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按基本保险金额给付身故保险金",
+        "normalizedFormula": "term_sum_assured",
+        "requiredInputs": [
+          "term_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。"
+      }
+    ],
+    "rejectedFragments": [
+      {
+        "text": "身故释义",
+        "reason": "definition_without_insurer_obligation"
+      },
+      {
+        "text": "责任免除",
+        "reason": "exclusion_not_responsibility"
+      },
+      {
+        "text": "保险金申请",
+        "reason": "claim_procedure_not_responsibility"
+      }
+    ]
+  }
+}

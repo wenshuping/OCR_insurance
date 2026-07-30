@@ -1,0 +1,85 @@
+{
+  "fixtureId": "group-membership-and-limits",
+  "sourceText": "投保团体是与保险人订立本合同的法人或其他组织。团体成员在投保人申报并经保险人同意后的次日零时生效；成员离开投保团体时，其保险责任于离开之日二十四时终止。团体住院医疗保险金：被保险人因疾病住院，我们给付合理住院医疗费用。每名成员个人年度限额10万元；个人限额用尽后，经投保人同意可使用团体共享限额100万元；药品费分项限额2万元。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例团体医疗保险",
+    "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "contractTopology": {
+      "type": "group",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "投保团体是与保险人订立本合同的法人或其他组织。团体成员在投保人申报并经保险人同意后的次日零时生效；成员离开投保团体时，其保险责任于离开之日二十四时终止。"
+        }
+      ],
+      "groupContract": {
+        "policyholderGroupText": "投保团体是与保险人订立本合同的法人或其他组织",
+        "memberEligibilityText": "团体成员在投保人申报并经保险人同意",
+        "effectiveEntryText": "次日零时生效",
+        "exitText": "成员离开投保团体时，其保险责任于离开之日二十四时终止",
+        "limitAllocation": "mixed"
+      }
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "group-inpatient",
+        "liability": "团体住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因疾病住院",
+        "insurerObligation": "我们给付合理住院医疗费用",
+        "sourceExcerpt": "团体住院医疗保险金：被保险人因疾病住院，我们给付合理住院医疗费用。每名成员个人年度限额10万元；个人限额用尽后，经投保人同意可使用团体共享限额100万元；药品费分项限额2万元。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院医疗费用",
+            "药品费"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [
+              {
+                "valueText": "10万元",
+                "scopeText": "每名成员个人年度限额10万元",
+                "sourceExcerpt": "每名成员个人年度限额10万元"
+              }
+            ],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [
+              {
+                "valueText": "100万元",
+                "scopeText": "团体共享限额100万元",
+                "sourceExcerpt": "经投保人同意可使用团体共享限额100万元"
+              }
+            ],
+            "subLimits": [
+              {
+                "valueText": "2万元",
+                "scopeText": "药品费分项限额2万元",
+                "sourceExcerpt": "药品费分项限额2万元"
+              }
+            ]
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "group",
+    "responsibilityTitles": [
+      "团体住院医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

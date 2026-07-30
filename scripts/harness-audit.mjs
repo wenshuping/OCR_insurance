@@ -4,11 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { readDevSourceOwner } from './local-dev-source-owner.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
 const DEFAULT_TEST_MAP_PATH = 'docs/harness-test-map.json';
 const DEFAULT_DEV_DB_PATH = '.runtime/local/policy-ocr.sqlite';
+const DEVELOPMENT_SERVICE_PORTS = [
+  { name: 'api', label: 'API 服务', port: 4207 },
+  { name: 'web', label: '前端页面', port: 3014 },
+];
 
 const REQUIRED_FILES = [
   'scripts/check.sh',
@@ -195,6 +200,206 @@ export function auditExecutionPoints({ projectRoot = DEFAULT_PROJECT_ROOT } = {}
       add(report, 'passed', 'execution-points', 'scripts/check.sh invokes harness audit');
     } else {
       add(report, 'failed', 'execution-points', 'scripts/check.sh must invoke scripts/harness-audit.mjs');
+    }
+  }
+  return report;
+}
+
+export function auditDevelopmentSourceOwnership({
+  projectRoot = DEFAULT_PROJECT_ROOT,
+  runtimeDir = path.join(projectRoot, '.runtime/local'),
+  readSourceOwner = readDevSourceOwner,
+  realpath = fs.realpathSync,
+} = {}) {
+  const report = makeReport();
+  let currentSourceRoot = '';
+  try {
+    currentSourceRoot = realpath(projectRoot);
+  } catch (error) {
+    add(report, 'failed', 'development-source-ownership', 'cannot resolve current project source directory', error?.message || String(error));
+    return report;
+  }
+
+  const sourceOwner = String(readSourceOwner(runtimeDir) || '').trim();
+  if (!sourceOwner) {
+    add(report, 'skipped', 'development-source-ownership', 'development stack has not claimed a source directory');
+    return report;
+  }
+  if (sourceOwner !== currentSourceRoot) {
+    add(
+      report,
+      'failed',
+      'development-source-ownership',
+      'current worktree does not own the running development stack',
+      [
+        `current worktree: ${currentSourceRoot}`,
+        `development source owner: ${sourceOwner}`,
+        'run changes, verification, and development commands from the development source owner worktree.',
+      ].join('\n'),
+    );
+    return report;
+  }
+  add(report, 'passed', 'development-source-ownership', 'current worktree owns the running development stack', currentSourceRoot);
+  return report;
+}
+
+function parsePositivePid(value) {
+  const pid = Number(String(value || '').trim());
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : 0;
+}
+
+function readManagedServicePid(runtimeDir, serviceName) {
+  try {
+    return parsePositivePid(fs.readFileSync(path.join(runtimeDir, 'pids', `${serviceName}.pid`), 'utf8'));
+  } catch {
+    return 0;
+  }
+}
+
+function findListeningPids(port) {
+  const result = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return [];
+  return [...new Set(String(result.stdout || '').split(/\s+/u).map(parsePositivePid).filter(Boolean))];
+}
+
+function readProcessCwd(pid) {
+  const result = spawnSync('lsof', ['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return '';
+  const line = String(result.stdout || '').split(/\r?\n/u).find((value) => value.startsWith('n'));
+  return line ? line.slice(1) : '';
+}
+
+function readConfiguredDevelopmentDatabasePath(runtimeDir) {
+  try {
+    const payload = readJsonFile(path.join(runtimeDir, 'policy-ocr-env.json'));
+    return String(payload?.POLICY_OCR_APP_DB_PATH || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function readProcessEnvironmentValue(pid, key) {
+  const result = spawnSync('ps', ['eww', '-p', String(pid)], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) return '';
+  const match = String(result.stdout || '').match(new RegExp(`(?:^|\\s)${escapeRegExp(key)}=([^\\s]+)`, 'u'));
+  return match?.[1] || '';
+}
+
+export function auditDevelopmentDatabaseBinding({
+  projectRoot = DEFAULT_PROJECT_ROOT,
+  runtimeDir = path.join(projectRoot, '.runtime/local'),
+  realpath = fs.realpathSync,
+  readConfiguredPath = readConfiguredDevelopmentDatabasePath,
+  readManagedPid = readManagedServicePid,
+  readProcessEnv = readProcessEnvironmentValue,
+  pathExists = fs.existsSync,
+} = {}) {
+  const report = makeReport();
+  const configuredPath = String(readConfiguredPath(runtimeDir) || '').trim();
+  if (!configuredPath) {
+    add(report, 'failed', 'development-database-binding', 'development database path is not configured');
+    return report;
+  }
+  if (!pathExists(configuredPath)) {
+    add(report, 'failed', 'development-database-binding', 'configured development database does not exist', configuredPath);
+    return report;
+  }
+
+  let expectedPath = '';
+  try {
+    expectedPath = realpath(configuredPath);
+  } catch (error) {
+    add(report, 'failed', 'development-database-binding', 'cannot resolve configured development database', error?.message || String(error));
+    return report;
+  }
+
+  const apiPid = readManagedPid(runtimeDir, 'api');
+  if (!apiPid) {
+    add(report, 'passed', 'development-database-binding', 'configured development database is ready', expectedPath);
+    return report;
+  }
+
+  const activePath = String(readProcessEnv(apiPid, 'POLICY_OCR_APP_DB_PATH') || '').trim();
+  let resolvedActivePath = '';
+  try {
+    if (activePath) resolvedActivePath = realpath(activePath);
+  } catch {
+    resolvedActivePath = activePath;
+  }
+  if (resolvedActivePath !== expectedPath) {
+    add(report, 'failed', 'development-database-binding', 'API is using a different database from the configured development database', [
+      `configured database: ${expectedPath}`,
+      `API pid: ${apiPid}`,
+      `API database: ${resolvedActivePath || 'unavailable'}`,
+    ].join('\n'));
+    return report;
+  }
+  add(report, 'passed', 'development-database-binding', 'API uses the configured development database', `pid: ${apiPid}\ndatabase: ${expectedPath}`);
+  return report;
+}
+
+export function auditDevelopmentProcessOwnership({
+  projectRoot = DEFAULT_PROJECT_ROOT,
+  runtimeDir = path.join(projectRoot, '.runtime/local'),
+  readSourceOwner = readDevSourceOwner,
+  realpath = fs.realpathSync,
+  servicePorts = DEVELOPMENT_SERVICE_PORTS,
+  readManagedPid = readManagedServicePid,
+  findListeners = findListeningPids,
+  readCwd = readProcessCwd,
+} = {}) {
+  const report = makeReport();
+  const sourceOwner = String(readSourceOwner(runtimeDir) || '').trim();
+  if (!sourceOwner) {
+    add(report, 'skipped', 'development-process-ownership', 'development stack has not claimed a source directory');
+    return report;
+  }
+
+  let expectedCwd = '';
+  try {
+    expectedCwd = realpath(sourceOwner);
+  } catch (error) {
+    add(report, 'failed', 'development-process-ownership', 'cannot resolve development source owner directory', error?.message || String(error));
+    return report;
+  }
+
+  for (const service of servicePorts) {
+    const listenerPids = findListeners(service.port);
+    if (!listenerPids.length) {
+      add(report, 'skipped', 'development-process-ownership', `${service.label} has no listener on ${service.port}`);
+      continue;
+    }
+
+    const managedPid = readManagedPid(runtimeDir, service.name);
+    if (!managedPid || !listenerPids.includes(managedPid)) {
+      add(report, 'failed', 'development-process-ownership', `${service.label} listener is not managed by .runtime/local`, [
+        `port: ${service.port}`,
+        `listener pid: ${listenerPids.join(', ')}`,
+        `managed pid: ${managedPid || 'missing'}`,
+        'stop the orphan process or start the stack with npm run local:dev before continuing.',
+      ].join('\n'));
+      continue;
+    }
+
+    for (const pid of listenerPids) {
+      let cwd = '';
+      try {
+        cwd = String(readCwd(pid) || '').trim();
+        if (cwd) cwd = realpath(cwd);
+      } catch (error) {
+        add(report, 'failed', 'development-process-ownership', `${service.label} listener cwd cannot be verified`, error?.message || String(error));
+        continue;
+      }
+      if (!cwd || cwd !== expectedCwd) {
+        add(report, 'failed', 'development-process-ownership', `${service.label} listener belongs to a different worktree`, [
+          `port: ${service.port}`,
+          `listener pid: ${pid}`,
+          `listener cwd: ${cwd || 'unavailable'}`,
+          `development source owner: ${expectedCwd}`,
+        ].join('\n'));
+        continue;
+      }
+      add(report, 'passed', 'development-process-ownership', `${service.label} listener is managed by the bound worktree`, `port: ${service.port}\npid: ${pid}\ncwd: ${cwd}`);
     }
   }
   return report;
@@ -653,6 +858,9 @@ export function runHarnessAudit({
   }
 
   mergeReport(report, auditExecutionPoints({ projectRoot }));
+  mergeReport(report, auditDevelopmentSourceOwnership({ projectRoot }));
+  mergeReport(report, auditDevelopmentProcessOwnership({ projectRoot }));
+  mergeReport(report, auditDevelopmentDatabaseBinding({ projectRoot }));
 
   const loadedMap = loadTestMap(projectRoot);
   if (!loadedMap.ok) {

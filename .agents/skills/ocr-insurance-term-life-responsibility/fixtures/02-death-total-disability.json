@@ -1,0 +1,62 @@
+{
+  "fixtureId": "term-life-death-total-disability",
+  "title": "身故与全残独立责任",
+  "sourceText": "保险期间为十年。身故保险金：被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。全残保险金：被保险人在保险期间内达到本合同约定的全残状态，我们按基本保险金额给付全残保险金，本合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "death_and_total_disability",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "任一保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按基本保险金额给付身故保险金",
+        "normalizedFormula": "term_sum_assured",
+        "requiredInputs": [
+          "term_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。"
+      },
+      {
+        "responsibilityId": "total_disability_benefit",
+        "liability": "全残保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人在保险期间内达到本合同约定的全残状态",
+        "insurerObligation": "按基本保险金额给付全残保险金",
+        "normalizedFormula": "term_sum_assured",
+        "requiredInputs": [
+          "term_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "全残保险金：被保险人在保险期间内达到本合同约定的全残状态，我们按基本保险金额给付全残保险金，本合同终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

@@ -6,6 +6,7 @@ import {
   buildCustomerPolicyPhotoKnowledgeRecord,
   mergeCustomerPolicyPhotoScans,
   normalizeCustomerPolicyPhotoUploadItems,
+  sanitizeCustomerPolicyPhotoOcrPage,
   sanitizeCustomerPolicyPhotoKnowledgeText,
 } from '../server/customer-policy-photo-knowledge.service.mjs';
 
@@ -43,6 +44,15 @@ test('customer policy terms photos stay pending until operations review', () => 
     pageText: '产品名称:测试重疾保险\n保险责任:可选责任一 轻度疾病保险金。',
     ownerUserId: 9,
     uploadItems: [{ name: 'photo.jpg' }],
+    ocrPages: [{ pageNumber: 1, name: 'photo.jpg', ocrText: '保险责任:可选责任一 轻度疾病保险金。' }],
+    responsibilityPipeline: {
+      status: 'pending_review',
+      pipelineVersion: 'test-v1',
+      attempts: 2,
+      normalizationPasses: 2,
+      validationIssues: [],
+      artifact: { responsibilities: [{ responsibilityId: 'mild' }] },
+    },
   });
 
   assert.equal(record.sourceKind, 'customer_policy_photo');
@@ -58,6 +68,10 @@ test('customer policy terms photos stay pending until operations review', () => 
   assert.equal(record.originalCompany, '新华保险');
   assert.equal(record.originalProductName, '测试重疾保险');
   assert.equal(record.originalPageText, record.pageText);
+  assert.equal(record.ocrPages.length, 1);
+  assert.equal(record.responsibilityPipelineStatus, 'pending_review');
+  assert.equal(record.responsibilityPipelineAttempts, 2);
+  assert.equal(record.responsibilityArtifact.responsibilities[0].responsibilityId, 'mild');
 
   const approved = approveCustomerPolicyPhotoKnowledgeRecord(record, { approved: true, reviewedAt: '2026-07-03T00:00:00.000Z' });
   assert.equal(approved.reviewStatus, 'approved');
@@ -91,6 +105,22 @@ test('customer policy terms photos stay pending until operations review', () => 
   assert.equal(republished.productName, '修改后的测试重疾保险');
   assert.match(republished.title, /修改后的测试重疾保险/);
   assert.equal(republished.originalPageText, record.pageText);
+});
+
+test('customer OCR page sanitizer keeps complete non-private responsibility prose', () => {
+  const sanitized = sanitizeCustomerPolicyPhotoOcrPage({
+    ocrText: [
+      '投保人姓名:张三',
+      '保险责任',
+      '被保险人初次确诊轻度疾病，',
+      '本公司按基本保险金额的20%给付。',
+    ].join('\n'),
+    scan: { data: { applicant: '张三' } },
+  });
+
+  assert.doesNotMatch(sanitized, /张三/u);
+  assert.match(sanitized, /被保险人初次确诊轻度疾病/u);
+  assert.match(sanitized, /基本保险金额的20%/u);
 });
 
 test('customer policy review record preserves uploaded images for operations only', () => {

@@ -1,0 +1,29 @@
+{
+  "id": "accident-care-periodic-and-lump-sum",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "accident_monthly_care",
+      "liability": "意外伤残长期护理保险金",
+      "triggerCondition": "意外事故发生后180日内因该事故达到1至4级伤残并符合护理状态。",
+      "insurerObligation": "保险人每月给付基本保险金额的1%。",
+      "sourceExcerpt": "被保险人因意外事故并在180日内达到1至4级伤残且符合护理状态，我们每月按基本保险金额的1%给付，最多120次；恢复、身故或满120次时终止。",
+      "careTrigger": {"cause": {"accidentText": "意外事故", "disabilityText": "1至4级伤残", "causationWindowText": "180日内"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "paymentCountText": "最多120次", "terminationText": "恢复、身故或满120次"},
+      "formula": {"formulaText": "每月护理金=基本保险金额×1%", "normalizedFormula": "monthly_care = basic_sum_insured * 0.01", "requiredInputs": ["basic_sum_insured", "disability_grade"], "branches": [], "operands": []}
+    },
+    {
+      "responsibilityId": "accident_one_time_care",
+      "liability": "意外伤残一次性护理保险金",
+      "triggerCondition": "首次符合意外伤残长期护理保险金给付条件。",
+      "insurerObligation": "保险人按基本保险金额的50%一次性给付。",
+      "sourceExcerpt": "首次符合意外伤残长期护理保险金给付条件时，我们按基本保险金额的50%一次性给付，本项责任给付后终止。",
+      "benefit": {"paymentMode": "lump_sum", "cadence": "once", "terminationText": "给付后终止"},
+      "formula": {"formulaText": "一次性护理金=基本保险金额×50%", "normalizedFormula": "lump_sum_care = basic_sum_insured * 0.50", "requiredInputs": ["basic_sum_insured"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "disability_table", "classification": "care_state_definition", "text": "伤残等级表属于触发证据。"}
+  ],
+  "expected": {"acceptedCount": 2, "rejectedClassifications": ["care_state_definition"]}
+}

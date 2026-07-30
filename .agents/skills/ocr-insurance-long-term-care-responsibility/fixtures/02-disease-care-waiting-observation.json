@@ -1,0 +1,21 @@
+{
+  "id": "disease-care-waiting-observation",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "disease_annual_care",
+      "liability": "疾病长期护理保险金",
+      "triggerCondition": "90日等待期后确诊约定疾病，并持续180日达到对应护理状态。",
+      "insurerObligation": "保险人每个保单年度给付基本保险金额的20%。",
+      "sourceExcerpt": "等待期90日届满后，被保险人首次确诊约定疾病且持续180日达到护理状态，我们每年按基本保险金额的20%给付，最多给付5年；护理状态终止、身故或满5年时停止给付。",
+      "careTrigger": {"waitingPeriod": {"durationText": "90日"}, "continuousState": {"observationPeriodText": "180日"}, "cause": {"diseaseText": "约定疾病"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "annual", "benefitPeriodText": "最多5年", "terminationText": "护理状态终止、身故或满5年"},
+      "formula": {"formulaText": "年度护理金=基本保险金额×20%", "normalizedFormula": "annual_care = basic_sum_insured * 0.20", "requiredInputs": ["basic_sum_insured"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "disease_list", "classification": "disease_definition", "text": "列明疾病名称和医学定义。"},
+    {"fragmentId": "waiting_rule", "classification": "shared_rule", "text": "等待期从合同生效或复效起算。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["disease_definition", "shared_rule"]}
+}

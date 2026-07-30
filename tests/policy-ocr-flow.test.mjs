@@ -8921,6 +8921,43 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
   const app = createPolicyOcrApp({
     state,
     adminPassword: 'admin-pass',
+    parseCustomerUploadResponsibility: async ({ company, productName, ocrPages }) => ({
+      status: 'pending_review',
+      pipelineVersion: 'customer_ocr_responsibility_test',
+      attempts: 1,
+      normalizationPasses: 2,
+      validationIssues: [],
+      artifact: {
+        sourceMode: 'customer_ocr_upload',
+        company,
+        productName,
+        responsibilities: [{
+          responsibilityId: 'mild_disease',
+          liability: '轻度疾病保险金',
+          responsibilityKind: 'benefit',
+          coverageAggregation: 'include',
+          selectionStatus: 'unknown',
+          triggerCondition: '被保险人确诊轻度疾病',
+          insurerObligation: '按基本保险金额20%给付',
+          sourcePage: '1',
+          sourceExcerpt: '3.可选责任一 （1）轻度疾病保险金 按基本保险金额20%给付。',
+          card: {
+            title: '轻度疾病保险金',
+            customerSummary: '若投保该责任，确诊轻度疾病后按约定给付。',
+            benefitExplanation: '按基本保险金额20%给付。',
+          },
+          indicators: [{
+            indicatorName: '轻度疾病保险金金额',
+            formulaText: '基本保险金额 × 20%',
+            basisKey: 'insured_amount',
+            calculationStatus: 'display_only',
+            sourcePage: '1',
+            sourceExcerpt: '按基本保险金额20%给付',
+          }],
+        }],
+        evidencePages: ocrPages.map(({ pageNumber, name }) => ({ pageNumber, name })),
+      },
+    }),
     scanner: async ({ uploadItem }) => {
       scannerCalls.push(uploadItem?.name || '');
       return {
@@ -8967,6 +9004,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(scanned.payload.uploadedCount, 5);
     assert.equal(scanned.payload.status, 'candidates');
     assert.equal(scanned.payload.knowledgeRecordIds.length, 1);
+    assert.equal(scanned.payload.responsibilityPipelineStatus, 'pending_review');
+    assert.equal(scanned.payload.responsibilityPipelineAttempts, 1);
     assert.equal(scanned.payload.scan.data.name, '找不到的产品');
     assert.match(scanned.payload.scan.ocrText, /本保单载明已选择可选责任一/u);
     const optionalOne = scanned.payload.optionalResponsibilities.find((item) => item.liability === '可选责任一');
@@ -8981,6 +9020,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(termsRecord.referenceOnly, true);
     assert.doesNotMatch(termsRecord.pageText, /张三|330106198712072413|已选择可选责任一/u);
     assert.match(termsRecord.pageText, /轻度疾病保险金/u);
+    assert.equal(termsRecord.ocrPages.length, 5);
+    assert.equal(termsRecord.responsibilityArtifact.responsibilities.length, 1);
 
     const beforeApproval = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9001,9 +9042,11 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
       headers: { authorization: `Bearer ${login.payload.token}` },
       body: JSON.stringify({ action: 'approved' }),
     });
-    assert.equal(reviewed.response.status, 200);
+    assert.equal(reviewed.response.status, 200, JSON.stringify(reviewed.payload));
     assert.equal(reviewed.payload.record.reviewStatus, 'approved');
     assert.equal(reviewed.payload.record.globalSearchable, true);
+    assert.equal(reviewed.payload.record.publishedResponsibilityCardIds.length, 1);
+    assert.equal(reviewed.payload.record.publishedIndicatorRecordIds.length, 1);
 
     const afterApproval = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9013,7 +9056,7 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
       }),
     });
     const termsMatch = afterApproval.payload.matches.find((match) => match.sourceKind === 'customer_policy_terms');
-    assert.ok(termsMatch);
+    assert.ok(termsMatch, JSON.stringify({ matches: afterApproval.payload.matches, record: state.knowledgeRecords[0] }));
     assert.equal(termsMatch.verificationStatus, 'verified');
     assert.equal(termsMatch.referenceOnly, false);
     assert.equal(afterApproval.payload.status, 'exact');
@@ -9034,6 +9077,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(rolledBack.payload.record.originalProductName, '找不到的产品');
     assert.match(rolledBack.payload.record.originalPageText, /轻度疾病保险金/u);
     assert.equal(rolledBack.payload.record.uploadImages.length, 5);
+    assert.equal(rolledBack.payload.record.ocrPages.length, 5);
+    assert.equal(rolledBack.payload.record.publishedResponsibilityCardIds.length, 0);
 
     const afterRollback = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9051,6 +9096,62 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(republished.payload.record.productName, '修改后的找不到产品');
     assert.equal(republished.payload.record.originalProductName, '找不到的产品');
     assert.equal(republished.payload.record.uploadImages.length, 5);
+  } finally {
+    await server.close();
+  }
+});
+
+test('product knowledge photo scan reuses deterministic pipeline responsibilities already in the library', async () => {
+  let parserCalls = 0;
+  const state = {
+    users: [], sessions: [], adminSessions: [], smsCodes: [], sourceRecords: [], pendingScans: [],
+    officialDomainProfiles: [], knowledgeRecords: [], policies: [], optionalResponsibilityRecords: [], nextId: 1,
+    insuranceIndicatorRecords: [{
+      id: 'ind_pipeline_existing',
+      company: '新华保险',
+      productName: '已入库测试重疾保险',
+      coverageType: '疾病保障',
+      liability: '重大疾病保险金',
+      responsibilityId: 'critical_illness',
+      extractionMethod: 'official_clause_deterministic_pipeline',
+      sourceKind: 'insurer_official',
+      evidenceLevel: 'insurer_official',
+      official: true,
+      sourceUrl: 'https://official.example.test/terms.pdf',
+      sourceExcerpt: '按基本保险金额给付重大疾病保险金',
+    }],
+  };
+  const app = createPolicyOcrApp({
+    state,
+    parseCustomerUploadResponsibility: async () => {
+      parserCalls += 1;
+      throw new Error('should not generate duplicate responsibilities');
+    },
+    scanner: async () => ({
+      ocrText: '产品名称:已入库测试重疾保险\n保险责任:重大疾病保险金。',
+      data: { company: '新华保险', name: '已入库测试重疾保险' },
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const scanned = await jsonFetch(server.baseUrl, '/api/policies/product-knowledge-scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-reuse-pipeline',
+        company: '新华保险',
+        name: '已入库测试重疾保险',
+        manualData: { company: '新华保险', name: '已入库测试重疾保险' },
+        scan: { ocrText: '保单', data: { company: '新华保险', name: '已入库测试重疾保险' } },
+        uploadItems: [{ name: 'responsibility.jpg', type: 'image/jpeg', size: 100, dataUrl: 'data:image/jpeg;base64,AAAA' }],
+      }),
+    });
+
+    assert.equal(scanned.response.status, 200);
+    assert.equal(scanned.payload.responsibilityPipelineStatus, 'reused_library');
+    assert.equal(scanned.payload.reusedLibraryResponsibilityCount, 1);
+    assert.deepEqual(scanned.payload.knowledgeRecordIds, []);
+    assert.equal(parserCalls, 0);
+    assert.equal(state.knowledgeRecords.length, 0);
   } finally {
     await server.close();
   }
@@ -12559,7 +12660,7 @@ test('scan endpoint preserves confirmed optional responsibilities when draft has
   }
 });
 
-test('scan endpoint uses checked responsibility cards as policy summary rows', async () => {
+test('scan endpoint keeps checked responsibility cards without persisting a legacy card summary', async () => {
   const state = createInitialState();
   let analyzerCalls = 0;
   const app = createPolicyOcrApp({
@@ -12609,8 +12710,7 @@ test('scan endpoint uses checked responsibility cards as policy summary rows', a
     const policy = state.policies.find((row) => Number(row.id) === Number(saved.payload.policy.id));
     assert.equal(analyzerCalls, 0);
     assert.equal(policy.reportStatus, 'ready');
-    assert.match(policy.report, /本产品主要提供合同约定保险责任/u);
-    assert.match(policy.report, /保障类责任包括：身故保险金/u);
+    assert.equal(policy.report, '');
     assert.equal(policy.responsibilities[0].coverageType, '身故保险金');
     assert.equal(policy.responsibilities[0].payout, '以正式条款为准');
   } finally {

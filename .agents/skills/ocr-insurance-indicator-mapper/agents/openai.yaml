@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Indicator Mapper"
+  short_description: "Map responsibilities to evidence-backed quantitative indicators"
+  default_prompt: "Use $ocr-insurance-indicator-mapper to map approved responsibilities to source-backed quantitative indicators and calculation metadata."

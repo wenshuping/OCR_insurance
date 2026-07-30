@@ -119,6 +119,10 @@ import {
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
 } from './product-customer-responsibility-summary.service.mjs';
+import {
+  createProductResponsibilityPipelineQueue,
+  createProductResponsibilityPipelineRunner,
+} from './product-responsibility-pipeline-queue.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
@@ -2430,6 +2434,36 @@ export function createPolicyOcrApp(options = {}) {
   const findProductCustomerResponsibilitySummary = typeof options.findProductCustomerResponsibilitySummary === 'function'
     ? (input = {}) => options.findProductCustomerResponsibilitySummary(input)
     : null;
+  let customerResponsibilitySummaryQuery = null;
+  const runProductResponsibilityPipeline = options.runProductResponsibilityPipeline
+    || (options.db && options.productResponsibilityPipelineDbPath
+      ? createProductResponsibilityPipelineRunner({
+        db: options.db,
+        dbPath: options.productResponsibilityPipelineDbPath,
+        runtimeDir: options.productResponsibilityPipelineRuntimeDir,
+      })
+      : null);
+  const productResponsibilityPipelineQueue = options.productResponsibilityPipelineQueue
+    || (options.db && runProductResponsibilityPipeline ? createProductResponsibilityPipelineQueue({
+      db: options.db,
+      runJob: runProductResponsibilityPipeline,
+      intervalMs: options.productResponsibilityPipelineIntervalMs,
+      afterPublished: async (job) => {
+        if (typeof customerResponsibilitySummaryQuery !== 'function') {
+          throw new Error('Customer responsibility summary query is not registered');
+        }
+        const result = await customerResponsibilitySummaryQuery({
+          company: job.company,
+          name: job.productName,
+        });
+        if (!result?.ok) {
+          throw new Error(result?.message || 'Customer responsibility summary generation failed');
+        }
+      },
+    }) : null);
+  const enqueueProductResponsibilityPipeline = productResponsibilityPipelineQueue
+    ? (input = {}) => productResponsibilityPipelineQueue.enqueue(input)
+    : null;
   const markPolicyDerivedResultsStaleByProductKeys = typeof options.markPolicyDerivedResultsStaleByProductKeys === 'function'
     ? (input = {}) => options.markPolicyDerivedResultsStaleByProductKeys({ state, ...input })
     : null;
@@ -2519,7 +2553,6 @@ export function createPolicyOcrApp(options = {}) {
 
   let responsibilityAssistantQuery = null;
   let responsibilityAssistantProductMatch = null;
-  let customerResponsibilitySummaryQuery = null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
   const productRagService = options.productRagService
@@ -2544,6 +2577,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
+    parseCustomerUploadResponsibility: options.parseCustomerUploadResponsibility,
     persistPolicyDerivedResult,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
@@ -2707,6 +2741,7 @@ export function createPolicyOcrApp(options = {}) {
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
+    enqueueProductResponsibilityPipeline,
     buildAdminOverview,
     buildOptionalResponsibilityGaps,
     buildAdminReportIssueDetail,
@@ -3077,6 +3112,11 @@ export function createPolicyOcrApp(options = {}) {
   if (recovery) {
     app.locals.transferRegenerationRecovery = recovery;
     app.once('close', () => recovery.stop());
+  }
+  if (productResponsibilityPipelineQueue && options.disableProductResponsibilityPipelineWorker !== true) {
+    productResponsibilityPipelineQueue.start();
+    app.locals.productResponsibilityPipelineQueue = productResponsibilityPipelineQueue;
+    app.once('close', () => productResponsibilityPipelineQueue.stop());
   }
   app.locals.agentConfirmationService = agentConfirmationService;
   app.use('/api/agent', createAgentRouter({

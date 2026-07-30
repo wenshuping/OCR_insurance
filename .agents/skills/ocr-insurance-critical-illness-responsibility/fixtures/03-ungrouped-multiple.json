@@ -1,0 +1,37 @@
+{
+  "fixtureId": "ungrouped-multiple",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立疾病保险合同。",
+  "sourceText": "本合同为独立疾病保险合同。重度疾病不分组。首次重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。再次重度疾病保险金：前次重度疾病确诊之日起满365日后初次确诊另一种重度疾病，保险人按基本保险金额给付，累计最多给付三次。",
+  "candidates": [
+    {
+      "heading": "首次重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "首次重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。",
+      "triggerCondition": "等待期后初次确诊重度疾病",
+      "insurerObligation": "保险人按基本保险金额给付",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["基本保险金额"]
+      }
+    },
+    {
+      "heading": "再次重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "再次重度疾病保险金：前次重度疾病确诊之日起满365日后初次确诊另一种重度疾病，保险人按基本保险金额给付，累计最多给付三次。",
+      "triggerCondition": "前次重度疾病确诊之日起满365日后初次确诊另一种重度疾病",
+      "insurerObligation": "保险人按基本保险金额给付",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount", "prior_diagnosis_date", "current_diagnosis_date", "disease_identity"],
+        "evidenceTokens": ["365日", "另一种", "累计最多给付三次"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["首次重度疾病保险金", "再次重度疾病保险金"],
+    "rejectedHeadings": [],
+    "patterns": ["ungrouped_multiple", "interval", "cumulative_count"]
+  }
+}

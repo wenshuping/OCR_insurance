@@ -1,0 +1,55 @@
+{
+  "fixtureId": "term-life-rider-dependency",
+  "title": "附加定期寿险主附合同依赖",
+  "sourceText": "本附加合同依附于主合同。主合同终止时，本附加合同同时终止。身故保险金：在本附加合同有效期内，被保险人身故，我们按主合同保险单载明的本附加合同保险金额给付身故保险金，本附加合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "rider",
+    "focusedShape": "rider_term_life",
+    "topology": {
+      "mainContractDependency": {
+        "relationship": "依附于主合同",
+        "terminationEffect": "主合同终止时本附加合同同时终止"
+      },
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "referenced_main_contract"
+      },
+      "terminationLinkage": [
+        {
+          "event": "主合同终止",
+          "effect": "linked_contract_terminates"
+        },
+        {
+          "event": "身故保险金给付",
+          "effect": "rider_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "rider_death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "responsibilityEffectivePeriod": {
+          "scope": "rider",
+          "sourceExcerpt": "在本附加合同有效期内"
+        },
+        "triggerCondition": "在本附加合同有效期内，被保险人身故",
+        "insurerObligation": "按主合同保险单载明的本附加合同保险金额给付",
+        "normalizedFormula": "rider_sum_assured_referenced_by_main_policy",
+        "requiredInputs": [
+          "rider_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "rider_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：在本附加合同有效期内，被保险人身故，我们按主合同保险单载明的本附加合同保险金额给付身故保险金，本附加合同终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR Insurance Medical Health Responsibility"
+  short_description: "Parse medical and health responsibilities with evidence"
+  default_prompt: "Use $ocr-insurance-medical-health-responsibility to parse exact-source medical or health insurance responsibilities and audit cards and indicators."

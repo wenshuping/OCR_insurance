@@ -1,0 +1,42 @@
+{
+  "fixtureId": "grouped-multiple",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立重大疾病保险合同。",
+  "sourceText": "本合同为独立重大疾病保险合同。重度疾病分为六组。第一次重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。第二次至第六次重度疾病保险金：前次确诊之日起间隔180日后初次确诊其他组重度疾病，保险人每次按基本保险金额给付；每组限给付一次，累计给付达到六次时本项责任终止。",
+  "candidates": [
+    {
+      "heading": "重度疾病分为六组",
+      "sectionType": "group",
+      "evidence": "重度疾病分为六组。"
+    },
+    {
+      "heading": "第一次重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "第一次重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。",
+      "triggerCondition": "等待期后初次确诊重度疾病",
+      "insurerObligation": "保险人按基本保险金额给付",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["基本保险金额"]
+      }
+    },
+    {
+      "heading": "第二次至第六次重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "第二次至第六次重度疾病保险金：前次确诊之日起间隔180日后初次确诊其他组重度疾病，保险人每次按基本保险金额给付；每组限给付一次，累计给付达到六次时本项责任终止。",
+      "triggerCondition": "前次确诊之日起间隔180日后初次确诊其他组重度疾病",
+      "insurerObligation": "保险人每次按基本保险金额给付",
+      "formula": {
+        "formulaText": "每次按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount", "prior_diagnosis_date", "current_diagnosis_date", "disease_group"],
+        "evidenceTokens": ["180日", "其他组", "每组限给付一次", "累计给付达到六次"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["第一次重度疾病保险金", "第二次至第六次重度疾病保险金"],
+    "rejectedHeadings": ["重度疾病分为六组"],
+    "patterns": ["grouped_multiple", "interval", "cumulative_count"]
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "id": "rider-care-death-waiver",
+  "topology": "rider",
+  "responsibilities": [
+    {
+      "responsibilityId": "rider_monthly_care",
+      "liability": "附加长期护理保险金",
+      "triggerCondition": "达到约定护理状态且附加合同持续有效。",
+      "insurerObligation": "保险人每月按附加合同基本保险金额的1%给付。",
+      "sourceExcerpt": "达到约定护理状态且附加合同持续有效的，我们每月按附加合同基本保险金额的1%给付，最多120次；附加合同终止、恢复或身故时停止。",
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "paymentCountText": "最多120次", "terminationText": "附加合同终止、恢复或身故"},
+      "formula": {"formulaText": "月护理金=附加合同基本保险金额×1%", "normalizedFormula": "monthly_care = rider_basic_sum_insured * 0.01", "requiredInputs": ["rider_basic_sum_insured"], "branches": [], "operands": []}
+    },
+    {
+      "responsibilityId": "remaining_care_at_death",
+      "liability": "身故时剩余护理保险金",
+      "triggerCondition": "护理保险金给付期间被保险人身故。",
+      "insurerObligation": "保险人一次性给付尚未给付的剩余护理保险金。",
+      "sourceExcerpt": "护理保险金给付期间被保险人身故的，我们一次性给付尚未给付的剩余护理保险金，本附加合同终止。",
+      "benefit": {"paymentMode": "lump_sum", "cadence": "once", "terminationText": "给付后附加合同终止"},
+      "formula": {"formulaText": "剩余护理金=月护理金×剩余给付次数", "normalizedFormula": "remaining_care = monthly_care * remaining_payment_count", "requiredInputs": ["monthly_benefit_amount", "remaining_payment_count"], "branches": [], "operands": []}
+    },
+    {
+      "responsibilityId": "rider_premium_waiver",
+      "liability": "豁免保险费",
+      "triggerCondition": "首次符合长期护理保险金给付条件。",
+      "insurerObligation": "保险人豁免附加合同余下各期保险费。",
+      "sourceExcerpt": "首次符合长期护理保险金给付条件后，我们豁免附加合同余下各期保险费，至交费期间届满或附加合同终止。",
+      "benefit": {"paymentMode": "waiver", "cadence": "other", "terminationText": "交费期间届满或附加合同终止"},
+      "formula": {"formulaText": "豁免未来应交保险费", "normalizedFormula": "waive(future_rider_premiums)", "requiredInputs": ["future_rider_premiums"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "main_contract_dependency", "classification": "shared_rule", "text": "附加合同随主合同终止。"}
+  ],
+  "expected": {"acceptedCount": 3, "rejectedClassifications": ["shared_rule"]}
+}

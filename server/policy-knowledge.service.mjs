@@ -1945,7 +1945,7 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     pageText: trimString(record.pageText),
     sourceType: trimString(record.sourceType) || resolveSourceType(url),
     materialType: trimString(record.materialType) || classifyMaterialType(`${record.title} ${url}`),
-    official: customerPolicyTerms ? true : (record.official === undefined ? isOfficialUrl(url, policy, officialDomainProfiles) : Boolean(record.official)),
+    official: customerPolicyTerms ? false : (record.official === undefined ? isOfficialUrl(url, policy, officialDomainProfiles) : Boolean(record.official)),
     evidenceLabel: trimString(record.evidenceLabel) || (customerPolicyTerms ? CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL : customerPolicyPhoto ? '客户上传保单照片（待审核）' : jrcpcxRecord ? JRCPCX_TERMS_EVIDENCE_LABEL : '本地知识库官方资料'),
     evidenceLevel: trimString(record.evidenceLevel) || sourceLevel || (customerPolicyTerms ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : customerPolicyPhoto ? CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL : jrcpcxRecord ? JRCPCX_TERMS_EVIDENCE_LEVEL : 'insurer_official'),
     sourceLevel,
@@ -1992,6 +1992,29 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
         size: Number(item?.size || 0) || 0,
         dataUrl: trimString(item?.dataUrl),
       })).filter((item) => item.dataUrl.startsWith('data:image/'))
+      : [],
+    ocrPages: Array.isArray(record.ocrPages)
+      ? record.ocrPages.map((page, index) => ({
+        pageNumber: Number(page?.pageNumber || index + 1) || index + 1,
+        name: trimString(page?.name) || `第${index + 1}张`,
+        ocrText: trimString(page?.ocrText).slice(0, 12000),
+      })).filter((page) => page.ocrText)
+      : [],
+    responsibilityPipelineStatus: trimString(record.responsibilityPipelineStatus),
+    responsibilityPipelineVersion: trimString(record.responsibilityPipelineVersion),
+    responsibilityPipelineAttempts: Number(record.responsibilityPipelineAttempts || 0) || 0,
+    responsibilityNormalizationPasses: Number(record.responsibilityNormalizationPasses || 0) || 0,
+    responsibilityValidationIssues: Array.isArray(record.responsibilityValidationIssues)
+      ? record.responsibilityValidationIssues.map(trimString).filter(Boolean)
+      : [],
+    responsibilityArtifact: record.responsibilityArtifact && typeof record.responsibilityArtifact === 'object' && !Array.isArray(record.responsibilityArtifact)
+      ? record.responsibilityArtifact
+      : null,
+    publishedResponsibilityCardIds: Array.isArray(record.publishedResponsibilityCardIds)
+      ? record.publishedResponsibilityCardIds.map(trimString).filter(Boolean)
+      : [],
+    publishedIndicatorRecordIds: Array.isArray(record.publishedIndicatorRecordIds)
+      ? record.publishedIndicatorRecordIds.map(trimString).filter(Boolean)
       : [],
     originalCompany: trimString(record.originalCompany),
     originalProductName: trimString(record.originalProductName),
@@ -2083,6 +2106,17 @@ export function upsertKnowledgeRecords(state, records = [], { allocateId, offici
       existing.ownerGuestId = record.ownerGuestId || existing.ownerGuestId;
       existing.uploadNames = record.uploadNames?.length ? record.uploadNames : existing.uploadNames;
       existing.uploadImages = record.uploadImages?.length ? record.uploadImages : existing.uploadImages;
+      if ([CUSTOMER_POLICY_PHOTO_SOURCE_KIND, CUSTOMER_POLICY_TERMS_SOURCE_KIND].includes(record.sourceKind)) {
+        existing.ocrPages = record.ocrPages;
+        existing.responsibilityPipelineStatus = record.responsibilityPipelineStatus;
+        existing.responsibilityPipelineVersion = record.responsibilityPipelineVersion;
+        existing.responsibilityPipelineAttempts = record.responsibilityPipelineAttempts;
+        existing.responsibilityNormalizationPasses = record.responsibilityNormalizationPasses;
+        existing.responsibilityValidationIssues = record.responsibilityValidationIssues;
+        existing.responsibilityArtifact = record.responsibilityArtifact;
+        existing.publishedResponsibilityCardIds = record.publishedResponsibilityCardIds;
+        existing.publishedIndicatorRecordIds = record.publishedIndicatorRecordIds;
+      }
       existing.originalCompany = record.originalCompany || existing.originalCompany;
       existing.originalProductName = record.originalProductName || existing.originalProductName;
       existing.originalPageText = record.originalPageText || existing.originalPageText;
@@ -2206,7 +2240,10 @@ export function findKnowledgeProductCandidates({
     const externalReference = includeExternalReferences && isExternalReferenceSourceKind(sourceKind) && (
       sourceKind !== CUSTOMER_POLICY_PHOTO_SOURCE_KIND || customerPolicyPhotoReference
     );
-    const nonOfficialReference = externalReference || customerPolicyPhotoReference;
+    const reviewedCustomerPolicyTerms = sourceKind === CUSTOMER_POLICY_TERMS_SOURCE_KIND
+      && isFormalResponsibilityEvidence(record)
+      && record.globalSearchable === true;
+    const nonOfficialReference = externalReference || customerPolicyPhotoReference || reviewedCustomerPolicyTerms;
     const evidenceFields = evidenceVerificationFields(record);
     if ((!record.official && !nonOfficialReference) || (requirePageText && !record.pageText && !nonOfficialReference) || record.qualityStatus === 'invalid_responsibility') continue;
     if (

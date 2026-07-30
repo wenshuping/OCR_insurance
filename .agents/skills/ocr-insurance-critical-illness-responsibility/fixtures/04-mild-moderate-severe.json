@@ -1,0 +1,62 @@
+{
+  "fixtureId": "mild-moderate-severe",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立疾病保险合同。",
+  "sourceText": "本合同为独立疾病保险合同。轻度疾病保险金：等待期后初次确诊轻度疾病，保险人按基本保险金额的30%给付。中度疾病保险金：等待期后初次确诊中度疾病，保险人按基本保险金额的50%给付。重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。轻度或中度疾病豁免保险费：给付轻度或中度疾病保险金后，保险人豁免以后各期应交保险费。",
+  "candidates": [
+    {
+      "heading": "轻度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "轻度疾病保险金：等待期后初次确诊轻度疾病，保险人按基本保险金额的30%给付。",
+      "triggerCondition": "等待期后初次确诊轻度疾病",
+      "insurerObligation": "保险人按基本保险金额的30%给付",
+      "formula": {
+        "formulaText": "基本保险金额的30%",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["30%"]
+      }
+    },
+    {
+      "heading": "中度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "中度疾病保险金：等待期后初次确诊中度疾病，保险人按基本保险金额的50%给付。",
+      "triggerCondition": "等待期后初次确诊中度疾病",
+      "insurerObligation": "保险人按基本保险金额的50%给付",
+      "formula": {
+        "formulaText": "基本保险金额的50%",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["50%"]
+      }
+    },
+    {
+      "heading": "重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。",
+      "triggerCondition": "等待期后初次确诊重度疾病",
+      "insurerObligation": "保险人按基本保险金额给付",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["基本保险金额"]
+      }
+    },
+    {
+      "heading": "轻度或中度疾病豁免保险费",
+      "sectionType": "responsibility",
+      "responsibilityKind": "waiver",
+      "evidence": "轻度或中度疾病豁免保险费：给付轻度或中度疾病保险金后，保险人豁免以后各期应交保险费。",
+      "triggerCondition": "给付轻度或中度疾病保险金后",
+      "insurerObligation": "保险人豁免以后各期应交保险费",
+      "formula": {
+        "formulaText": "豁免以后各期应交保险费",
+        "requiredInputs": ["remaining_premium_schedule"],
+        "evidenceTokens": ["以后各期应交保险费"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["轻度疾病保险金", "中度疾病保险金", "重度疾病保险金", "轻度或中度疾病豁免保险费"],
+    "rejectedHeadings": [],
+    "patterns": ["tiered", "waiver"]
+  }
+}

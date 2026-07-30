@@ -1,0 +1,39 @@
+{
+  "fixtureId": "student-bundle-component",
+  "realSample": true,
+  "identity": {
+    "company": "百年人寿保险股份有限公司",
+    "productName": "百年附加学生儿童意外费用补偿医疗保险",
+    "sourceDigest": "sha256:0f4acbbd24a2fb5a1cb4bb13740edca0836e80cafd18fbc3d10635da979c529f"
+  },
+  "contractTopology": "bundle_component",
+  "topologyEvidence": {
+    "bundleEvidence": {
+      "bundleLabel": "学平险",
+      "sourceExcerpt": ""
+    },
+    "filedComponentIdentity": {
+      "company": "百年人寿保险股份有限公司",
+      "productName": "百年附加学生儿童意外费用补偿医疗保险",
+      "sourceDigest": "sha256:0f4acbbd24a2fb5a1cb4bb13740edca0836e80cafd18fbc3d10635da979c529f"
+    },
+    "componentContractTopology": "rider"
+  },
+  "sections": [
+    {
+      "sectionId": "student-accident-medical",
+      "heading": "意外伤害医疗费用补偿",
+      "role": "responsibility",
+      "triggerCondition": "学生儿童遭受意外伤害并在认可医院诊疗，180日内发生必要合理医疗费用",
+      "insurerObligation": "扣除免赔额和其他补偿后按约定比例给付，以保险金额为限",
+      "sourceExcerpt": "被保险人遭受意外伤害，并因该意外伤害在本公司认可的医院诊疗，对于自该意外伤害发生之日起180日内实际支出的必要且合理的医疗费用，本公司每次扣除免赔额后，对其余额按本合同约定的给付比例给付保险金。",
+      "requiredInputs": ["eligible_medical_expense", "deductible", "reimbursement_ratio", "other_compensation"]
+    }
+  ],
+  "expected": {
+    "status": "review",
+    "responsibilityIds": ["student-accident-medical"],
+    "supportingSectionIds": [],
+    "issueCodes": ["bundle_component_evidence_missing"]
+  }
+}

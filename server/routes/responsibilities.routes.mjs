@@ -116,6 +116,7 @@ export function createResponsibilityRoutes(context) {
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
+    enqueueProductResponsibilityPipeline,
     generateProductCustomerResponsibilitySummary,
     enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek,
@@ -131,14 +132,13 @@ export function createResponsibilityRoutes(context) {
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
     const existing = String(current || '').trim();
-    if (existing && !(typeof isGeneratedResponsibilityCountReport === 'function' && isGeneratedResponsibilityCountReport(existing))) {
-      return existing;
-    }
     const cardReport = typeof buildResponsibilitySummaryReportFromCards === 'function'
       ? buildResponsibilitySummaryReportFromCards(cards, { optionalResponsibilities })
       : '';
-    if (cardReport) return cardReport;
-    return rows.length ? `已整理 ${rows.length} 项保险责任。` : existing;
+    const generatedCountReport = typeof isGeneratedResponsibilityCountReport === 'function'
+      && isGeneratedResponsibilityCountReport(existing);
+    const legacyCardReport = Boolean(existing && cardReport && existing === cardReport);
+    return existing && !generatedCountReport && !legacyCardReport ? existing : '';
   }
 
   function filteredKnowledgeRecordsForPolicy(policyDraft) {
@@ -813,6 +813,8 @@ export function createResponsibilityRoutes(context) {
         ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
         : undefined,
       privateSourceRecords,
+      requireApprovedPipelineArtifact: !usesPrivateSource && typeof enqueueProductResponsibilityPipeline === 'function',
+      enqueueProductResponsibilityPipeline: usesPrivateSource ? undefined : enqueueProductResponsibilityPipeline,
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
       generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
       generateOfficialAnalysis: async ({ company: insurer, productName }) => assistantAnalyzer({

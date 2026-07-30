@@ -1,0 +1,55 @@
+{
+  "fixtureId": "term-life-group-member",
+  "title": "团体定寿成员资格与退出",
+  "sourceText": "符合投保单载明成员资格的人员可以成为被保险人。每一被保险人的个人保险期间以保险凭证载明为准。成员退出团体之日，其个人保险责任终止。身故保险金：被保险人在个人保险期间内身故，我们按该被保险人保险凭证载明的保险金额向身故保险金受益人给付，本合同对该被保险人的保险责任终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "group",
+    "focusedShape": "group_term_life",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": {
+        "eligibility": "符合投保单载明成员资格的人员",
+        "exitEffect": "成员退出团体之日，其个人保险责任终止"
+      },
+      "sumAssuredReference": {
+        "kind": "member_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "成员退出或身故保险金给付",
+          "effect": "member_coverage_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "member_death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "responsibilityEffectivePeriod": {
+          "scope": "member",
+          "sourceExcerpt": "每一被保险人的个人保险期间以保险凭证载明为准。"
+        },
+        "triggerCondition": "被保险人在个人保险期间内身故",
+        "insurerObligation": "按该被保险人保险凭证载明的保险金额向身故保险金受益人给付",
+        "normalizedFormula": "member_sum_assured",
+        "requiredInputs": [
+          "member_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "member_coverage_terminates"
+        ],
+        "beneficiaryPaymentSemantic": {
+          "recipientScope": "beneficiary",
+          "paymentMeaning": "向身故保险金受益人给付"
+        },
+        "sourceExcerpt": "身故保险金：被保险人在个人保险期间内身故，我们按该被保险人保险凭证载明的保险金额向身故保险金受益人给付，本合同对该被保险人的保险责任终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

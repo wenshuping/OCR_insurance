@@ -1,0 +1,45 @@
+{
+  "fixtureId": "false-headings",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立疾病保险合同。",
+  "sourceText": "本合同为独立疾病保险合同。保险责任 重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。疾病定义 本合同所称重度疾病见附表。责任免除 因约定的除外原因导致疾病，保险人不承担责任。保险金申请 申请人应提交诊断证明和病历。释义 专科医生是指符合本条款约定的医生。",
+  "candidates": [
+    {
+      "heading": "重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "重度疾病保险金：等待期后初次确诊重度疾病，保险人按基本保险金额给付。",
+      "triggerCondition": "等待期后初次确诊重度疾病",
+      "insurerObligation": "保险人按基本保险金额给付",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["基本保险金额"]
+      }
+    },
+    {
+      "heading": "疾病定义",
+      "sectionType": "definition",
+      "evidence": "疾病定义 本合同所称重度疾病见附表。"
+    },
+    {
+      "heading": "责任免除",
+      "sectionType": "exclusion",
+      "evidence": "责任免除 因约定的除外原因导致疾病，保险人不承担责任。"
+    },
+    {
+      "heading": "保险金申请",
+      "sectionType": "claim_procedure",
+      "evidence": "保险金申请 申请人应提交诊断证明和病历。"
+    },
+    {
+      "heading": "释义",
+      "sectionType": "interpretation",
+      "evidence": "释义 专科医生是指符合本条款约定的医生。"
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["重度疾病保险金"],
+    "rejectedHeadings": ["疾病定义", "责任免除", "保险金申请", "释义"],
+    "patterns": ["false_heading_gate"]
+  }
+}

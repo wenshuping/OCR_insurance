@@ -1,0 +1,162 @@
+{
+  "fixtureId": "participating-linked-responsibilities",
+  "realSample": true,
+  "identity": {
+    "company": "复星保德信人寿保险有限公司",
+    "productName": "复星保德信星海赢家火凤版养老年金保险（分红型）",
+    "sourceDigest": "sha256:61bec72c96adb352617105938c3cc60b999f5af9482832727ec88d71b1ff5ff7"
+  },
+  "sourceText": "自约定的首个养老年金领取日（含）起，至本合同保险期间届满日（不含）时止，如被保险人在每一养老年金领取日零时仍生存，我们将按以下约定给付养老年金：按年领取，每期养老年金领取金额为本合同的基本保险金额的100%；按月领取，每期养老年金领取金额为本合同的基本保险金额的8.5%。自约定的首个养老年金领取日（含）起，至本合同保险期间届满日（不含）时止，如被保险人在每一养老年金领取日零时仍生存，我们将按以下约定给付本合同累计增额红利对应的养老年金：按年领取为累计增额红利的100%；按月领取为累计增额红利的8.5%。红利分配方式和数额是不保证的。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity_base",
+      "liability": "养老年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "如被保险人在每一养老年金领取日零时仍生存",
+      "insurerObligation": "我们将按以下约定给付养老年金",
+      "sourceExcerpt": "自约定的首个养老年金领取日（含）起，至本合同保险期间届满日（不含）时止，如被保险人在每一养老年金领取日零时仍生存，我们将按以下约定给付养老年金：按年领取，每期养老年金领取金额为本合同的基本保险金额的100%；按月领取，每期养老年金领取金额为本合同的基本保险金额的8.5%。",
+      "annuityProfile": {
+        "startConditionText": "自约定的首个养老年金领取日（含）起",
+        "survivalConditionText": "如被保险人在每一养老年金领取日零时仍生存",
+        "frequency": {
+          "type": "multiple",
+          "optionTexts": [
+            "按年领取",
+            "按月领取"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "until_maturity",
+          "startText": "首个养老年金领取日（含）",
+          "endText": "本合同保险期间届满日（不含）",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "level"
+        },
+        "terminationConditions": [
+          "本合同保险期间届满"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "按年100%，按月8.5%",
+          "basisKey": "piecewise",
+          "requiredInputs": [
+            "basic_insurance_amount",
+            "annuity_frequency"
+          ],
+          "evidenceTokens": [
+            "100%",
+            "8.5%"
+          ],
+          "branches": [
+            {
+              "branchId": "annual",
+              "conditionText": "按年领取",
+              "formulaText": "基本保险金额×100%",
+              "basisKey": "basic_insurance_amount",
+              "requiredInputs": [
+                "basic_insurance_amount"
+              ]
+            },
+            {
+              "branchId": "monthly",
+              "conditionText": "按月领取",
+              "formulaText": "基本保险金额×8.5%",
+              "basisKey": "basic_insurance_amount",
+              "requiredInputs": [
+                "basic_insurance_amount"
+              ]
+            }
+          ],
+          "operands": []
+        }
+      ]
+    },
+    {
+      "responsibilityId": "annuity_bonus",
+      "liability": "累计增额红利对应的养老年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "如被保险人在每一养老年金领取日零时仍生存",
+      "insurerObligation": "给付本合同累计增额红利对应的养老年金",
+      "sourceExcerpt": "自约定的首个养老年金领取日（含）起，至本合同保险期间届满日（不含）时止，如被保险人在每一养老年金领取日零时仍生存，我们将按以下约定给付本合同累计增额红利对应的养老年金：按年领取为累计增额红利的100%；按月领取为累计增额红利的8.5%。",
+      "annuityProfile": {
+        "startConditionText": "自约定的首个养老年金领取日（含）起",
+        "survivalConditionText": "如被保险人在每一养老年金领取日零时仍生存",
+        "frequency": {
+          "type": "multiple",
+          "optionTexts": [
+            "按年领取",
+            "按月领取"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "until_maturity",
+          "startText": "首个养老年金领取日（含）",
+          "endText": "本合同保险期间届满日（不含）",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "other"
+        },
+        "terminationConditions": [
+          "本合同保险期间届满"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "累计增额红利按年100%，按月8.5%",
+          "basisKey": "piecewise",
+          "requiredInputs": [
+            "cumulative_bonus",
+            "annuity_frequency"
+          ],
+          "evidenceTokens": [
+            "累计增额红利",
+            "100%",
+            "8.5%"
+          ],
+          "branches": [
+            {
+              "branchId": "annual",
+              "conditionText": "按年领取",
+              "formulaText": "累计增额红利×100%",
+              "basisKey": "cumulative_bonus",
+              "requiredInputs": [
+                "cumulative_bonus"
+              ]
+            },
+            {
+              "branchId": "monthly",
+              "conditionText": "按月领取",
+              "formulaText": "累计增额红利×8.5%",
+              "basisKey": "cumulative_bonus",
+              "requiredInputs": [
+                "cumulative_bonus"
+              ]
+            }
+          ],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": [
+    {
+      "title": "红利分配方式和数额",
+      "role": "product_function",
+      "sourceExcerpt": "红利分配方式和数额是不保证的"
+    }
+  ]
+}

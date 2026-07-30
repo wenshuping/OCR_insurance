@@ -1,0 +1,95 @@
+{
+  "fixtureId": "ordinary-annual-payment-method",
+  "realSample": true,
+  "identity": {
+    "company": "中国人寿保险股份有限公司",
+    "productName": "国寿鑫禧龙腾年金保险",
+    "sourceDigest": "sha256:e863c4aab38fc7ef1c0581179d4a8abc32c5f90fac0a7eb289e4b9485b963aca"
+  },
+  "sourceText": "一、年金 自本合同生效年满五个保单年度后的首个年生效对应日起，至本合同保险期间届满前，若被保险人生存至本合同的年生效对应日，本公司每年按下列约定给付年金：1．本合同交费方式为一次性交付的，按本合同基本保险金额确定的年交保险费的20%给付年金；2．本合同交费期间为三年的，按本合同基本保险金额确定的年交保险费的60%给付年金；3．本合同交费期间为五年的，按本合同基本保险金额确定的年交保险费的100%给付年金。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity",
+      "liability": "年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "若被保险人生存至本合同的年生效对应日",
+      "insurerObligation": "本公司每年按下列约定给付年金",
+      "sourceExcerpt": "一、年金 自本合同生效年满五个保单年度后的首个年生效对应日起，至本合同保险期间届满前，若被保险人生存至本合同的年生效对应日，本公司每年按下列约定给付年金：1．本合同交费方式为一次性交付的，按本合同基本保险金额确定的年交保险费的20%给付年金；2．本合同交费期间为三年的，按本合同基本保险金额确定的年交保险费的60%给付年金；3．本合同交费期间为五年的，按本合同基本保险金额确定的年交保险费的100%给付年金。",
+      "annuityProfile": {
+        "startConditionText": "自本合同生效年满五个保单年度后的首个年生效对应日起",
+        "survivalConditionText": "若被保险人生存至本合同的年生效对应日",
+        "frequency": {
+          "type": "annual",
+          "optionTexts": [
+            "每年"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "until_maturity",
+          "startText": "自本合同生效年满五个保单年度后的首个年生效对应日起",
+          "endText": "至本合同保险期间届满前",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "level"
+        },
+        "terminationConditions": [
+          "保险期间届满"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "按交费方式分支计算年金",
+          "basisKey": "piecewise",
+          "requiredInputs": [
+            "annual_premium",
+            "payment_method"
+          ],
+          "evidenceTokens": [
+            "20%",
+            "60%",
+            "100%"
+          ],
+          "branches": [
+            {
+              "branchId": "single",
+              "conditionText": "本合同交费方式为一次性交付的",
+              "formulaText": "年交保险费×20%",
+              "basisKey": "annual_premium",
+              "requiredInputs": [
+                "annual_premium"
+              ]
+            },
+            {
+              "branchId": "three-year",
+              "conditionText": "本合同交费期间为三年的",
+              "formulaText": "年交保险费×60%",
+              "basisKey": "annual_premium",
+              "requiredInputs": [
+                "annual_premium"
+              ]
+            },
+            {
+              "branchId": "five-year",
+              "conditionText": "本合同交费期间为五年的",
+              "formulaText": "年交保险费×100%",
+              "basisKey": "annual_premium",
+              "requiredInputs": [
+                "annual_premium"
+              ]
+            }
+          ],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": []
+}

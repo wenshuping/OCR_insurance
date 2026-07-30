@@ -1,6 +1,7 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
 import { approveCustomerPolicyPhotoKnowledgeRecord } from '../customer-policy-photo-knowledge.service.mjs';
+import { buildPublishedCustomerUploadResponsibilityRows } from '../customer-upload-responsibility-pipeline.service.mjs';
 import {
   RESPONSIBILITY_GENERATION_GOVERNANCE_STATE_KEY,
   getResponsibilityGenerationGovernanceConfig,
@@ -934,12 +935,34 @@ export function createAdminRoutes(context) {
         throw error;
       }
       reviewed.id = existing.id;
+      const hasCustomerOcrPipeline = Array.isArray(existing.ocrPages) && existing.ocrPages.length > 0;
+      if (action === 'approved' && hasCustomerOcrPipeline && String(existing.responsibilityPipelineStatus || '') !== 'pending_review') {
+        const error = new Error('保险责任结构化校验尚未通过，请先修复校验问题后再发布');
+        error.code = 'CUSTOMER_RESPONSIBILITY_PIPELINE_NOT_READY';
+        error.status = 409;
+        error.validationIssues = existing.responsibilityValidationIssues || [];
+        throw error;
+      }
+      const publishedRows = action === 'approved'
+        ? buildPublishedCustomerUploadResponsibilityRows(reviewed)
+        : null;
+      if (publishedRows) {
+        reviewed.publishedResponsibilityCardIds = publishedRows.responsibilityCardIds;
+        reviewed.publishedIndicatorRecordIds = publishedRows.indicatorRecordIds;
+      }
       const saved = upsertKnowledgeRecords(state, [reviewed], {
         allocateId,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       });
       if (typeof persistResponsibilityLookupArtifacts === 'function') {
-        await persistResponsibilityLookupArtifacts({ knowledgeRecords: saved });
+        await persistResponsibilityLookupArtifacts({
+          knowledgeRecords: saved,
+          indicatorRecords: publishedRows?.indicatorRecords || [],
+          responsibilityCards: publishedRows?.responsibilityCards || [],
+          replaceResponsibilityCards: false,
+          removeIndicatorIds: action === 'approved' ? [] : existing.publishedIndicatorRecordIds,
+          removeResponsibilityCardIds: action === 'approved' ? [] : existing.publishedResponsibilityCardIds,
+        });
       }
       res.json({
         ok: true,

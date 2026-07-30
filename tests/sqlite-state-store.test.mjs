@@ -1393,6 +1393,41 @@ test('sqlite state store persists responsibility lookup artifacts into knowledge
     const cardPayload = JSON.parse(store.db.prepare('SELECT payload FROM product_responsibility_cards LIMIT 1').get().payload);
     assert.equal(cardPayload.title, '重大疾病保险金');
 
+    const customerCardId = 'customer_upload:1:mild:card';
+    const customerIndicatorId = 'customer_upload:1:mild:indicator:1';
+    await store.persistResponsibilityLookupArtifacts({
+      state,
+      replaceResponsibilityCards: false,
+      responsibilityCards: [{
+        id: customerCardId,
+        productKey: 'company_product:测试保险:测试重疾保险',
+        company: '测试保险',
+        productName: '测试重疾保险',
+        title: '轻度疾病保险金',
+        payload: { title: '轻度疾病保险金', reviewedCustomerUpload: true },
+      }],
+      indicatorRecords: [{
+        id: customerIndicatorId,
+        company: '测试保险',
+        productName: '测试重疾保险',
+        coverageType: '疾病保障',
+        liability: '轻度疾病保险金',
+      }],
+    });
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 2);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 2);
+
+    const removed = await store.persistResponsibilityLookupArtifacts({
+      state,
+      replaceResponsibilityCards: false,
+      removeResponsibilityCardIds: [customerCardId],
+      removeIndicatorIds: [customerIndicatorId],
+    });
+    assert.equal(removed.removedResponsibilityCardCount, 1);
+    assert.equal(removed.removedIndicatorCount, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards').get().count, 1);
+    assert.equal(store.db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 1);
+
     const reloaded = await store.load();
     assert.equal(reloaded.knowledgeRecords[0].productName, '测试重疾保险');
     assert.equal(reloaded.insuranceIndicatorRecords[0].liability, '重大疾病保险金');

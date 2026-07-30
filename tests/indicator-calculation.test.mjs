@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   hasQuantifiedCalculationSignal,
   indicatorCalculationPayloadFields,
+  formulaVariablesFromIndicators,
   normalizeIndicatorCalculation,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
@@ -216,4 +217,95 @@ test('normalizeIndicatorCalculation treats basic-amount day-count benefits as da
   assert.equal(meta.basisKey, 'daily_allowance');
   assert.equal(meta.calculationKey, 'daily_allowance');
   assert.equal(meta.calculationEligible, false);
+});
+
+test('resolves a stored normalized formula with parentheses, division, powers, and square roots', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '公式给付金',
+    normalizedFormula: 'benefit_amount = (basic_insured_amount + first_premium / 10) ^ 2 + sqrt(payment_years)',
+    formulaText: '按条款公式给付',
+    basisKey: 'basic_amount',
+    calculationKey: 'manual_formula',
+    calculationEligible: true,
+  }, {
+    baseAmount: 100,
+    firstPremium: 50,
+    paymentYears: 9,
+  });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 11028);
+  assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
+});
+
+test('keeps an unresolved normalized formula symbolic after substituting known policy values', () => {
+  const formulaVariables = formulaVariablesFromIndicators([{
+    normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
+  }]);
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    normalizedFormula: 'pension_amount = effective_insured_amount * 1.0',
+    formulaText: '按该保单生效对应日有效保险金额给付养老金',
+  }, {
+    baseAmount: 99888,
+    formulaVariables,
+  });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.equal(result.amount, 0);
+  assert.equal(result.minimumAmount, 99888);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.match(result.calculationText, /养老金 = \(99,888 \+ 累计红利保险金额（待补充）\) × 1/u);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
+});
+
+test('derives a minimum from an official basis definition when the unresolved term can only increase the payout', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    formulaText: '该保单生效对应日有效保险金额 × 100%',
+    value: 100,
+    unit: '%',
+    basisDefinition: {
+      key: 'contract_defined_effective_insured_amount',
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+      sourceExcerpt: '有效保险金额：指基本保险金额与累计红利保险金额两部分之和。',
+    },
+  }, { baseAmount: 99888 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.minimumAmount, 99888);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.match(result.calculationText, /最低可确认金额 99,888元/u);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
+});
+
+test('derives a minimum from a plain multiplication formula when a legacy record omits the multiplier unit', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '身故保险金',
+    formulaText: '身故时有效保险金额 × 6',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+  }, { baseAmount: 99888 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.equal(result.minimumAmount, 599328);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）.*× 6/u);
+});
+
+test('resolves a normalized formula stored as a bare basic-responsibility expression', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '满期保险金',
+    normalizedFormula: 'basic_sum_assured',
+    formulaText: '按基本责任的保险金额给付满期保险金',
+  }, { baseAmount: 89877 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 89877);
+  assert.match(result.calculationText, /89,877元/u);
 });

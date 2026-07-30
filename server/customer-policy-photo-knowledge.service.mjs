@@ -12,6 +12,7 @@ import { evidenceVerificationFields } from './evidence-classification.service.mj
 
 const MAX_CUSTOMER_POLICY_PHOTO_UPLOADS = 5;
 const MAX_CUSTOMER_POLICY_PHOTO_TEXT_CHARS = 6000;
+const MAX_CUSTOMER_POLICY_PHOTO_OCR_PAGE_CHARS = 12000;
 
 function text(value) {
   return String(value || '').trim();
@@ -99,6 +100,24 @@ export function sanitizeCustomerPolicyPhotoKnowledgeText({ ocrText = '', scan = 
   return safeLines.join('\n').slice(0, MAX_CUSTOMER_POLICY_PHOTO_TEXT_CHARS).trim();
 }
 
+export function sanitizeCustomerPolicyPhotoOcrPage({ ocrText = '', scan = {}, manualData = {} } = {}) {
+  const privateValuePatterns = sensitiveValuePatterns([
+    scan?.data?.applicant,
+    scan?.data?.insured,
+    scan?.data?.beneficiary,
+    scan?.data?.insuredIdNumber,
+    manualData?.applicant,
+    manualData?.insured,
+    manualData?.beneficiary,
+    manualData?.insuredIdNumber,
+  ]);
+  return uniqueLines(text(ocrText).split(/\r?\n/u))
+    .filter((line) => !looksLikePrivatePolicyLine(line, privateValuePatterns))
+    .join('\n')
+    .slice(0, MAX_CUSTOMER_POLICY_PHOTO_OCR_PAGE_CHARS)
+    .trim();
+}
+
 function digestForKnowledgeRecord({ company = '', productName = '', pageText = '', createdAt = '' } = {}) {
   return crypto
     .createHash('sha1')
@@ -114,6 +133,8 @@ export function buildCustomerPolicyPhotoKnowledgeRecord({
   ownerUserId = 0,
   ownerGuestId = '',
   uploadItems = [],
+  ocrPages = [],
+  responsibilityPipeline = null,
   createdAt = new Date().toISOString(),
 } = {}) {
   const resolvedCompany = text(company);
@@ -154,6 +175,21 @@ export function buildCustomerPolicyPhotoKnowledgeRecord({
       size: Number(item?.size || 0) || 0,
       dataUrl: text(item?.dataUrl),
     })).filter((item) => item.dataUrl.startsWith('data:image/')),
+    ocrPages: normalizeArray(ocrPages).map((page, index) => ({
+      pageNumber: Number(page?.pageNumber || index + 1) || index + 1,
+      name: text(page?.name) || `第${index + 1}张`,
+      ocrText: text(page?.ocrText).slice(0, MAX_CUSTOMER_POLICY_PHOTO_OCR_PAGE_CHARS),
+    })).filter((page) => page.ocrText),
+    responsibilityPipelineStatus: text(responsibilityPipeline?.status) || 'manual_review',
+    responsibilityPipelineVersion: text(responsibilityPipeline?.pipelineVersion),
+    responsibilityPipelineAttempts: Number(responsibilityPipeline?.attempts || 0) || 0,
+    responsibilityNormalizationPasses: Number(responsibilityPipeline?.normalizationPasses || 0) || 0,
+    responsibilityValidationIssues: normalizeArray(responsibilityPipeline?.validationIssues).map(text).filter(Boolean),
+    responsibilityArtifact: responsibilityPipeline?.artifact && typeof responsibilityPipeline.artifact === 'object'
+      ? responsibilityPipeline.artifact
+      : null,
+    publishedResponsibilityCardIds: [],
+    publishedIndicatorRecordIds: [],
     originalCompany: resolvedCompany,
     originalProductName: resolvedProductName,
     originalPageText: safePageText,
@@ -207,6 +243,8 @@ export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, {
       evidenceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
       sourceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
       responsibilityDeferred: true,
+      publishedResponsibilityCardIds: [],
+      publishedIndicatorRecordIds: [],
       revertedAt: reviewedAt,
       updatedAt: reviewedAt,
     };
@@ -224,6 +262,8 @@ export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, {
       evidenceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
       sourceLevel: CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
       reviewedAt,
+      publishedResponsibilityCardIds: [],
+      publishedIndicatorRecordIds: [],
       updatedAt: reviewedAt,
     };
   }
@@ -238,7 +278,7 @@ export function approveCustomerPolicyPhotoKnowledgeRecord(record = {}, {
     sourceKind: termsEvidence ? CUSTOMER_POLICY_TERMS_SOURCE_KIND : CUSTOMER_POLICY_PHOTO_SOURCE_KIND,
     sourceType: termsEvidence ? 'customer_policy_terms' : 'customer_policy_photo',
     materialType: termsEvidence ? 'policy_terms' : 'policy_photo',
-    official: termsEvidence,
+    official: false,
     evidenceLabel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LABEL : '客户上传保单照片（已审核，非官方）',
     evidenceLevel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,
     sourceLevel: termsEvidence ? CUSTOMER_POLICY_TERMS_EVIDENCE_LEVEL : CUSTOMER_POLICY_PHOTO_REVIEWED_EVIDENCE_LEVEL,

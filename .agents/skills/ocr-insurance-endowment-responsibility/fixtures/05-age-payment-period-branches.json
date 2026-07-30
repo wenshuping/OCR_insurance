@@ -1,0 +1,142 @@
+{
+  "fixtureId": "age-payment-period-branches",
+  "sourceText": "本合同独立生效。被保险人在保险期间内身故或全残，我们按以下三种情形给付身故或全残保险金：若身故或全残时未满18周岁，给付实际交纳的保险费与现金价值的较大者；若已满18周岁且交费期未满，给付实际交纳的保险费乘给付比例与现金价值的较大者；若已满18周岁且交费期已满，给付实际交纳的保险费乘给付比例、现金价值与基本保险金额的较大者。给付后本合同终止。被保险人生存至满期日，按基本保险金额给付满期保险金，本合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "death-total-disability",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故或全残",
+        "insurerObligation": "我们按以下三种情形给付身故或全残保险金",
+        "terminationEffect": "给付后本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故或全残，我们按以下三种情形给付身故或全残保险金：若身故或全残时未满18周岁，给付实际交纳的保险费与现金价值的较大者；若已满18周岁且交费期未满，给付实际交纳的保险费乘给付比例与现金价值的较大者；若已满18周岁且交费期已满，给付实际交纳的保险费乘给付比例、现金价值与基本保险金额的较大者。给付后本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "按以下三种情形给付身故或全残保险金",
+            "normalizedFormula": "piecewise",
+            "requiredInputs": ["insured_age", "payment_period_status", "actual_paid_premium", "cash_value", "basic_insured_amount", "benefit_ratio"],
+            "branches": [
+              {
+                "branchId": "under-18",
+                "conditionText": "若身故或全残时未满18周岁",
+                "formulaText": "实际交纳的保险费与现金价值的较大者",
+                "basisKey": "max_of_actual_paid_premium_and_cash_value",
+                "calculationStatus": "needs_table",
+                "requiredInputs": ["actual_paid_premium", "cash_value"],
+                "evidenceTokens": ["未满18周岁", "较大者"],
+                "operands": [
+                  {
+                    "operandId": "paid-premium",
+                    "formulaText": "实际交纳的保险费",
+                    "basisKey": "actual_paid_premium",
+                    "requiredInputs": ["actual_paid_premium"],
+                    "evidenceTokens": ["实际交纳的保险费"]
+                  },
+                  {
+                    "operandId": "cash-value",
+                    "formulaText": "现金价值",
+                    "basisKey": "cash_value",
+                    "requiredInputs": ["cash_value"],
+                    "evidenceTokens": ["现金价值"]
+                  }
+                ]
+              },
+              {
+                "branchId": "adult-payment-open",
+                "conditionText": "若已满18周岁且交费期未满",
+                "formulaText": "实际交纳的保险费乘给付比例与现金价值的较大者",
+                "basisKey": "max_of_adjusted_paid_premium_and_cash_value",
+                "calculationStatus": "needs_table",
+                "requiredInputs": ["actual_paid_premium", "benefit_ratio", "cash_value"],
+                "evidenceTokens": ["交费期未满", "较大者"],
+                "operands": [
+                  {
+                    "operandId": "adjusted-premium",
+                    "formulaText": "实际交纳的保险费乘给付比例",
+                    "basisKey": "adjusted_actual_paid_premium",
+                    "requiredInputs": ["actual_paid_premium", "benefit_ratio"],
+                    "evidenceTokens": ["实际交纳的保险费", "给付比例"]
+                  },
+                  {
+                    "operandId": "cash-value",
+                    "formulaText": "现金价值",
+                    "basisKey": "cash_value",
+                    "requiredInputs": ["cash_value"],
+                    "evidenceTokens": ["现金价值"]
+                  }
+                ]
+              },
+              {
+                "branchId": "adult-payment-complete",
+                "conditionText": "若已满18周岁且交费期已满",
+                "formulaText": "实际交纳的保险费乘给付比例、现金价值与基本保险金额的较大者",
+                "basisKey": "max_of_adjusted_paid_premium_cash_value_and_basic_insured_amount",
+                "calculationStatus": "needs_table",
+                "requiredInputs": ["actual_paid_premium", "benefit_ratio", "cash_value", "basic_insured_amount"],
+                "evidenceTokens": ["交费期已满", "基本保险金额", "较大者"],
+                "operands": [
+                  {
+                    "operandId": "adjusted-premium",
+                    "formulaText": "实际交纳的保险费乘给付比例",
+                    "basisKey": "adjusted_actual_paid_premium",
+                    "requiredInputs": ["actual_paid_premium", "benefit_ratio"],
+                    "evidenceTokens": ["实际交纳的保险费", "给付比例"]
+                  },
+                  {
+                    "operandId": "cash-value",
+                    "formulaText": "现金价值",
+                    "basisKey": "cash_value",
+                    "requiredInputs": ["cash_value"],
+                    "evidenceTokens": ["现金价值"]
+                  },
+                  {
+                    "operandId": "basic-insured-amount",
+                    "formulaText": "基本保险金额",
+                    "basisKey": "basic_insured_amount",
+                    "requiredInputs": ["basic_insured_amount"],
+                    "evidenceTokens": ["基本保险金额"]
+                  }
+                ]
+              }
+            ],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至满期日",
+        "insurerObligation": "按基本保险金额给付满期保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至满期日，按基本保险金额给付满期保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

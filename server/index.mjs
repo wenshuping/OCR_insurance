@@ -110,6 +110,7 @@ const app = createPolicyOcrApp({
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
   agentStore: store,
   db: store.db,
+  productResponsibilityPipelineDbPath: dbPath,
 });
 
 const server = app.listen(port, host, () => {
@@ -123,6 +124,7 @@ function closeRuntime() {
   if (closed) return;
   closed = true;
   app.locals.transferRegenerationRecovery?.stop?.();
+  app.locals.productResponsibilityPipelineQueue?.stop?.();
   store.close();
 }
 server.once('close', closeRuntime);

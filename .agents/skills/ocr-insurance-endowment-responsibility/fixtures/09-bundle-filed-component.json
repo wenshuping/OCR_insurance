@@ -1,0 +1,68 @@
+{
+  "fixtureId": "bundle-filed-component",
+  "sourceText": "安心成长计划包含某人寿成长两全保险组件。本组件条款为独立生效的保险合同。被保险人在组件保险期间内身故，我们按组件基本保险金额给付身故保险金，本组件合同终止。被保险人生存至组件满期日，我们按组件基本保险金额给付满期保险金，本组件合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "contractTopology": {
+      "type": "bundle_component",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "安心成长计划包含某人寿成长两全保险组件。"
+        },
+        {
+          "sourceExcerpt": "本组件条款为独立生效的保险合同。"
+        }
+      ],
+      "bundle": {
+        "marketingEvidenceRole": "discovery_only",
+        "componentCompany": "某人寿保险股份有限公司",
+        "componentProductName": "某人寿成长两全保险",
+        "componentSourceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999"
+      }
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "component-death",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在组件保险期间内身故",
+        "insurerObligation": "按组件基本保险金额给付身故保险金",
+        "terminationEffect": "本组件合同终止",
+        "sourceExcerpt": "被保险人在组件保险期间内身故，我们按组件基本保险金额给付身故保险金，本组件合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "组件基本保险金额",
+            "normalizedFormula": "component_basic_insured_amount",
+            "requiredInputs": ["component_basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "component-maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至组件满期日",
+        "insurerObligation": "按组件基本保险金额给付满期保险金",
+        "terminationEffect": "本组件合同终止",
+        "sourceExcerpt": "被保险人生存至组件满期日，我们按组件基本保险金额给付满期保险金，本组件合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "组件基本保险金额",
+            "normalizedFormula": "component_basic_insured_amount",
+            "requiredInputs": ["component_basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

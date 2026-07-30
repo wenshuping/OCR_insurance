@@ -1,0 +1,28 @@
+{
+  "fixtureId": "group-membership",
+  "contractTopology": "group",
+  "topologyEvidence": "经保险人审核同意并记载于被保险人清单的团体成员为本合同被保险人。",
+  "topology": {
+    "memberEligibility": "经审核同意并记载于被保险人清单的团体成员"
+  },
+  "sourceText": "经保险人审核同意并记载于被保险人清单的团体成员为本合同被保险人。团体成员重度疾病保险金：被保险成员于等待期后初次确诊重度疾病，保险人按该成员对应的基本保险金额给付。",
+  "candidates": [
+    {
+      "heading": "团体成员重度疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "团体成员重度疾病保险金：被保险成员于等待期后初次确诊重度疾病，保险人按该成员对应的基本保险金额给付。",
+      "triggerCondition": "被保险成员于等待期后初次确诊重度疾病",
+      "insurerObligation": "保险人按该成员对应的基本保险金额给付",
+      "formula": {
+        "formulaText": "按该成员对应的基本保险金额给付",
+        "requiredInputs": ["member_eligibility", "member_basic_insurance_amount"],
+        "evidenceTokens": ["被保险成员", "该成员对应的基本保险金额"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["团体成员重度疾病保险金"],
+    "rejectedHeadings": [],
+    "patterns": ["group_membership"]
+  }
+}

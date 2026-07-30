@@ -1,0 +1,61 @@
+{
+  "fixtureId": "definition-exclusion-process-false-headings",
+  "realSample": false,
+  "identity": {
+    "company": "fixture-only",
+    "productName": "fixture-only",
+    "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "contractTopology": "standalone",
+  "topologyEvidence": {
+    "sourceTypeEvidence": "fixture contract",
+    "ownContractRule": "fixture own contract"
+  },
+  "sections": [
+    {
+      "sectionId": "accident-definition",
+      "heading": "意外伤害",
+      "role": "definition",
+      "sourceExcerpt": "意外伤害是指外来的、突发的、非本意的和非疾病的客观事件直接致使身体受到的伤害。"
+    },
+    {
+      "sectionId": "grade-table",
+      "heading": "伤残等级与给付比例表",
+      "role": "attachment_rule",
+      "attachmentToResponsibilityId": "accident-disability",
+      "tableRole": "disability_grade_ratio",
+      "sourceExcerpt": "一级对应100%，十级对应10%。"
+    },
+    {
+      "sectionId": "exclusions",
+      "heading": "责任免除",
+      "role": "exclusion",
+      "sourceExcerpt": "因下列情形之一导致被保险人身故或伤残的，我们不承担给付保险金的责任。"
+    },
+    {
+      "sectionId": "occupation-note",
+      "heading": "职业类别说明",
+      "role": "occupation_rule",
+      "sourceExcerpt": "职业类别变更时应及时通知保险人。"
+    },
+    {
+      "sectionId": "claims-process",
+      "heading": "保险金申请",
+      "role": "claims_process",
+      "sourceExcerpt": "申请人应填写保险金给付申请书并提交相关证明。"
+    },
+    {
+      "sectionId": "accident-disability",
+      "heading": "意外伤残保险金",
+      "role": "responsibility",
+      "triggerCondition": "意外伤害事故导致伤残",
+      "insurerObligation": "按保险金额乘以等级对应比例给付",
+      "sourceExcerpt": "若被保险人因意外伤害事故导致伤残，我们按保险金额乘以伤残等级对应比例给付意外伤残保险金。"
+    }
+  ],
+  "expected": {
+    "status": "approved",
+    "responsibilityIds": ["accident-disability"],
+    "supportingSectionIds": ["accident-definition", "grade-table", "exclusions", "occupation-note", "claims-process"]
+  }
+}

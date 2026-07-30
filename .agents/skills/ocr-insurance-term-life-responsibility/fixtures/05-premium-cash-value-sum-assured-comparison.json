@@ -1,0 +1,82 @@
+{
+  "fixtureId": "term-life-premium-cash-value-sum-assured-comparison",
+  "title": "保费现金价值保额比较",
+  "sourceText": "身故保险金：被保险人在保险期间内身故，我们按身故时实际交纳的保险费、身故时现金价值和身故时本合同保险金额三者中的较大者给付身故保险金，本合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "premium_cash_value_sum_assured_max",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按三个金额中的较大者给付身故保险金",
+        "normalizedFormula": "max(actual_paid_premium_at_event,cash_value_at_event,term_sum_assured_at_event)",
+        "basisKey": "max_of_actual_paid_premium_cash_value_term_sum_assured",
+        "calculationKey": "maximum_of_bases",
+        "requiredInputs": [
+          "actual_paid_premium_at_event",
+          "cash_value_at_event",
+          "term_sum_assured_at_event"
+        ],
+        "branches": [],
+        "operands": [
+          {
+            "operandId": "actual_paid_premium_at_event",
+            "formulaText": "身故时实际交纳的保险费",
+            "basisKey": "actual_paid_premium",
+            "requiredInputs": [
+              "actual_paid_premium_at_event"
+            ],
+            "evidenceTokens": [
+              "实际交纳的保险费"
+            ]
+          },
+          {
+            "operandId": "cash_value_at_event",
+            "formulaText": "身故时现金价值",
+            "basisKey": "cash_value",
+            "requiredInputs": [
+              "cash_value_at_event"
+            ],
+            "evidenceTokens": [
+              "现金价值"
+            ]
+          },
+          {
+            "operandId": "term_sum_assured_at_event",
+            "formulaText": "身故时本合同保险金额",
+            "basisKey": "term_sum_assured",
+            "requiredInputs": [
+              "term_sum_assured_at_event"
+            ],
+            "evidenceTokens": [
+              "本合同保险金额"
+            ]
+          }
+        ],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：被保险人在保险期间内身故，我们按身故时实际交纳的保险费、身故时现金价值和身故时本合同保险金额三者中的较大者给付身故保险金，本合同终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

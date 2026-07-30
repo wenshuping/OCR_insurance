@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR Insurance Accident Responsibility"
+  short_description: "Parse and audit source-backed accident responsibilities"
+  default_prompt: "Use $ocr-insurance-accident-responsibility to parse and verify accident responsibilities from an exact-digest official evidence packet."

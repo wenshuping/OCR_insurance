@@ -1,0 +1,86 @@
+{
+  "fixtureId": "special-drug-proton-overseas",
+  "sourceText": "本合同为主险合同。特定医疗保险金：被保险人因恶性肿瘤接受治疗，我们对符合约定的特定药品费用、质子重离子医疗费用和海外指定医院医疗费用，在总限额300万元内按约定比例给付。上述费用项目仅为特定医疗保险金的费用范围，不是独立保险金。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例特定医疗保险",
+    "sourceDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "specified-medical",
+        "liability": "特定医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因恶性肿瘤接受治疗",
+        "insurerObligation": "我们对符合约定的特定药品费用、质子重离子医疗费用和海外指定医院医疗费用，在总限额300万元内按约定比例给付",
+        "sourceExcerpt": "特定医疗保险金：被保险人因恶性肿瘤接受治疗，我们对符合约定的特定药品费用、质子重离子医疗费用和海外指定医院医疗费用，在总限额300万元内按约定比例给付。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "特定药品费用",
+            "质子重离子医疗费用",
+            "海外指定医院医疗费用"
+          ],
+          "careSettings": [
+            "special_drug",
+            "proton_heavy_ion",
+            "overseas"
+          ],
+          "facilityScope": {
+            "hospitalText": "海外指定医院",
+            "geographyText": "海外"
+          },
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [
+              {
+                "valueText": "300万元",
+                "scopeText": "总限额300万元",
+                "sourceExcerpt": "在总限额300万元内按约定比例给付"
+              }
+            ],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "requiredInputs": [
+              "actualMedicalExpense",
+              "reimbursementRate",
+              "liabilityLimit"
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": [
+      {
+        "title": "特定药品费用、质子重离子医疗费用和海外指定医院医疗费用",
+        "classification": "expense_definition",
+        "sourceExcerpt": "上述费用项目仅为特定医疗保险金的费用范围，不是独立保险金。"
+      }
+    ]
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "特定医疗保险金"
+    ],
+    "nonResponsibilityTitles": [
+      "特定药品费用、质子重离子医疗费用和海外指定医院医疗费用"
+    ]
+  }
+}

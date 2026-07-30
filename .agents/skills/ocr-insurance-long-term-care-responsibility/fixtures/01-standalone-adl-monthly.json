@@ -1,0 +1,20 @@
+{
+  "id": "standalone-adl-monthly",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "adl_monthly_care",
+      "liability": "日常生活活动长期护理保险金",
+      "triggerCondition": "观察期届满后，持续无法独立完成六项日常生活活动中的三项。",
+      "insurerObligation": "保险人每月按基本保险金额的2%给付护理保险金。",
+      "sourceExcerpt": "被保险人持续无法独立完成六项日常生活活动中的三项并经认可评定后，我们每月按基本保险金额的2%给付，最多给付60次；恢复护理能力、身故或累计60次时停止给付。",
+      "careTrigger": {"adl": {"items": ["进食", "穿衣", "移动", "沐浴", "如厕", "控制大小便"], "requiredItemCount": 3}, "continuousState": {"observationPeriodText": "持续180日"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "paymentCountText": "最多60次", "benefitPeriodText": "符合护理状态期间", "terminationText": "恢复、身故或累计60次时停止"},
+      "formula": {"formulaText": "每月护理金=基本保险金额×2%", "normalizedFormula": "monthly_care = basic_sum_insured * 0.02", "requiredInputs": ["basic_sum_insured"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "adl_definition", "classification": "care_state_definition", "text": "列明六项日常生活活动的定义。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["care_state_definition"]}
+}

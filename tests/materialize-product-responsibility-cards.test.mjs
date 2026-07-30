@@ -77,6 +77,21 @@ function insertIndicator(db, row) {
   }));
 }
 
+function insertOptionalResponsibility(db, row) {
+  db.prepare(`
+    INSERT INTO optional_responsibility_records (id, company, product_name, liability, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(row.id, row.company, row.productName, row.liability, JSON.stringify({
+    id: row.id,
+    company: row.company,
+    productName: row.productName,
+    liability: row.liability,
+    sourceUrl: row.sourceUrl,
+    sourceExcerpt: row.sourceExcerpt,
+    selectionStatus: row.selectionStatus || 'unknown',
+  }));
+}
+
 function tableExists(db, tableName) {
   return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName));
 }
@@ -1094,6 +1109,603 @@ test('materializeProductResponsibilityCards keeps increasing guaranteed annuity 
     try {
       const titles = readDb.prepare('SELECT title FROM product_responsibility_cards ORDER BY title').all().map((row) => row.title);
       assert.deepEqual(titles, ['保证给付十年增额终身年金', '保证给付十年终身年金']);
+    } finally {
+      readDb.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reviewed artifact import preserves structured formula fields through card materialization', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'reviewed-structured-formula.jsonl');
+    const company = '测试人寿保险有限公司';
+    const productName = '结构化公式回归保险';
+    const sourceUrl = 'https://official.example.com/structured-formula.pdf';
+    const sourceExcerpt = '身故或全残保险金按以下两项金额的较大者给付。';
+    const normalizedFormula = 'max((remainingPolicyYears / totalPolicyYears) * sumInsured, paidPremium * 1.6)';
+    const requiredInputs = ['policy.firstPremium', 'policy.paymentPeriodYears'];
+    const branchSemanticContract = 'max-of-two-official-bases';
+    const evidenceTokens = ['基本保险金额', '实际交纳的保险费', '160%', '较大者'];
+    const ruleRefs = ['rule-max-death-benefit'];
+    const operands = [
+      {
+        operandId: 'operand-1',
+        formulaText: '剩余保单年度数/总保单年度数×基本保险金额',
+        basisKey: 'remaining_policy_years_times_sum_insured',
+        evidenceTokens: ['剩余保单年度数/总保单年度数×基本保险金额'],
+      },
+      {
+        operandId: 'operand-2',
+        formulaText: '实际交纳的保险费×160%',
+        basisKey: 'actual_paid_premium_times_1_6',
+        evidenceTokens: ['实际交纳的保险费×160%'],
+      },
+    ];
+    fs.writeFileSync(artifactPath, `${JSON.stringify({
+      company,
+      productName,
+      sourceRecords: [{
+        sourceRecordId: 'structured-formula-source',
+        sourceUrl,
+        sourceTitle: `${productName}条款`,
+      }],
+      acceptedResponsibilities: [{
+        liability: '身故或全残保险金',
+        sourceRecordId: 'structured-formula-source',
+        sourceUrl,
+        sourceExcerpt,
+        formulaText: 'max(基本保险金额, 实际交纳的保险费×160%)',
+        normalizedFormula,
+        requiredInputs,
+        evidenceTokens,
+        ruleRefs,
+        operands,
+        branches: [],
+        branchSemanticContract,
+      }],
+      internalIndicatorChecks: [{
+        liability: '身故或全残保险金',
+        formulaText: 'max(基本保险金额, 实际交纳的保险费×160%)',
+        normalizedFormula,
+        requiredInputs,
+        evidenceTokens,
+        ruleRefs,
+        operands,
+        branches: [],
+        branchSemanticContract,
+        basisKey: 'unknown',
+        calculationKey: 'manual_formula',
+        calculationEligible: false,
+        calculationStatus: 'needs_claim_facts',
+        calculationReason: '需要结合理赔事实计算',
+      }],
+    })}\n`);
+
+    importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-29T00:00:00.000Z',
+    });
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const indicator = JSON.parse(db.prepare(`
+        SELECT payload
+          FROM insurance_indicator_records
+         WHERE company = ? AND product_name = ?
+      `).get(company, productName).payload);
+      const card = JSON.parse(db.prepare(`
+        SELECT payload
+          FROM product_responsibility_cards
+         WHERE company = ? AND product_name = ?
+      `).get(company, productName).payload);
+      const expected = {
+        normalizedFormula,
+        requiredInputs,
+        evidenceTokens,
+        ruleRefs,
+        operands,
+        branches: [],
+        branchSemanticContract,
+      };
+
+      assert.deepEqual({
+        normalizedFormula: indicator.normalizedFormula,
+        requiredInputs: indicator.requiredInputs,
+        evidenceTokens: indicator.evidenceTokens,
+        ruleRefs: indicator.ruleRefs,
+        operands: indicator.operands,
+        branches: indicator.branches,
+        branchSemanticContract: indicator.branchSemanticContract,
+      }, expected);
+      assert.deepEqual({
+        normalizedFormula: card.indicators[0].normalizedFormula,
+        requiredInputs: card.indicators[0].requiredInputs,
+        evidenceTokens: card.indicators[0].evidenceTokens,
+        ruleRefs: card.indicators[0].ruleRefs,
+        operands: card.indicators[0].operands,
+        branches: card.indicators[0].branches,
+        branchSemanticContract: card.indicators[0].branchSemanticContract,
+      }, expected);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reviewed canonical artifact import retains an authoritative waiting-period refund card', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'canonical-waiting-period-refund.json');
+    const company = '测试人寿保险有限公司';
+    const productName = '权威等待期返还保险';
+    const sourceUrl = 'https://official.example.com/waiting-period-refund.pdf';
+    const sourceDigest = 'sha256:authoritative-waiting-period-refund';
+    const sourceExcerpt = '等待期内被保险人因疾病身故，我们无息返还本合同实际交纳的保险费，本合同终止。';
+
+    fs.writeFileSync(artifactPath, JSON.stringify({
+      company,
+      productName,
+      productIdentity: { sourceUrl, sourceDigest },
+      responsibilities: [{
+        responsibilityId: 'waiting-period-refund',
+        responsibilityKind: 'waiting_period_refund',
+        coverageAggregation: 'exclude',
+        liability: '等待期返还',
+        triggerCondition: '等待期内被保险人因疾病身故',
+        insurerObligation: '无息返还本合同实际交纳的保险费',
+        sourceExcerpt,
+        card: {
+          title: '等待期返还',
+          customerSummary: '等待期内因疾病身故时返还已交保险费。',
+        },
+        indicators: [{
+          indicatorName: '等待期返还保险费',
+          formulaText: '本合同实际交纳的保险费',
+          normalizedFormula: 'actual_paid_premium',
+          requiredInputs: ['actual_paid_premium'],
+          evidenceTokens: ['实际交纳的保险费'],
+          basisKey: 'actual_paid_premium',
+          calculationKey: 'manual_formula',
+          calculationEligible: false,
+          calculationStatus: 'claim_contingent',
+          calculationReason: '需结合等待期及身故事实判断。',
+          indicatorCheckStatus: 'accepted_unified_pipeline',
+        }],
+      }],
+    }));
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-29T02:00:00.000Z',
+    });
+
+    assert.equal(result.acceptedResponsibilities, 1);
+    assert.equal(result.materializedCards, 1);
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const card = db.prepare(`
+        SELECT title, payload
+          FROM product_responsibility_cards
+         WHERE company = ? AND product_name = ?
+      `).get(company, productName);
+      assert.equal(card.title, '等待期返还');
+      const payload = JSON.parse(card.payload);
+      assert.equal(payload.responsibilityKind, 'waiting_period_refund');
+      assert.equal(payload.coverageAggregation, 'exclude');
+      assert.deepEqual(payload.indicators[0].evidenceTokens, ['实际交纳的保险费']);
+      const artifact = db.prepare(`
+        SELECT source_digest sourceDigest, source_url sourceUrl
+          FROM product_responsibility_artifacts
+         WHERE company = ? AND product_name = ?
+      `).get(company, productName);
+      assert.equal(artifact.sourceDigest, sourceDigest);
+      assert.equal(artifact.sourceUrl, sourceUrl);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('authoritative responsibility ids prevent overlapping waiting-period titles from stealing benefit indicators', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'canonical-overlapping-responsibility-titles.json');
+    const company = '测试人寿保险有限公司';
+    const productName = '权威责任编号匹配保险';
+    const sourceUrl = 'https://official.example.com/responsibility-id-match.pdf';
+    const sourceDigest = 'sha256:responsibility-id-match';
+
+    fs.writeFileSync(artifactPath, JSON.stringify({
+      company,
+      productName,
+      productIdentity: { sourceUrl, sourceDigest },
+      responsibilities: [
+        {
+          responsibilityId: 'waiting-period-refund',
+          responsibilityKind: 'waiting_period_refund',
+          coverageAggregation: 'exclude',
+          liability: '等待期身故或全残返还保险费',
+          sourceExcerpt: '等待期内因疾病身故或全残时返还已交保险费。',
+          card: { title: '等待期身故或全残保险金' },
+          indicators: [{
+            indicatorName: '等待期返还保险费',
+            formulaText: '已交保险费',
+            requiredInputs: [],
+            responsibilityId: 'waiting-period-refund',
+            indicatorCheckStatus: 'accepted_unified_pipeline',
+          }],
+        },
+        {
+          responsibilityId: 'death-or-total-disability-benefit',
+          responsibilityKind: 'benefit',
+          coverageAggregation: 'include',
+          liability: '身故或全残保险金',
+          sourceExcerpt: '等待期后身故或全残时按约定给付身故或全残保险金。',
+          card: { title: '身故或全残保险金' },
+          indicators: [{
+            indicatorName: '身故或全残保险金金额',
+            formulaText: '按合同约定金额给付',
+            responsibilityId: 'death-or-total-disability-benefit',
+            indicatorCheckStatus: 'accepted_unified_pipeline',
+          }],
+        },
+      ],
+    }));
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-29T02:00:00.000Z',
+    });
+
+    assert.equal(result.acceptedResponsibilities, 2);
+    assert.equal(result.materializedCards, 2);
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const cards = db.prepare(`
+        SELECT title, payload
+          FROM product_responsibility_cards
+         WHERE company = ? AND product_name = ?
+         ORDER BY title
+      `).all(company, productName).map((row) => ({
+        title: row.title,
+        payload: JSON.parse(row.payload),
+      }));
+      assert.deepEqual(cards.map((card) => card.title), [
+        '等待期身故或全残保险金',
+        '身故或全残保险金',
+      ]);
+      assert.deepEqual(cards.map((card) => card.payload.indicators[0].responsibilityId), [
+        'waiting-period-refund',
+        'death-or-total-disability-benefit',
+      ]);
+      assert.deepEqual(cards[0].payload.indicators[0].requiredInputs, []);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reviewed canonical artifact import materializes only authoritative responsibilities with all nested indicators', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'canonical-reviewed-artifact.json');
+    const company = '测试人寿保险有限公司';
+    const productName = '权威多指标责任保险';
+    const sourceUrl = 'https://official.example.com/authoritative-multi-indicator.pdf';
+    const sourceDigest = 'sha256:authoritative-multi-indicator';
+    const mainExcerpt = '身故或全残保险金包含等待期内、意外伤害、等待期后三项给付指标。';
+    const branchExcerpt = '第二被保险人新生儿先天性疾病保险金分A组和B组，二者互斥给付。';
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      insertKnowledge(db, {
+        id: 1001,
+        company,
+        productName,
+        url: sourceUrl,
+        pageText: '2.4 未成年人身故保险金限制。该条为管理限制，不是本次 reviewed artifact 批准责任。',
+      });
+      insertOptionalResponsibility(db, {
+        id: 'optional_orphan',
+        company,
+        productName,
+        liability: '可选孤儿保险金',
+        sourceUrl,
+        sourceExcerpt: '可选孤儿保险金未进入本次 approved artifact。',
+      });
+    } finally {
+      db.close();
+    }
+
+    fs.writeFileSync(artifactPath, JSON.stringify({
+      company,
+      productName,
+      productIdentity: { sourceUrl, sourceDigest },
+      responsibilities: [
+        {
+          responsibilityId: 'R01',
+          liability: '身故或全残保险金',
+          triggerCondition: '被保险人身故或全残',
+          insurerObligation: '按条款约定给付身故或全残保险金',
+          sourceExcerpt: mainExcerpt,
+          card: {
+            title: '身故或全残保险金',
+            customerSummary: '身故或全残保险金按三类情形分别核定。',
+          },
+          indicators: [
+            {
+              indicatorName: '等待期内非意外身故或全残保险金',
+              formulaText: '实际交纳的保险费',
+              normalizedFormula: 'actual_paid_premium',
+              requiredInputs: ['actual_paid_premium'],
+              basisKey: 'actual_paid_premium',
+              calculationKey: 'manual_formula',
+              calculationEligible: false,
+              calculationStatus: 'claim_contingent',
+              calculationReason: '需结合等待期和事故性质判断。',
+              indicatorCheckStatus: 'accepted_unified_pipeline',
+            },
+            {
+              indicatorName: '意外伤害身故或全残保险金',
+              formulaText: '基本保险金额',
+              normalizedFormula: 'basic_insured_amount',
+              requiredInputs: ['basic_insured_amount'],
+              basisKey: 'basic_insured_amount',
+              calculationKey: 'manual_formula',
+              calculationEligible: false,
+              calculationStatus: 'claim_contingent',
+              calculationReason: '需结合事故性质判断。',
+              indicatorCheckStatus: 'accepted_unified_pipeline',
+            },
+            {
+              indicatorName: '等待期后身故或全残保险金',
+              formulaText: '基本保险金额',
+              normalizedFormula: 'basic_insured_amount',
+              requiredInputs: ['basic_insured_amount'],
+              basisKey: 'basic_insured_amount',
+              calculationKey: 'manual_formula',
+              calculationEligible: false,
+              calculationStatus: 'claim_contingent',
+              calculationReason: '需结合等待期判断。',
+              indicatorCheckStatus: 'accepted_unified_pipeline',
+            },
+          ],
+        },
+        {
+          responsibilityId: 'R02',
+          liability: '第二被保险人新生儿先天性疾病保险金',
+          triggerCondition: '第二被保险人确诊约定新生儿先天性疾病',
+          insurerObligation: '按A/B组互斥分支给付',
+          sourceExcerpt: branchExcerpt,
+          card: {
+            title: '第二被保险人新生儿先天性疾病保险金',
+            customerSummary: 'A组和B组新生儿先天性疾病保险金互斥给付。',
+          },
+          indicators: [
+            {
+              indicatorName: 'A组新生儿先天性疾病保险金',
+              formulaText: '基本保险金额 × 100%',
+              normalizedFormula: 'basic_insurance_amount * 1.0',
+              requiredInputs: ['basic_insurance_amount'],
+              basisKey: 'basic_sum_assured',
+              calculationKey: 'manual_formula',
+              calculationEligible: false,
+              calculationStatus: 'claim_contingent',
+              calculationReason: '需结合疾病分组判断。',
+              indicatorCheckStatus: 'accepted_unified_pipeline',
+              parentResponsibilityId: 'R02',
+              branchId: 'A',
+              payout: '基本保险金额100%',
+              mutuallyExclusiveGroup: 'newborn-congenital-disease',
+            },
+            {
+              indicatorName: 'B组新生儿先天性疾病保险金',
+              formulaText: '基本保险金额 × 50%',
+              normalizedFormula: 'basic_insurance_amount * 0.5',
+              requiredInputs: ['basic_insurance_amount'],
+              basisKey: 'basic_sum_assured',
+              calculationKey: 'manual_formula',
+              calculationEligible: false,
+              calculationStatus: 'claim_contingent',
+              calculationReason: '需结合疾病分组判断。',
+              indicatorCheckStatus: 'accepted_unified_pipeline',
+              parentResponsibilityId: 'R02',
+              branchId: 'B',
+              payout: '基本保险金额50%',
+              mutuallyExclusiveGroup: 'newborn-congenital-disease',
+            },
+          ],
+        },
+      ],
+    }));
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-29T01:00:00.000Z',
+    });
+
+    assert.equal(result.acceptedResponsibilities, 5);
+    assert.equal(result.materializedCards, 2);
+
+    const readDb = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const knowledgeCount = readDb.prepare('SELECT COUNT(*) AS count FROM knowledge_records WHERE company = ? AND product_name = ?').get(company, productName).count;
+      assert.equal(knowledgeCount, 1);
+      const indicatorPayloads = readDb.prepare(`
+        SELECT payload
+          FROM insurance_indicator_records
+         WHERE company = ? AND product_name = ?
+         ORDER BY id
+      `).all(company, productName).map((row) => JSON.parse(row.payload));
+      assert.equal(indicatorPayloads.length, 5);
+      assert.ok(indicatorPayloads.every((indicator) => indicator.sourceUrl === sourceUrl));
+      assert.ok(indicatorPayloads.every((indicator) => indicator.responsibilitySourceDigest === sourceDigest));
+
+      const cards = readDb.prepare(`
+        SELECT title, payload
+          FROM product_responsibility_cards
+         WHERE company = ? AND product_name = ?
+         ORDER BY title
+      `).all(company, productName).map((row) => ({
+        title: row.title,
+        payload: JSON.parse(row.payload),
+      }));
+      assert.deepEqual(cards.map((card) => card.title), [
+        '第二被保险人新生儿先天性疾病保险金',
+        '身故或全残保险金',
+      ]);
+      const mainCard = cards.find((card) => card.title === '身故或全残保险金').payload;
+      assert.deepEqual(mainCard.indicators.map((indicator) => ({
+        indicatorName: indicator.indicatorName,
+        formulaText: indicator.formulaText,
+        normalizedFormula: indicator.normalizedFormula,
+        requiredInputs: indicator.requiredInputs,
+      })), [
+        {
+          indicatorName: '等待期内非意外身故或全残保险金',
+          formulaText: '实际交纳的保险费',
+          normalizedFormula: 'actual_paid_premium',
+          requiredInputs: ['actual_paid_premium'],
+        },
+        {
+          indicatorName: '意外伤害身故或全残保险金',
+          formulaText: '基本保险金额',
+          normalizedFormula: 'basic_insured_amount',
+          requiredInputs: ['basic_insured_amount'],
+        },
+        {
+          indicatorName: '等待期后身故或全残保险金',
+          formulaText: '基本保险金额',
+          normalizedFormula: 'basic_insured_amount',
+          requiredInputs: ['basic_insured_amount'],
+        },
+      ]);
+      const branchCard = cards.find((card) => card.title === '第二被保险人新生儿先天性疾病保险金').payload;
+      assert.deepEqual(branchCard.indicators.map((indicator) => ({
+        indicatorName: indicator.indicatorName,
+        branchId: indicator.branchId,
+        parentResponsibilityId: indicator.parentResponsibilityId,
+        payout: indicator.payout,
+        mutuallyExclusiveGroup: indicator.mutuallyExclusiveGroup,
+      })), [
+        {
+          indicatorName: 'A组新生儿先天性疾病保险金',
+          branchId: 'A',
+          parentResponsibilityId: 'R02',
+          payout: '基本保险金额100%',
+          mutuallyExclusiveGroup: 'newborn-congenital-disease',
+        },
+        {
+          indicatorName: 'B组新生儿先天性疾病保险金',
+          branchId: 'B',
+          parentResponsibilityId: 'R02',
+          payout: '基本保险金额50%',
+          mutuallyExclusiveGroup: 'newborn-congenital-disease',
+        },
+      ]);
+      assert.equal(cards.some((card) => card.title === '可选孤儿保险金'), false);
+      assert.equal(cards.some((card) => card.title === '未成年人身故保险金'), false);
+    } finally {
+      readDb.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('materializeProductResponsibilityCards authoritative product list suppresses optional orphan cards', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const company = '测试人寿保险有限公司';
+    const productName = '权威清单物化保险';
+    const sourceUrl = 'https://official.example.com/authoritative-only.pdf';
+    const db = new DatabaseSync(dbPath);
+    try {
+      insertKnowledge(db, {
+        id: 1002,
+        company,
+        productName,
+        url: sourceUrl,
+        pageText: '保险责任 1.健康医疗保险金 按约定给付。2.未成年人身故保险金限制。',
+      });
+      insertIndicator(db, {
+        id: 'auth_health',
+        company,
+        productName,
+        coverageType: '医疗保障',
+        liability: '健康医疗保险金',
+        formulaText: '按约定医疗费用给付',
+        sourceUrl,
+        sourceExcerpt: '健康医疗保险金 按约定医疗费用给付。',
+      });
+      insertIndicator(db, {
+        id: 'auth_disease_death',
+        company,
+        productName,
+        coverageType: '人寿保障',
+        liability: '疾病身故保险金',
+        formulaText: '基本保险金额',
+        sourceUrl,
+        sourceExcerpt: '疾病身故保险金 按基本保险金额给付。',
+      });
+      insertOptionalResponsibility(db, {
+        id: 'optional_not_authoritative',
+        company,
+        productName,
+        liability: '可选孤儿保险金',
+        sourceUrl,
+        sourceExcerpt: '可选孤儿保险金不在 approved artifact 中。',
+      });
+    } finally {
+      db.close();
+    }
+
+    const result = materializeProductResponsibilityCards({
+      dbPath,
+      write: true,
+      productList: [{
+        company,
+        productName,
+        responsibilityMode: 'authoritative_only',
+        authoritativeResponsibilities: [
+          { liability: '健康医疗保险金', sourceUrl, sourceExcerpt: '健康医疗保险金 按约定医疗费用给付。' },
+          { liability: '疾病身故保险金', sourceUrl, sourceExcerpt: '疾病身故保险金 按基本保险金额给付。' },
+        ],
+      }],
+      now: '2026-07-29T01:10:00.000Z',
+    });
+
+    assert.equal(result.insertedRows, 2);
+    const readDb = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const titles = readDb.prepare(`
+        SELECT title
+          FROM product_responsibility_cards
+         WHERE company = ? AND product_name = ?
+         ORDER BY title
+      `).all(company, productName).map((row) => row.title);
+      assert.deepEqual(titles, ['健康医疗保险金', '疾病身故保险金']);
+      const knowledgeCount = readDb.prepare('SELECT COUNT(*) AS count FROM knowledge_records WHERE company = ? AND product_name = ?').get(company, productName).count;
+      assert.equal(knowledgeCount, 1);
     } finally {
       readDb.close();
     }

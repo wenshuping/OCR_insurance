@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Merge"
+  short_description: "Merge replaceable model reviews against official clauses"
+  default_prompt: "Use $ocr-insurance-responsibility-merge to cross-merge model responsibility proposals against the official clause excerpt and produce a validated JSONL artifact."

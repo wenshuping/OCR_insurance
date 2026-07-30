@@ -1,0 +1,59 @@
+{
+  "fixtureId": "ordinary-death-maturity",
+  "sourceText": "本合同为独立生效的两全保险合同。在本合同保险期间内，被保险人身故或身体全残，我们按基本保险金额给付身故或身体全残保险金，本合同终止。被保险人生存至保险期间届满，我们按基本保险金额给付满期保险金，本合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为独立生效的两全保险合同。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "death-total-disability",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "在本合同保险期间内，被保险人身故或身体全残",
+        "insurerObligation": "按基本保险金额给付身故或身体全残保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "在本合同保险期间内，被保险人身故或身体全残，我们按基本保险金额给付身故或身体全残保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至保险期间届满",
+        "insurerObligation": "按基本保险金额给付满期保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至保险期间届满，我们按基本保险金额给付满期保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

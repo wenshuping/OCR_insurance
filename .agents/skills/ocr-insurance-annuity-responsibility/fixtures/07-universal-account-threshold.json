@@ -1,0 +1,113 @@
+{
+  "fixtureId": "universal-account-threshold",
+  "realSample": true,
+  "identity": {
+    "company": "生命人寿保险股份有限公司",
+    "productName": "生命大赢家年金保险（万能型）",
+    "sourceDigest": "sha256:05a1f3ffb8303415bfec0734db052455bab1d5e995405b903055cbf0a87b8c68"
+  },
+  "sourceText": "在本合同生效满两年后，若本合同个人账户价值不低于500元，被保险人可申请年领年金。若被保险人在约定的首次领取日及之后的每个周年日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的6%给付年金，给付后个人账户价值等额减少。若领取后个人账户价值低于500元，终止后续年金。若被保险人身故，本公司将按本合同的已交保险费（含追加保险费）与个人账户现金价值的较大者给付身故保险金。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity_yearly",
+      "liability": "年领年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "在本合同生效满两年后，若本合同个人账户价值不低于500元",
+      "insurerObligation": "本公司将按当时个人账户价值的6%给付年金",
+      "sourceExcerpt": "在本合同生效满两年后，若本合同个人账户价值不低于500元，被保险人可申请年领年金。若被保险人在约定的首次领取日及之后的每个周年日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的6%给付年金，给付后个人账户价值等额减少。若领取后个人账户价值低于500元，终止后续年金。",
+      "annuityProfile": {
+        "startConditionText": "在本合同生效满两年后，若本合同个人账户价值不低于500元",
+        "survivalConditionText": "若被保险人在约定的首次领取日及之后的每个周年日零时仍生存",
+        "frequency": {
+          "type": "annual",
+          "optionTexts": [
+            "年领年金"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "other",
+          "startText": "约定的首次领取日",
+          "endText": "个人账户价值低于500元",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "decrease"
+        },
+        "terminationConditions": [
+          "若领取后个人账户价值低于500元，终止后续年金"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "个人账户价值×6%",
+          "basisKey": "personal_account_value",
+          "requiredInputs": [
+            "personal_account_value_after_fees"
+          ],
+          "evidenceTokens": [
+            "500元",
+            "6%"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    },
+    {
+      "responsibilityId": "death",
+      "liability": "身故保险金",
+      "role": "death_responsibility",
+      "triggerCondition": "若被保险人身故",
+      "insurerObligation": "本公司将按本合同的已交保险费（含追加保险费）与个人账户现金价值的较大者给付身故保险金",
+      "sourceExcerpt": "若被保险人身故，本公司将按本合同的已交保险费（含追加保险费）与个人账户现金价值的较大者给付身故保险金。",
+      "indicators": [
+        {
+          "formulaText": "max(已交保险费含追加, 个人账户现金价值)",
+          "basisKey": "max_of_paid_premium_and_account_cash_value",
+          "requiredInputs": [
+            "actual_paid_premium_including_additional",
+            "account_cash_value"
+          ],
+          "evidenceTokens": [
+            "已交保险费（含追加保险费）",
+            "个人账户现金价值",
+            "较大者"
+          ],
+          "branches": [],
+          "operands": [
+            {
+              "operandId": "paid-premium",
+              "formulaText": "已交保险费（含追加保险费）",
+              "basisKey": "actual_paid_premium_including_additional",
+              "requiredInputs": [
+                "actual_paid_premium_including_additional"
+              ]
+            },
+            {
+              "operandId": "account-cash-value",
+              "formulaText": "个人账户现金价值",
+              "basisKey": "account_cash_value",
+              "requiredInputs": [
+                "account_cash_value"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": [
+    {
+      "title": "个人账户结算",
+      "role": "product_function",
+      "sourceExcerpt": "在个人账户结算并扣除当月保单管理费后"
+    }
+  ]
+}

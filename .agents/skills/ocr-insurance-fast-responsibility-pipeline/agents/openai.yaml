@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fast Insurance Responsibility Pipeline"
+  short_description: "Acquire, parse, validate insurance responsibilities"
+  default_prompt: "Use $ocr-insurance-fast-responsibility-pipeline to acquire official clauses and produce fast, source-grounded insurance responsibility artifacts."

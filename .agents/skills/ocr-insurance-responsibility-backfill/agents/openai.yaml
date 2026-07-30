@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Backfill"
+  short_description: "Repair responsibilities and indicators in audited batches"
+  default_prompt: "Use $ocr-insurance-responsibility-backfill to run the bundled unattended DeepSeek workflow against the development database: parse concurrently, repair validator failures, publish approved products serially, and return the published and manual-review queues with backup and readback receipts."

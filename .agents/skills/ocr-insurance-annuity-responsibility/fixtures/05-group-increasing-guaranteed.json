@@ -1,0 +1,76 @@
+{
+  "fixtureId": "group-increasing-guaranteed",
+  "realSample": true,
+  "identity": {
+    "company": "中国太平洋人寿保险股份有限公司",
+    "productName": "众恒B团体年金保险（万能型）",
+    "sourceDigest": "sha256:8df7be1b6e50cade9847ebf8d56d038061a66cb0d5ca3799f121828596daa1c9"
+  },
+  "sourceText": "⑤十年固定定额递增型年金：本公司自年金领取起始日起按年或按月向年金受益人给付年金，次年起每年年金在上一年年金给付金额的基础上按首年年金标准的5％递增，并保证给付10年。如年金受益人领满10年后该被保险人仍生存，本公司继续给付年金直至该被保险人身故。如该被保险人在保证给付期间内身故，本公司将继续向剩余固定年金受益人给付剩余固定年金，直至保证给付期间届满。",
+  "contractTopology": {
+    "type": "group",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity_10yr_fixed_increasing",
+      "liability": "十年固定定额递增型年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "本公司自年金领取起始日起",
+      "insurerObligation": "本公司自年金领取起始日起按年或按月向年金受益人给付年金",
+      "sourceExcerpt": "⑤十年固定定额递增型年金：本公司自年金领取起始日起按年或按月向年金受益人给付年金，次年起每年年金在上一年年金给付金额的基础上按首年年金标准的5％递增，并保证给付10年。如年金受益人领满10年后该被保险人仍生存，本公司继续给付年金直至该被保险人身故。如该被保险人在保证给付期间内身故，本公司将继续向剩余固定年金受益人给付剩余固定年金，直至保证给付期间届满。",
+      "annuityProfile": {
+        "startConditionText": "本公司自年金领取起始日起",
+        "survivalConditionText": "如年金受益人领满10年后该被保险人仍生存",
+        "frequency": {
+          "type": "multiple",
+          "optionTexts": [
+            "按年",
+            "按月"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "lifetime",
+          "startText": "年金领取起始日",
+          "endText": "直至该被保险人身故",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "fixed_period",
+          "periodText": "保证给付10年",
+          "deathDuringGuaranteeText": "如该被保险人在保证给付期间内身故",
+          "remainingPaymentText": "继续向剩余固定年金受益人给付剩余固定年金"
+        },
+        "growthRule": {
+          "type": "arithmetic_increase",
+          "rateText": "5％",
+          "baseText": "首年年金标准",
+          "yearConventionText": "次年起"
+        },
+        "terminationConditions": [
+          "直至该被保险人身故",
+          "保证给付期间届满"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "第n年金额=上一年金额+首年标准×5%",
+          "basisKey": "annuity_increasing_amount",
+          "requiredInputs": [
+            "first_year_annuity",
+            "annuity_year",
+            "annuity_frequency"
+          ],
+          "evidenceTokens": [
+            "5％",
+            "首年年金标准",
+            "保证给付10年"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": []
+}

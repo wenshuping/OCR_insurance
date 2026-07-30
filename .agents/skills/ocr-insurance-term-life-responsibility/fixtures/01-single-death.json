@@ -1,0 +1,52 @@
+{
+  "fixtureId": "term-life-single-death",
+  "title": "单一身故责任",
+  "sourceText": "保险期间为二十年。身故保险金：在本合同有效期内，被保险人身故，我们按基本保险金额给付身故保险金，本合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "single_death",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "responsibilityEffectivePeriod": {
+          "scope": "contract",
+          "sourceExcerpt": "保险期间为二十年。"
+        },
+        "triggerCondition": "在本合同有效期内，被保险人身故",
+        "insurerObligation": "按基本保险金额给付身故保险金",
+        "normalizedFormula": "term_sum_assured",
+        "requiredInputs": [
+          "term_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "beneficiaryPaymentSemantic": {
+          "recipientScope": "not_stated",
+          "paymentMeaning": "给付身故保险金"
+        },
+        "sourceExcerpt": "身故保险金：在本合同有效期内，被保险人身故，我们按基本保险金额给付身故保险金，本合同终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

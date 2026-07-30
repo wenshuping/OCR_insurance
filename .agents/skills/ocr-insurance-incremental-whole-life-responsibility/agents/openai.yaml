@@ -1,0 +1,4 @@
+interface:
+  display_name: "增额终身寿责任解析"
+  short_description: "按同一官方来源核验增额终身寿的保额递增责任"
+  default_prompt: "Use $ocr-insurance-incremental-whole-life-responsibility to extract and verify only source-proven annual effective-sum-assured growth and its death/total-disability benefit linkage."

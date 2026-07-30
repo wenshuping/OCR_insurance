@@ -3382,6 +3382,9 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     knowledgeRecords = [],
     indicatorRecords = [],
     responsibilityCards = [],
+    replaceResponsibilityCards = true,
+    removeIndicatorIds = [],
+    removeResponsibilityCardIds = [],
   } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -3401,13 +3404,19 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
     const normalizedCardRows = normalizeArray(responsibilityCards)
       .map((row) => normalizedProductResponsibilityCardRow(row))
       .filter(Boolean);
+    const normalizedRemoveIndicatorIds = Array.from(new Set(normalizeArray(removeIndicatorIds).map((id) => String(id || '').trim()).filter(Boolean)));
+    const normalizedRemoveCardIds = Array.from(new Set(normalizeArray(removeResponsibilityCardIds).map((id) => String(id || '').trim()).filter(Boolean)));
     const cardProductKeys = Array.from(new Set(normalizedCardRows.map((row) => row.productKey).filter(Boolean)));
     db.exec('BEGIN IMMEDIATE');
     try {
       for (const record of normalizedKnowledgeRecords) upsertKnowledgeRecordRow(db, record);
+      for (const id of normalizedRemoveIndicatorIds) db.prepare('DELETE FROM insurance_indicator_records WHERE id = ?').run(id);
+      for (const id of normalizedRemoveCardIds) db.prepare('DELETE FROM product_responsibility_cards WHERE id = ?').run(id);
       for (const record of normalizedIndicatorRecords) upsertInsuranceIndicatorRecordRow(db, record);
-      for (const productKey of cardProductKeys) {
-        db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+      if (replaceResponsibilityCards) {
+        for (const productKey of cardProductKeys) {
+          db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+        }
       }
       for (const row of normalizedCardRows) upsertProductResponsibilityCardRow(db, row);
       updateStateMeta(db, nextState, now);
@@ -3431,6 +3440,8 @@ export async function createSqliteStateStore({ dbPath, seedStatePath } = {}) {
       knowledgeRecordCount: normalizedKnowledgeRecords.length,
       indicatorRecordCount: normalizedIndicatorRecords.length,
       responsibilityCardCount: normalizedCardRows.length,
+      removedIndicatorCount: normalizedRemoveIndicatorIds.length,
+      removedResponsibilityCardCount: normalizedRemoveCardIds.length,
       productKeys: cardProductKeys,
     };
   }
