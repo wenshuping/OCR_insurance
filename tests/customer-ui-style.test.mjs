@@ -1630,14 +1630,18 @@ test('family report aggregate wealth is drawn inside the cash value trend chart'
   const cssSource = fs.readFileSync(new URL('../src/index.css', import.meta.url), 'utf8');
 
   assert.match(source, /function CashValueTrendChart/);
+  assert.match(source, /function buildPolicyCashflowTrendSeries/);
   assert.match(source, /buildAggregateCashValueTrendSeries/);
   assert.match(source, /cashValueAggregateTrendSeriesConfig/);
   assert.match(source, /data-cash-value-trend-chart/);
   assert.match(source, /aria-label="现金价值与现金流趋势对比图"/);
-  assert.match(source, /label: '现金流'/);
-  assert.match(source, /label: '累计现金流'/);
-  assert.match(source, /meta: '当年领取现金流'/);
-  assert.match(source, /meta: '累计领取现金流'/);
+  assert.match(source, /label: '家庭现金流'/);
+  assert.match(source, /label: '家庭累计现金流'/);
+  assert.match(source, /meta: '全家当年领取现金流汇总'/);
+  assert.match(source, /meta: '全家累计领取现金流汇总'/);
+  assert.match(source, /label: `\$\{productName\} · 当年现金流`/);
+  assert.match(source, /label: `\$\{productName\} · 累计现金流`/);
+  assert.match(source, /policy\.annualCashflowRows/);
   assert.match(source, /key: 'payoutInflow'/);
   assert.match(source, /key: 'cumulativePayoutInflow'/);
   assert.match(source, /'#1D4ED8', '#BE123C', '#7C3AED', '#0E7490'/);
@@ -1645,7 +1649,8 @@ test('family report aggregate wealth is drawn inside the cash value trend chart'
   assert.match(source, /color: '#0F766E', strokeDasharray: '6 5', strokeWidth: 1\.2/);
   assert.doesNotMatch(source, /label: '总价值'/);
   assert.doesNotMatch(source, /label: '总现金价值'/);
-  assert.match(source, /activePolicyPoints/);
+  assert.match(source, /activeCashValuePoints/);
+  assert.match(source, /activeCashflowPoints/);
   assert.match(source, /useCashflowAxis/);
   assert.match(source, /primaryYMax/);
   assert.match(source, /secondaryYMax/);
@@ -1664,6 +1669,7 @@ test('family report aggregate wealth is drawn inside the cash value trend chart'
   assert.match(source, /aggregateCashValueChartXValue/);
   assert.match(source, /Date\.UTC\(row\.year, 11, 31\)/);
   assert.match(source, /\.\.\.buildAggregateCashValueTrendSeries\(report\.wealth\.aggregateRows\)/);
+  assert.match(source, /\.\.\.buildPolicyCashflowTrendSeries\(report\)/);
   assert.match(source, /kind: 'aggregate' as const/);
   assert.match(source, /hiddenCashValueSeriesIds/);
   assert.match(source, /setHiddenCashValueSeriesIds/);

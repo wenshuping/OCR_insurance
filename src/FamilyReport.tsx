@@ -1465,7 +1465,8 @@ type CashValueTrendPoint = {
 
 type CashValueTrendSeries = {
   id: string;
-  kind: 'policy' | 'aggregate';
+  kind: 'policy' | 'cashflow' | 'aggregate';
+  policyId?: number;
   label: string;
   meta: string;
   color: string;
@@ -1486,8 +1487,8 @@ const cashValueAggregateTrendSeriesConfig: Array<{
   strokeDasharray?: string;
   strokeWidth?: number;
 }> = [
-  { key: 'payoutInflow', label: '现金流', meta: '当年领取现金流', color: '#EA580C', strokeWidth: 1.2 },
-  { key: 'cumulativePayoutInflow', label: '累计现金流', meta: '累计领取现金流', color: '#0F766E', strokeDasharray: '6 5', strokeWidth: 1.2 },
+  { key: 'payoutInflow', label: '家庭现金流', meta: '全家当年领取现金流汇总', color: '#EA580C', strokeWidth: 1.2 },
+  { key: 'cumulativePayoutInflow', label: '家庭累计现金流', meta: '全家累计领取现金流汇总', color: '#0F766E', strokeDasharray: '6 5', strokeWidth: 1.2 },
 ];
 
 function cashValueChartXValue(row: FamilyWealthPolicyReport['cashValueRows'][number]) {
@@ -1522,11 +1523,56 @@ function buildPolicyCashValueTrendSeries(report: FamilyReport): CashValueTrendSe
       return [{
         id: `${policy.policyId}-${memberKey}`,
         kind: 'policy' as const,
+        policyId: policy.policyId,
         label: compactText(policy.productName) || '未命名产品',
         meta: [member, compactText(policy.company)].filter(Boolean).join(' · '),
         color: cashValueTrendColors[index % cashValueTrendColors.length],
         rows,
       }];
+    });
+}
+
+function buildPolicyCashflowTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
+  return report.wealth.memberReports
+    .flatMap((member) => member.policies.map((policy) => ({ member: memberDisplayName(member), memberKey: reportMemberKey(member), policy })))
+    .flatMap(({ member, memberKey, policy }, index) => {
+      const rows = policy.annualCashflowRows
+        .filter((row) => Number.isFinite(row.year) && Number.isFinite(row.amount) && Number(row.amount) > 0)
+        .sort((left, right) => left.year - right.year);
+      if (!rows.length) return [];
+
+      const productName = compactText(policy.productName) || '未命名产品';
+      const meta = [member, compactText(policy.company)].filter(Boolean).join(' · ');
+      const color = cashValueTrendColors[index % cashValueTrendColors.length];
+      const point = (row: typeof rows[number], value: number) => ({
+        xValue: Date.UTC(row.year, 11, 31),
+        xLabel: `${row.year}年`,
+        cashValue: Math.max(0, value),
+        policyYear: row.year,
+      });
+      return [
+        {
+          id: `policy-cashflow-${policy.policyId}-${memberKey}`,
+          kind: 'cashflow' as const,
+          policyId: policy.policyId,
+          label: `${productName} · 当年现金流`,
+          meta,
+          color,
+          strokeWidth: 1.3,
+          rows: rows.map((row) => point(row, Number(row.amount))),
+        },
+        {
+          id: `policy-cumulative-cashflow-${policy.policyId}-${memberKey}`,
+          kind: 'cashflow' as const,
+          policyId: policy.policyId,
+          label: `${productName} · 累计现金流`,
+          meta,
+          color,
+          strokeDasharray: '6 5',
+          strokeWidth: 1.3,
+          rows: rows.map((row) => point(row, Number(row.cumulative))),
+        },
+      ];
     });
 }
 
@@ -1559,6 +1605,7 @@ function buildAggregateCashValueTrendSeries(rows: FamilyWealthAggregateRow[]): C
 function buildCashValueTrendSeries(report: FamilyReport): CashValueTrendSeries[] {
   return [
     ...buildPolicyCashValueTrendSeries(report),
+    ...buildPolicyCashflowTrendSeries(report),
     ...buildAggregateCashValueTrendSeries(report.wealth.aggregateRows),
   ];
 }
@@ -1591,7 +1638,8 @@ function cashValuePointYear(point: CashValueTrendPoint) {
 
 function CashValueTrendChart({ report }: { report: FamilyReport }) {
   const series = buildCashValueTrendSeries(report);
-  const policySeries = series.filter((item) => item.kind === 'policy');
+  const policySeries = series.filter((item) => item.kind === 'policy' || item.kind === 'cashflow');
+  const policyCount = new Set(policySeries.map((item) => item.policyId).filter((id): id is number => Number.isFinite(id))).size;
   const [hiddenCashValueSeriesIds, setHiddenCashValueSeriesIds] = useState<Set<string>>(() => new Set());
   const [hoverCashValuePoint, setHoverCashValuePoint] = useState<{ x: number; y: number } | null>(null);
   if (!series.length) return <EmptyState text="暂无现金价值趋势数据" />;
@@ -1607,17 +1655,15 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
   const plotHeight = height - paddingTop - paddingBottom;
   const allPoints = series.flatMap((item) => item.rows);
   const activePoints = activeSeries.flatMap((item) => item.rows);
-  const activePolicyPoints = activeSeries.filter((item) => item.kind === 'policy').flatMap((item) => item.rows);
-  const activeAggregatePoints = activeSeries.filter((item) => item.kind === 'aggregate').flatMap((item) => item.rows);
+  const activeCashValuePoints = activeSeries.filter((item) => item.kind === 'policy').flatMap((item) => item.rows);
+  const activeCashflowPoints = activeSeries.filter((item) => item.kind === 'cashflow' || item.kind === 'aggregate').flatMap((item) => item.rows);
   const visibleScalePoints = activePoints.length ? activePoints : allPoints;
-  const policyScalePoints = activePolicyPoints.length ? activePolicyPoints : visibleScalePoints;
-  const policyYMax = niceCashValueCeiling(maxCashValue(policyScalePoints));
-  const aggregateYMax = niceCashValueCeiling(maxCashValue(activeAggregatePoints));
-  const useCashflowAxis = activePolicyPoints.length > 0
-    && activeAggregatePoints.length > 0
-    && aggregateYMax > policyYMax * 1.45;
-  const primaryYMax = useCashflowAxis ? policyYMax : niceCashValueCeiling(maxCashValue(visibleScalePoints));
-  const secondaryYMax = Math.max(1, aggregateYMax);
+  const cashValueScalePoints = activeCashValuePoints.length ? activeCashValuePoints : visibleScalePoints;
+  const cashValueYMax = niceCashValueCeiling(maxCashValue(cashValueScalePoints));
+  const cashflowYMax = niceCashValueCeiling(maxCashValue(activeCashflowPoints));
+  const useCashflowAxis = activeCashValuePoints.length > 0 && activeCashflowPoints.length > 0;
+  const primaryYMax = useCashflowAxis ? cashValueYMax : niceCashValueCeiling(maxCashValue(visibleScalePoints));
+  const secondaryYMax = Math.max(1, cashflowYMax);
   const xMin = Math.min(...allPoints.map((point) => point.xValue));
   const xMax = Math.max(...allPoints.map((point) => point.xValue));
   const xRange = Math.max(1, xMax - xMin);
@@ -1625,7 +1671,7 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
   const primaryYFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / primaryYMax) * plotHeight;
   const secondaryYFor = (value: number) => paddingTop + plotHeight - (Math.max(0, value) / secondaryYMax) * plotHeight;
   const yForSeries = (item: CashValueTrendSeries, value: number) => (
-    useCashflowAxis && item.kind === 'aggregate' ? secondaryYFor(value) : primaryYFor(value)
+    useCashflowAxis && item.kind !== 'policy' ? secondaryYFor(value) : primaryYFor(value)
   );
   const yTicks = [primaryYMax, primaryYMax / 2, 0];
   const secondaryYTicks = [secondaryYMax, secondaryYMax / 2, 0];
@@ -1705,7 +1751,7 @@ function CashValueTrendChart({ report }: { report: FamilyReport }) {
         </div>
         <div className="rounded-[16px] bg-blue-50 px-3 py-2 text-right ring-1 ring-[#D9E6F4]">
           <p className="text-[11px] font-bold text-[#64748B]">产品数</p>
-          <p className="text-sm font-black text-[#0B72B9]">{policySeries.length}款</p>
+          <p className="text-sm font-black text-[#0B72B9]">{policyCount}款</p>
         </div>
       </div>
 
