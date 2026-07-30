@@ -2478,11 +2478,50 @@ function WealthStatisticsScope({ report }: { report: FamilyReport }) {
   );
 }
 
+function WealthCashflowStatus({ report }: { report: FamilyReport }) {
+  const summary = report.wealth.cashflowSummary;
+  const pending = report.wealth.uncomputedCashflowItems;
+
+  return (
+    <div className="space-y-2">
+      <div className="grid gap-2 sm:grid-cols-3">
+        <div className="rounded-[14px] border border-cyan-100 bg-cyan-50 px-3 py-2">
+          <p className="text-[11px] font-bold text-cyan-700">准确已确认现金流</p>
+          <p className="mt-1 text-sm font-black text-cyan-900">{formatMoneyWithUnit(summary.exactAmount)}</p>
+        </div>
+        <div className="rounded-[14px] border border-amber-200 bg-[#FFF8EB] px-3 py-2">
+          <p className="text-[11px] font-bold text-amber-700">最低可确认现金流</p>
+          <p className="mt-1 text-sm font-black text-amber-900">{formatMoneyWithUnit(summary.minimumAmount)}</p>
+        </div>
+        <div className="rounded-[14px] border border-slate-200 bg-slate-50 px-3 py-2">
+          <p className="text-[11px] font-bold text-slate-600">未计算项目</p>
+          <p className="mt-1 text-sm font-black text-slate-800">{summary.uncomputedCount} 项</p>
+        </div>
+      </div>
+      {pending.length ? (
+        <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2.5">
+          <p className="text-xs font-black text-[#102033]">未计算现金流（未计入汇总）</p>
+          <div className="mt-2 space-y-2">
+            {pending.map((item, index) => (
+              <div key={`${item.policyId}-${item.liability}-${index}`} className="rounded-xl bg-slate-50 px-2.5 py-2 text-[11px] leading-5 text-slate-600">
+                <p className="font-black text-slate-800">{item.productName || '未命名保单'} · {item.liability}</p>
+                <p>缺失输入：{item.missingInputs.join('、')}</p>
+                {item.calculationText ? <p className="mt-0.5 text-slate-500">{item.calculationText}</p> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function WealthSection({ report }: { report: FamilyReport }) {
   return (
     <Section title="财富分析">
       <div className="space-y-3">
         <CashValueTrendChart report={report} />
+        <WealthCashflowStatus report={report} />
 
         {report.wealth.memberReports.length ? report.wealth.memberReports.map((member) => (
           <article key={reportMemberKey(member)} className={`${reportMutedSurfaceClassName} p-3`}>

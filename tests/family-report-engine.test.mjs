@@ -43,6 +43,9 @@ function makePolicy(overrides = {}) {
     createdAt: overrides.createdAt ?? '2026-05-30T00:00:00.000Z',
     cashflowEntries: overrides.cashflowEntries ?? [],
     scenarioEntries: overrides.scenarioEntries ?? [],
+    ...(Object.prototype.hasOwnProperty.call(overrides, 'responsibilityCalculations')
+      ? { responsibilityCalculations: overrides.responsibilityCalculations }
+      : {}),
     totalCashflow: overrides.totalCashflow ?? 0,
     cashValues: overrides.cashValues ?? [],
     participantReviewStatus: overrides.participantReviewStatus,

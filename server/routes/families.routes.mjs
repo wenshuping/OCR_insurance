@@ -2,6 +2,7 @@ import { createFamilyReportRegenerationService } from '../family-report-regenera
 import crypto from 'node:crypto';
 import express from 'express';
 import { buildFamilyReport } from '../../src/family-report-engine.mjs';
+import { computePolicyResponsibilityCalculations } from '../cashflow-compute.mjs';
 import {
   buildFamilySalesReviewInput,
   generateFamilySalesReview,
@@ -811,8 +812,11 @@ export function createFamilyRoutes(context) {
     const cashValues = typeof cashValueStore?.getValues === 'function'
       ? cashValueStore.getValues(policy.id)
       : [];
+    const coverageIndicators = Array.isArray(displayed.coverageIndicators) ? displayed.coverageIndicators : [];
+    const responsibilityCalculations = computePolicyResponsibilityCalculations(displayed, coverageIndicators);
     return {
       ...displayed,
+      responsibilityCalculations,
       ...(cashflowEntries.length ? { cashflowEntries } : {}),
       ...(cashValues.length ? { cashValues } : {}),
     };
