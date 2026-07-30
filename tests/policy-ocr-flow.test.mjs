@@ -7800,6 +7800,65 @@ test('policy list falls back to live indicator records when derived result is mi
   }
 });
 
+test('policy detail rebuilds an empty legacy derived projection from current indicators', async () => {
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '测试两全保险',
+      insured: '温舒萍',
+      amount: 100000,
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_maturity',
+      company: '新华保险',
+      productName: '测试两全保险',
+      coverageType: '现金流',
+      liability: '满期保险金',
+      normalizedFormula: 'basic_insurance_amount',
+      formulaText: '基本保险金额',
+      sourceEvidenceLevel: 'official_excerpt',
+      sourceUrl: 'https://example.com/terms.pdf',
+      sourceExcerpt: '按基本保险金额给付满期保险金。',
+    }],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    policyDerivedResults: [{
+      policyId: 7,
+      coverageIndicators: [],
+      responsibilityCards: [],
+      responsibilityProjectionVersion: 'legacy',
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+    }],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+
+  try {
+    const detail = await jsonFetch(server.baseUrl, '/api/policies/7', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.policy.coverageIndicators[0].id, 'ind_maturity');
+    assert.equal(detail.payload.policy.responsibilityCalculations[0].amount, 100000);
+    assert.equal(detail.payload.policy.derivedStatus, 'stale');
+    assert.equal(detail.payload.policy.derivedStaleReason, 'missing_coverage_indicators');
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy update recomputes and persists the derived result', async () => {
   const derivedCalls = [];
   const state = {

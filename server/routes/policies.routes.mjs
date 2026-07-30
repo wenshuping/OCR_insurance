@@ -175,6 +175,14 @@ export function createPolicyRoutes(context) {
     });
   }
 
+  function needsLiveCoverageProjection(derivedResult) {
+    return Boolean(
+      derivedResult
+      && !isCurrentResponsibilityProjection(derivedResult)
+      && !(Array.isArray(derivedResult.coverageIndicators) && derivedResult.coverageIndicators.length),
+    );
+  }
+
   function policyHasGeneratedResponsibility(policy) {
     return Boolean(
       routeText(policy?.report) ||
@@ -320,7 +328,7 @@ export function createPolicyRoutes(context) {
 
   function attachStoredPolicyDerivedResult(policy, derivedResult = findPolicyDerivedResult(policy?.id)) {
     const displayed = attachPolicyFamilyDisplay(policy, state);
-    if (derivedResult) {
+    if (derivedResult && !needsLiveCoverageProjection(derivedResult)) {
       if (typeof mergePolicyDerivedResult === 'function') {
         return mergePolicyDerivedResult(displayed, derivedResult);
       }
@@ -330,6 +338,16 @@ export function createPolicyRoutes(context) {
         optionalResponsibilities: Array.isArray(derivedResult.optionalResponsibilities) ? derivedResult.optionalResponsibilities : [],
       };
     }
+    if (needsLiveCoverageProjection(derivedResult)) {
+      const rebuilt = buildDerivedResultForPolicy(displayed);
+      if (rebuilt && typeof mergePolicyDerivedResult === 'function') {
+        return mergePolicyDerivedResult(displayed, {
+          ...rebuilt,
+          status: 'stale',
+          staleReason: 'missing_coverage_indicators',
+        });
+      }
+    }
     if (typeof attachPolicyCoverageIndicators === 'function') {
       const attached = attachPolicyCoverageIndicators(
         displayed,
@@ -338,12 +356,15 @@ export function createPolicyRoutes(context) {
         state.optionalResponsibilityRecords,
       );
       if (typeof mergePolicyDerivedResult === 'function') {
-        return mergePolicyDerivedResult(attached, null);
+        return {
+          ...mergePolicyDerivedResult(attached, null),
+          derivedStaleReason: derivedResult ? 'missing_coverage_indicators' : 'missing',
+        };
       }
       return {
         ...attached,
         derivedStatus: 'stale',
-        derivedStaleReason: 'missing',
+        derivedStaleReason: derivedResult ? 'missing_coverage_indicators' : 'missing',
       };
     }
     if (typeof mergePolicyDerivedResult === 'function') {
