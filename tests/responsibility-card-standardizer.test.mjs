@@ -46,6 +46,28 @@ test('standardizeResponsibilityIndicator keeps first basic responsibility premiu
   assert.equal(result.calculationReason, '');
 });
 
+test('standardizeResponsibilityIndicator corrects a formula leaked from the next official responsibility', () => {
+  const sourceExcerpt = '1、满期生存保险金 被保险人生存至保险期间届满，本公司按基本保险金额与累积红利保险金额二者之和给付满期生存保险金，本合同终止。2、身故或全残保险金 被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按本合同基本保险金额的10%与实际交纳的保险费二者之和给付身故或全残保险金。';
+  const result = standardizeResponsibilityIndicator({
+    id: 'ind_maturity_leak',
+    company: '测试保险',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    liability: '满期生存保险金',
+    formulaText: '满期生存保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl: 'https://example.test/official-terms.pdf',
+    sourceExcerpt,
+  });
+
+  assert.equal(result.formulaText, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
+  assert.equal(result.payoutSummary, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
+  assert.equal(result.cashflowTreatment, 'scheduled_cashflow');
+  assert.equal(result.responsibilityRepairVersion, '2026-07-31-official-clause-formula-repair');
+});
+
 test('standardizeResponsibilityIndicator blocks indicators without official source excerpt', () => {
   const result = standardizeResponsibilityIndicator({
     company: '新华保险',

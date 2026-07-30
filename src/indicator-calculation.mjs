@@ -59,6 +59,7 @@ export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculatio
 export function requiredCalculationInputsForMeta(meta = {}) {
   const calculationKey = displayText(meta.calculationKey);
   const basisKey = displayText(meta.basisKey);
+  if (calculationKey === 'event_condition_branch_minimum') return ['eventCondition'];
   if (calculationKey === 'fixed_amount') return [];
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
@@ -127,6 +128,21 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     indicator.responsibilityScope,
   ].filter(Boolean).join(' '));
   const { value, unit } = numericSpec(indicator);
+  const hasStructuredEventBranches = Array.isArray(indicator.branches)
+    && indicator.branches.length > 0
+    && indicator.branches.every((branch) => displayText(branch?.normalizedFormula || branch?.formulaText));
+
+  if (hasStructuredEventBranches) {
+    return {
+      basisKey: 'event_condition',
+      calculationKey: 'event_condition_branch_minimum',
+      calculationEligible: true,
+      calculationReason: '',
+      decisionSource: 'official_clause_branch_repair',
+      value,
+      unit: '公式',
+    };
+  }
 
   if (
     indicator.excludeFromCalculation === true
@@ -493,6 +509,10 @@ const NON_NEGATIVE_FORMULA_VARIABLES = new Set([
   'accumulated_dividend_amount',
   'cash_value',
   'account_value',
+  'paid_premium',
+  'total_paid_premium',
+  'first_premium',
+  'annual_premium',
 ]);
 
 function formulaLowerBound(node) {
@@ -670,9 +690,150 @@ function pendingFormulaProjection(indicator = {}, inputs = {}, meta = {}) {
   };
 }
 
+function officialClauseForLiability(indicator = {}) {
+  const liability = normalizeText(indicator.liability || indicator.coverageType);
+  const excerpt = normalizeText(indicator.sourceExcerpt);
+  if (!liability || !excerpt) return '';
+  const start = excerpt.indexOf(liability);
+  if (start < 0) return '';
+  const tail = excerpt.slice(start);
+  const nextResponsibility = tail.match(/[。；](?:\d{1,2}[、.．])(?=[^。；]{0,36}(?:保险金|年金|津贴|责任))/u);
+  return nextResponsibility ? tail.slice(0, nextResponsibility.index + 1) : tail;
+}
+
+function effectiveInsuredAmountDefinition(indicator = {}) {
+  return {
+    key: 'contract_defined_effective_insured_amount',
+    label: '有效保险金额',
+    formulaText: '基本保险金额 + 累计红利保险金额',
+    requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+    sourceUrl: displayText(indicator.sourceUrl),
+    sourceExcerpt: displayText(indicator.sourceExcerpt),
+  };
+}
+
+function repairIndicatorFormulaFromOfficialExcerpt(indicator = {}) {
+  if (indicator.__skipOfficialFormulaRepair === true || !displayText(indicator.sourceUrl)) return indicator;
+  const liability = displayText(indicator.liability || indicator.coverageType);
+  const clause = officialClauseForLiability(indicator);
+  if (!liability || !clause) return indicator;
+  const hasEffectiveAmountSum = /(?:基本保险金额|基本保险金|基本保额)(?:与|及|和)(?:累计|累积)红利保险金额(?:二者)?之和/u.test(clause);
+  if (!hasEffectiveAmountSum) return indicator;
+  const isScheduledBenefit = /满期|生存|年金|祝寿|教育|婚嫁|关爱|养老/u.test(liability);
+  if (isScheduledBenefit) {
+    return {
+      ...indicator,
+      basis: '有效保险金额',
+      formulaText: `${liability} = 基本保险金额 + 累计红利保险金额`,
+      payoutSummary: `${liability} = 基本保险金额 + 累计红利保险金额`,
+      normalizedFormula: 'benefit_amount = basic_insured_amount + accumulated_dividend_insured_amount',
+      basisDefinition: effectiveInsuredAmountDefinition(indicator),
+      value: null,
+      valueText: '',
+      unit: '公式',
+      basisKey: 'effective_insured_amount',
+      calculationKey: 'event_condition_branch_minimum',
+      calculationEligible: true,
+      calculationReason: '',
+      responsibilityRepairVersion: '2026-07-31-official-clause-formula-repair',
+    };
+  }
+
+  if (!/身故|全残|死亡/u.test(liability)) return indicator;
+  const branches = [];
+  const earlyDisease = clause.match(/(本合同生效(?:或复效)?之日起一年内因疾病导致(?:身故|身体?全残)[^。；]*?)本公司按(?:本合同)?基本保险金额的?(\d+(?:\.\d+)?)%与[^。；]*(?:实际交纳|已交)(?:的)?保险费(?:二者)?之和给付/u);
+  if (earlyDisease) {
+    branches.push({
+      branchId: 'disease_within_first_year',
+      condition: earlyDisease[1],
+      formulaText: `基本保险金额 × ${earlyDisease[2]}% + 累计已交保费`,
+      normalizedFormula: `benefit_amount = basic_insured_amount * ${Number(earlyDisease[2]) / 100} + total_paid_premium`,
+    });
+  }
+  const laterDisease = clause.match(/(本合同生效(?:或复效)?之日起一年后因疾病导致(?:身故|身体?全残)[^。；]*?)本公司按(?:本合同)?基本保险金额与(?:累计|累积)红利保险金额(?:二者)?之和的?(两|二|\d+(?:\.\d+)?)倍给付/u);
+  const accidental = clause.match(/(被保险人因意外伤害[^。；]*?(?:身故|身体?全残)[^。；]*?)本公司按(?:本合同)?基本保险金额与(?:累计|累积)红利保险金额(?:二者)?之和的?(两|二|\d+(?:\.\d+)?)倍给付/u);
+  for (const [branchId, match] of [['disease_after_first_year', laterDisease], ['accidental', accidental]]) {
+    if (!match) continue;
+    const multiplier = /^(?:两|二)$/u.test(match[2]) ? 2 : Number(match[2]);
+    if (!(multiplier > 0)) continue;
+    branches.push({
+      branchId,
+      condition: match[1],
+      formulaText: `(基本保险金额 + 累计红利保险金额) × ${multiplier}`,
+      normalizedFormula: `benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * ${multiplier}`,
+    });
+  }
+  if (!branches.length) return indicator;
+  return {
+    ...indicator,
+    basis: '按出险条件分别计算',
+    formulaText: `${liability} = 条件分支给付`,
+    payoutSummary: `${liability}按首年疾病、满一年疾病或意外伤害的条款分支给付`,
+    normalizedFormula: '',
+    basisDefinition: effectiveInsuredAmountDefinition(indicator),
+    value: null,
+    valueText: '',
+    unit: '公式',
+    basisKey: 'event_condition',
+    calculationKey: 'event_condition_branch_minimum',
+    calculationEligible: true,
+    calculationReason: '',
+    branches,
+    branchSemanticContract: 'minimum-across-official-event-branches',
+    responsibilityRepairVersion: '2026-07-31-official-clause-formula-repair',
+  };
+}
+
+export function repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator = {}) {
+  return repairIndicatorFormulaFromOfficialExcerpt(indicator);
+}
+
+function resolveOfficialBranchMinimum(indicator = {}, inputs = {}, meta = {}) {
+  const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
+  if (!branches.length) return null;
+  const results = branches.map((branch) => ({
+    branch,
+    result: resolveIndicatorAmountFromCalculation({
+      ...indicator,
+      ...branch,
+      branches: [],
+      branchSemanticContract: '',
+      __skipOfficialFormulaRepair: true,
+      value: null,
+      valueText: '',
+      unit: '公式',
+      basisKey: '',
+      calculationKey: '',
+      calculationEligible: undefined,
+      formulaText: displayText(branch.formulaText),
+      normalizedFormula: displayText(branch.normalizedFormula),
+    }, inputs),
+  }));
+  const amounts = results.map(({ result }) => (
+    result.resolved ? Number(result.amount) : (result.isMinimumEstimate ? Number(result.minimumAmount) : 0)
+  ));
+  if (amounts.some((amount) => !(amount > 0))) return null;
+  const minimumAmount = roundMoney(Math.min(...amounts));
+  const branchText = results.map(({ branch, result }) => (
+    `${displayText(branch.condition) || '条款分支'}：${displayText(result.calculationText)}`
+  )).join('；');
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    minimumAmount,
+    isMinimumEstimate: true,
+    meta,
+    calculationText: `${displayText(indicator.liability || indicator.coverageType)}按出险条件分别计算；${branchText}；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入待补充的非负金额）`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
-  const meta = normalizeIndicatorCalculation(indicator);
-  const normalizedFormulaResult = resolveNormalizedFormula(indicator, inputs);
+  const repairedIndicator = repairIndicatorFormulaFromOfficialExcerpt(indicator);
+  const meta = normalizeIndicatorCalculation(repairedIndicator);
+  const branchMinimum = resolveOfficialBranchMinimum(repairedIndicator, inputs, meta);
+  if (branchMinimum) return branchMinimum;
+  const normalizedFormulaResult = resolveNormalizedFormula(repairedIndicator, inputs);
   if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
   if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
 
@@ -682,7 +843,7 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
   const totalPremium = firstPremium * paymentYears;
   const value = Number(meta.value || 0);
 
-  const pendingProjection = pendingFormulaProjection(indicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
+  const pendingProjection = pendingFormulaProjection(repairedIndicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
   if (pendingProjection) return pendingProjection;
 
   if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };

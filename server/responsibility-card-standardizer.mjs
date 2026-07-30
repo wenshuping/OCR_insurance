@@ -1,6 +1,7 @@
 import {
   CALCULATION_INPUT_SCHEMA_VERSION,
   normalizeIndicatorCalculation,
+  repairIndicatorFormulaFromOfficialExcerptForDisplay,
   requiredCalculationInputsForMeta,
 } from '../src/indicator-calculation.mjs';
 import {
@@ -453,97 +454,98 @@ function structuredFormulaFields(indicator = {}) {
 }
 
 export function standardizeResponsibilityIndicator(indicator = {}, { policy = {} } = {}) {
-  const meta = reviewedCalculationMeta(indicator, semanticCalculationMeta(indicator, normalizeIndicatorCalculation(indicator)));
-  const calculationReason = calculationReasonFor(indicator, meta);
+  const repairedIndicator = repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator);
+  const meta = reviewedCalculationMeta(repairedIndicator, semanticCalculationMeta(repairedIndicator, normalizeIndicatorCalculation(repairedIndicator)));
+  const calculationReason = calculationReasonFor(repairedIndicator, meta);
   const calculationEligible = Boolean(meta.calculationEligible) && !calculationReason;
-  const sourceUrl = sourceUrlFrom(indicator);
-  const sourceExcerpt = sourceExcerptFrom(indicator);
-  const treatment = hasOfficialEvidence(indicator)
-    ? reviewedCashflowTreatment(indicator, cashflowTreatmentFor(indicator, { ...meta, calculationEligible }))
+  const sourceUrl = sourceUrlFrom(repairedIndicator);
+  const sourceExcerpt = sourceExcerptFrom(repairedIndicator);
+  const treatment = hasOfficialEvidence(repairedIndicator)
+    ? reviewedCashflowTreatment(repairedIndicator, cashflowTreatmentFor(repairedIndicator, { ...meta, calculationEligible }))
     : 'not_cashflow';
-  const liability = displayLiabilityName(indicator, sourceExcerpt);
-  const selectionFields = indicatorSelectionFields(indicator);
-  const reviewedReason = hasReviewedIndicatorMetadata(indicator) && !calculationEligible
-    ? text(indicator.calculationReason)
+  const liability = displayLiabilityName(repairedIndicator, sourceExcerpt);
+  const selectionFields = indicatorSelectionFields(repairedIndicator);
+  const reviewedReason = hasReviewedIndicatorMetadata(repairedIndicator) && !calculationEligible
+    ? text(repairedIndicator.calculationReason)
     : '';
   const verifiedCalculationReason = calculationEligible
-    && text(indicator.indicatorCheckStatus) === 'verified_calculable'
-    ? text(indicator.calculationReason)
+    && text(repairedIndicator.indicatorCheckStatus) === 'verified_calculable'
+    ? text(repairedIndicator.calculationReason)
     : '';
-  const evidenceFields = evidenceVerificationFields(indicator);
+  const evidenceFields = evidenceVerificationFields(repairedIndicator);
   const normalized = {
-    id: text(indicator.id),
-    company: firstNonEmpty(indicator.company, policy.company),
-    productName: firstNonEmpty(indicator.productName, policy.productName, policy.name),
-    coverageType: text(indicator.coverageType),
+    id: text(repairedIndicator.id),
+    company: firstNonEmpty(repairedIndicator.company, policy.company),
+    productName: firstNonEmpty(repairedIndicator.productName, policy.productName, policy.name),
+    coverageType: text(repairedIndicator.coverageType),
     liability,
-    indicatorName: text(indicator.indicatorName),
-    category: categoryFromIndicator(indicator, sourceExcerpt),
-    triggerCondition: firstNonEmpty(indicator.triggerCondition, indicator.condition),
-    payoutSummary: firstNonEmpty(indicator.payoutSummary, indicator.formulaText, indicator.basis),
-    customerSummary: text(indicator.customerSummary),
-    importantLimits: Array.isArray(indicator.importantLimits)
-      ? indicator.importantLimits.map(text).filter(Boolean)
+    indicatorName: text(repairedIndicator.indicatorName),
+    category: categoryFromIndicator(repairedIndicator, sourceExcerpt),
+    triggerCondition: firstNonEmpty(repairedIndicator.triggerCondition, repairedIndicator.condition),
+    payoutSummary: firstNonEmpty(repairedIndicator.payoutSummary, repairedIndicator.formulaText, repairedIndicator.basis),
+    customerSummary: text(repairedIndicator.customerSummary),
+    importantLimits: Array.isArray(repairedIndicator.importantLimits)
+      ? repairedIndicator.importantLimits.map(text).filter(Boolean)
       : [],
-    basis: text(indicator.basis),
-    formulaText: text(indicator.formulaText),
-    ...structuredFormulaFields(indicator),
-    value: meta.value ?? indicator.value ?? null,
-    valueText: text(indicator.valueText),
-    unit: firstNonEmpty(meta.unit, indicator.unit),
+    basis: text(repairedIndicator.basis),
+    formulaText: text(repairedIndicator.formulaText),
+    ...structuredFormulaFields(repairedIndicator),
+    value: meta.value ?? repairedIndicator.value ?? null,
+    valueText: text(repairedIndicator.valueText),
+    unit: firstNonEmpty(meta.unit, repairedIndicator.unit),
     basisKey: meta.basisKey,
     calculationKey: meta.calculationKey,
-    requiredInputs: Array.isArray(indicator.requiredInputs)
-      ? indicator.requiredInputs.map(text).filter(Boolean)
+    requiredInputs: Array.isArray(repairedIndicator.requiredInputs)
+      ? repairedIndicator.requiredInputs.map(text).filter(Boolean)
       : requiredCalculationInputsForMeta(meta),
-    unresolvedRequiredInputs: Array.isArray(indicator.unresolvedRequiredInputs)
-      ? indicator.unresolvedRequiredInputs.map((item) => ({ ...item }))
+    unresolvedRequiredInputs: Array.isArray(repairedIndicator.unresolvedRequiredInputs)
+      ? repairedIndicator.unresolvedRequiredInputs.map((item) => ({ ...item }))
       : [],
-    calculationInputSchemaVersion: text(indicator.calculationInputSchemaVersion) || CALCULATION_INPUT_SCHEMA_VERSION,
+    calculationInputSchemaVersion: text(repairedIndicator.calculationInputSchemaVersion) || CALCULATION_INPUT_SCHEMA_VERSION,
     calculationEligible,
     calculationReason: reviewedReason || verifiedCalculationReason || (calculationEligible ? '' : calculationReason),
-    calculationDecisionSource: text(indicator.calculationDecisionSource) || meta.decisionSource,
-    calculationMetadataVersion: text(indicator.calculationMetadataVersion),
-    indicatorCheckStatus: reviewedIndicatorStatus(indicator),
-    reviewedCalculationStatus: reviewedIndicatorCalculationStatus(indicator),
-    reviewedIndicatorCheckStatus: reviewedIndicatorStatus(indicator),
+    calculationDecisionSource: text(repairedIndicator.calculationDecisionSource) || meta.decisionSource,
+    calculationMetadataVersion: text(repairedIndicator.calculationMetadataVersion),
+    indicatorCheckStatus: reviewedIndicatorStatus(repairedIndicator),
+    reviewedCalculationStatus: reviewedIndicatorCalculationStatus(repairedIndicator),
+    reviewedIndicatorCheckStatus: reviewedIndicatorStatus(repairedIndicator),
     cashflowTreatment: treatment,
     sourceUrl,
-    sourceTitle: text(indicator.sourceTitle),
+    sourceTitle: text(repairedIndicator.sourceTitle),
     sourceExcerpt,
-    sourceKind: text(indicator.sourceKind),
-    evidenceLabel: text(indicator.evidenceLabel),
-    evidenceLevel: text(indicator.evidenceLevel || indicator.sourceLevel),
+    sourceKind: text(repairedIndicator.sourceKind),
+    evidenceLabel: text(repairedIndicator.evidenceLabel),
+    evidenceLevel: text(repairedIndicator.evidenceLevel || repairedIndicator.sourceLevel),
     verificationStatus: evidenceFields.verificationStatus,
     verificationLabel: evidenceFields.verificationLabel,
     referenceOnly: evidenceFields.referenceOnly,
-    official: typeof indicator.official === 'boolean' ? indicator.official : undefined,
+    official: typeof repairedIndicator.official === 'boolean' ? repairedIndicator.official : undefined,
     confidence: sourceUrl && sourceExcerpt ? 'high' : 'low',
-    responsibilityId: text(indicator.responsibilityId),
-    parentResponsibilityId: text(indicator.parentResponsibilityId),
-    branchId: text(indicator.branchId),
-    payout: text(indicator.payout),
-    mutuallyExclusiveGroup: text(indicator.mutuallyExclusiveGroup),
-    responsibilityKind: text(indicator.responsibilityKind),
-    coverageAggregation: text(indicator.coverageAggregation),
-    evidenceTokens: Array.isArray(indicator.evidenceTokens)
-      ? indicator.evidenceTokens.map(text).filter(Boolean)
+    responsibilityId: text(repairedIndicator.responsibilityId),
+    parentResponsibilityId: text(repairedIndicator.parentResponsibilityId),
+    branchId: text(repairedIndicator.branchId),
+    payout: text(repairedIndicator.payout),
+    mutuallyExclusiveGroup: text(repairedIndicator.mutuallyExclusiveGroup),
+    responsibilityKind: text(repairedIndicator.responsibilityKind),
+    coverageAggregation: text(repairedIndicator.coverageAggregation),
+    evidenceTokens: Array.isArray(repairedIndicator.evidenceTokens)
+      ? repairedIndicator.evidenceTokens.map(text).filter(Boolean)
       : [],
-    ruleRefs: Array.isArray(indicator.ruleRefs)
-      ? indicator.ruleRefs.map(text).filter(Boolean)
+    ruleRefs: Array.isArray(repairedIndicator.ruleRefs)
+      ? repairedIndicator.ruleRefs.map(text).filter(Boolean)
       : [],
-    responsibilityArtifactId: text(indicator.responsibilityArtifactId),
-    responsibilityRepairVersion: text(indicator.responsibilityRepairVersion),
-    responsibilitySourceDigest: text(indicator.responsibilitySourceDigest),
-    sourceDigest: text(indicator.sourceDigest),
-    reviewedResponsibilityIndex: Number.isFinite(Number(indicator.reviewedResponsibilityIndex))
-      ? Number(indicator.reviewedResponsibilityIndex)
+    responsibilityArtifactId: text(repairedIndicator.responsibilityArtifactId),
+    responsibilityRepairVersion: text(repairedIndicator.responsibilityRepairVersion),
+    responsibilitySourceDigest: text(repairedIndicator.responsibilitySourceDigest),
+    sourceDigest: text(repairedIndicator.sourceDigest),
+    reviewedResponsibilityIndex: Number.isFinite(Number(repairedIndicator.reviewedResponsibilityIndex))
+      ? Number(repairedIndicator.reviewedResponsibilityIndex)
       : undefined,
-    reviewedIndicatorIndex: Number.isFinite(Number(indicator.reviewedIndicatorIndex))
-      ? Number(indicator.reviewedIndicatorIndex)
+    reviewedIndicatorIndex: Number.isFinite(Number(repairedIndicator.reviewedIndicatorIndex))
+      ? Number(repairedIndicator.reviewedIndicatorIndex)
       : undefined,
-    ...(indicator.provenance && typeof indicator.provenance === 'object' && !Array.isArray(indicator.provenance)
-      ? { provenance: { ...indicator.provenance } }
+    ...(repairedIndicator.provenance && typeof repairedIndicator.provenance === 'object' && !Array.isArray(repairedIndicator.provenance)
+      ? { provenance: { ...repairedIndicator.provenance } }
       : {}),
     ...selectionFields,
   };

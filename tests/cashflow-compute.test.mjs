@@ -473,6 +473,33 @@ test('computeScenarioEntries resolves the current age branch for conditional dea
   assert.match(entries[0].calculationText, /基本保险金额50,000元 × 3倍 = 150,000元/u);
 });
 
+test('computeScenarioEntries retains the official minimum across repaired death and total-disability branches', () => {
+  const sourceExcerpt = '2、身故或全残保险金 (1)被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按本合同基本保险金额的10%与本合同项下所实际交纳的保险费二者之和给付身故或全残保险金，本合同终止。被保险人于本合同生效之日起一年后因疾病导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。(2)被保险人因意外伤害导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。';
+  const entries = computeScenarioEntries([{
+    id: 'death-disability',
+    coverageType: '身故保障',
+    liability: '身故或全残保险金',
+    formulaText: '身故或全残保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl: 'https://example.test/official-terms.pdf',
+    sourceExcerpt,
+  }], {
+    id: 2001,
+    company: '测试保险',
+    name: '测试两全保险',
+    amount: 200000,
+    firstPremium: 0,
+    paymentPeriod: '1年交',
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 20000);
+  assert.equal(entries[0].isMinimumEstimate, true);
+  assert.match(entries[0].calculationText, /最低可确认金额 20,000元/u);
+});
+
 test('computeScenarioEntries calculates quantified health and accident benefits generically', () => {
   const policy = { id: 88, name: '综合保障', amount: 200000, insuredBirthday: '1990-01-01' };
   const indicators = [
