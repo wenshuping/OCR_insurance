@@ -226,7 +226,7 @@ export function CustomerResponsibilitySummaryCard({
                       }`}>
                         <p className="font-black">
                           {calculatedResponsibility.isPending
-                            ? '已代入本保单数据，待补充事故条件'
+                            ? (cleanText(calculatedResponsibility.uncertaintyNote) || '已代入本保单数据，待补充计算条件')
                             : calculatedResponsibility.isMinimumEstimate
                             ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
                             : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}

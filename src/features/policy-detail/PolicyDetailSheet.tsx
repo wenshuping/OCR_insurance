@@ -429,7 +429,6 @@ export function PolicyDetailSheet({
             <OptionalResponsibilityReview
               items={optionalResponsibilities}
               indicators={policy.coverageIndicators}
-              baseAmount={policy.amount}
               firstPremium={policy.firstPremium}
               paymentPeriod={policy.paymentPeriod}
               disabled={updating || deleting}

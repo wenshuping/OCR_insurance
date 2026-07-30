@@ -1050,7 +1050,6 @@ export function UploadPolicyPage(props: {
 
           <OptionalResponsibilityReview
             items={optionalResponsibilitiesForProduct(optionalResponsibilities, formData.name)}
-            baseAmount={formData.amount}
             firstPremium={formData.firstPremium}
             paymentPeriod={formData.paymentPeriod}
             disabled={loading}
@@ -1200,7 +1199,6 @@ export function AnalysisReportPage(props: {
         <OptionalResponsibilityReview
           items={optionalResponsibilities}
           indicators={(analysis.responsibilityCards || []).flatMap((card) => card.indicators || [])}
-          baseAmount={formData.amount}
           firstPremium={formData.firstPremium}
           paymentPeriod={formData.paymentPeriod}
           disabled={loading}

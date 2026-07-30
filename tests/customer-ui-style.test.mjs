@@ -1255,13 +1255,16 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(analysisSource, /onUpdateOptionalResponsibility/);
   assert.match(detailSource, /policy\.optionalResponsibilities/);
   assert.match(detailSource, /indicators=\{policy\.coverageIndicators\}/);
-  assert.match(detailSource, /baseAmount=\{policy\.amount\}/);
+  assert.doesNotMatch(detailSource, /<OptionalResponsibilityReview[\s\S]{0,300}baseAmount=/);
   assert.match(detailSource, /CustomerResponsibilitySummaryCard[\s\S]*responsibilityCalculations=\{policy\.responsibilityCalculations\}/);
   assert.match(detailSource, /onUpdateOptionalResponsibility/);
   assert.match(reviewSource, /可选责任确认/);
   assert.match(reviewSource, /量化指标/);
   assert.match(reviewSource, /indicatorIds/);
   assert.match(reviewSource, /resolveIndicatorAmountFromCalculation/);
+  assert.match(reviewSource, /可选责任保险金额/);
+  assert.match(reviewSource, /不会使用主险保额代算/);
+  assert.match(reviewSource, /replace\(\/基本责任保险金额\|基本保险金额/);
   assert.match(reviewSource, /已按本保单计算/);
   assert.match(normalizedCustomerPolicyComponentsSource, /value: 'selected', label: '已投保'/);
   assert.match(normalizedCustomerPolicyComponentsSource, /value: 'not_selected', label: '未投保'/);

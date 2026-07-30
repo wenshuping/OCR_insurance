@@ -9,6 +9,7 @@ import {
   normalizeBeneficiary,
   selectedCoverageIndicators,
 } from '../server/policy-ocr.domain.mjs';
+import { computePolicyResponsibilityCalculations } from '../server/cashflow-compute.mjs';
 
 test('beneficiary normalization treats common legal-beneficiary OCR variants as legal', () => {
   assert.equal(normalizeBeneficiary('被保险人的法定继本人'), '法定');
@@ -121,6 +122,76 @@ test('policy optional responsibility state overrides a legacy indicator that omi
   assert.equal(indicators[0].selectionStatus, 'unknown');
   assert.equal(indicators[0].quantificationStatus, 'pending_review');
   assert.equal(selectedCoverageIndicators(indicators).length, 0);
+});
+
+test('optional responsibility calculations use only the responsibility coverage amount across every selection state', () => {
+  const indicator = {
+    id: 'optional_birthday_benefit',
+    company: '测试保险',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    liability: '祝寿金',
+    responsibilityScope: 'optional',
+    optionalResponsibilityId: 'optional_birthday',
+    selectionStatus: 'selected',
+    quantificationStatus: 'quantified',
+    value: 50,
+    unit: '%',
+    basis: '可选责任保险金额',
+    formulaText: '可选责任保险金额 × 50%',
+  };
+  const basePolicy = {
+    company: '测试保险',
+    name: '测试两全保险',
+    amount: 100000,
+  };
+  const selectedPolicy = {
+    ...basePolicy,
+    optionalResponsibilities: [{
+      id: 'optional_birthday',
+      liability: '祝寿金',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+      coverageAmount: 30000,
+    }],
+  };
+  const selectedCalculation = computePolicyResponsibilityCalculations(selectedPolicy, [indicator]);
+  assert.equal(selectedCalculation.length, 1);
+  assert.equal(selectedCalculation[0].amount, 15000);
+  assert.match(selectedCalculation[0].calculationText, /可选责任保险金额30,000元 × 50%/u);
+  assert.doesNotMatch(selectedCalculation[0].calculationText, /100,000/u);
+
+  const selectedWithoutAmount = computePolicyResponsibilityCalculations({
+    ...basePolicy,
+    optionalResponsibilities: [{
+      id: 'optional_birthday',
+      liability: '祝寿金',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+    }],
+  }, [indicator]);
+  assert.equal(selectedWithoutAmount.length, 1);
+  assert.equal(selectedWithoutAmount[0].isPending, true);
+  assert.match(selectedWithoutAmount[0].calculationText, /可选责任保险金额（待补充）/u);
+
+  const withoutOptionalResponsibilityRecord = computePolicyResponsibilityCalculations(basePolicy, [indicator]);
+  assert.equal(withoutOptionalResponsibilityRecord.length, 1);
+  assert.equal(withoutOptionalResponsibilityRecord[0].isPending, true);
+  assert.doesNotMatch(withoutOptionalResponsibilityRecord[0].calculationText, /100,000/u);
+
+  for (const selectionStatus of ['not_selected', 'unknown']) {
+    const calculations = computePolicyResponsibilityCalculations({
+      ...basePolicy,
+      optionalResponsibilities: [{
+        id: 'optional_birthday',
+        liability: '祝寿金',
+        selectionStatus,
+        quantificationStatus: 'quantified',
+        coverageAmount: 30000,
+      }],
+    }, [{ ...indicator, selectionStatus }]);
+    assert.deepEqual(calculations, [], `${selectionStatus} optional responsibility must not be calculated`);
+  }
 });
 
 test('OCR evidence resolves a previously unknown optional responsibility draft', () => {

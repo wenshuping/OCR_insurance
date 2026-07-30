@@ -508,6 +508,14 @@ function indicatorQuantificationStatus(indicator = {}) {
   );
 }
 
+function optionalResponsibilityCoverageAmount(item = {}) {
+  for (const value of [item?.coverageAmount, item?.insuredAmount, item?.insuranceAmount, item?.amount]) {
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount > 0) return amount;
+  }
+  return 0;
+}
+
 function policyOptionalResponsibilityForIndicator(policy = {}, indicator = {}) {
   const liability = normalizeLookupText(indicator?.liability || indicator?.coverageType);
   if (!liability) return null;
@@ -545,6 +553,7 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
       ...(explicitOptionalResponsibilityId ? { selectedOptionalResponsibilityId: explicitOptionalResponsibilityId } : {}),
     }
     : inferOptionalResponsibilitySelection(policy, indicator, id, Boolean(explicitOptionalResponsibilityId));
+  const coverageAmount = optionalResponsibilityCoverageAmount(policyOptionalResponsibility);
   return {
     ...indicator,
     ...(canonicalProductId ? { canonicalProductId } : {}),
@@ -555,6 +564,7 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
       indicatorQuantificationStatus(indicator),
     ),
     quantificationReason: String(policyOptionalResponsibility?.quantificationReason || indicator?.quantificationReason || '').trim(),
+    ...(coverageAmount > 0 ? { optionalResponsibilityCoverageAmount: coverageAmount } : {}),
     ...selection,
   };
 }
@@ -575,6 +585,7 @@ export function normalizeOptionalResponsibilities(items = []) {
       const coverageType = String(item?.coverageType || '').trim();
       const liability = String(item?.liability || item?.name || item?.title || '').trim();
       const canonicalProductId = String(item?.canonicalProductId || '').trim();
+      const coverageAmount = optionalResponsibilityCoverageAmount(item);
       const id = normalizeOptionalResponsibilityId(item?.id) || buildOptionalResponsibilityId({ company, productName, canonicalProductId, coverageType, liability });
       if (!id || (!productName && !coverageType && !liability)) return null;
       return normalizeGovernanceOptionalResponsibilityRecord({
@@ -588,6 +599,7 @@ export function normalizeOptionalResponsibilities(items = []) {
         selectionEvidence: String(item?.selectionEvidence || 'manual').trim() || 'manual',
         quantificationStatus: normalizeQuantificationStatus(item?.quantificationStatus),
         quantificationReason: String(item?.quantificationReason || '').trim(),
+        ...(coverageAmount > 0 ? { coverageAmount } : {}),
         indicatorIds: Array.isArray(item?.indicatorIds) ? item.indicatorIds : [],
         sourceExcerpt: String(item?.sourceExcerpt || '').trim().slice(0, 500),
       });
