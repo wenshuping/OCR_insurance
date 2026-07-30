@@ -63,6 +63,7 @@ export function requiredCalculationInputsForMeta(meta = {}) {
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
   }
+  if (basisKey === 'effective_insured_amount') return ['effectiveInsuranceAmount', 'policyYearOrAge'];
   if (
     ['first_premium', 'percent_of_first_premium', 'multiple_of_first_premium'].includes(calculationKey) ||
     ['first_premium', 'first_basic_responsibility_premium', 'annual_premium'].includes(basisKey)
@@ -160,7 +161,9 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(formulaSignalText)) {
     basisKey = 'daily_allowance';
-  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
+  } else if (/有效保险金额/u.test(formulaSignalText)) {
+    basisKey = 'effective_insured_amount';
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u.test(formulaSignalText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(formulaSignalText || basis)) {
     basisKey = 'schedule_or_policy_table';
@@ -178,7 +181,9 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(basis || formulaText)) {
     basisKey = 'daily_allowance';
-  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
+  } else if (/有效保险金额/u.test(basis || formulaText)) {
+    basisKey = 'effective_insured_amount';
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u.test(basis || formulaText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(text)) {
     basisKey = 'schedule_or_policy_table';

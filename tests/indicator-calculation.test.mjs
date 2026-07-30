@@ -5,6 +5,7 @@ import {
   indicatorCalculationPayloadFields,
   formulaVariablesFromIndicators,
   normalizeIndicatorCalculation,
+  requiredCalculationInputsForMeta,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
 
@@ -259,6 +260,19 @@ test('keeps the known lower bound for an unresolved normalized formula', () => {
   assert.match(result.calculationText, /养老金 = \(99,888 \+ 累计红利保险金额（待补充）\) × 1/u);
   assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
   assert.match(result.calculationText, /最低可确认金额 99,888元/u);
+});
+
+test('does not treat effective insured amount as the policy basic amount', () => {
+  const meta = normalizeIndicatorCalculation({
+    liability: '婚嫁金',
+    formulaText: '按该保单生效对应日有效保险金额的50%给付婚嫁金',
+    value: 50,
+    unit: '%',
+  });
+
+  assert.equal(meta.basisKey, 'effective_insured_amount');
+  assert.notEqual(meta.calculationKey, 'percent_of_basic_amount');
+  assert.deepEqual(requiredCalculationInputsForMeta(meta), ['effectiveInsuranceAmount', 'policyYearOrAge']);
 });
 
 test('derives a minimum from an official basis definition when the unresolved term can only increase the payout', () => {
