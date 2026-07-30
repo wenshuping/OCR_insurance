@@ -1283,6 +1283,7 @@ test('customer responsibility cards retain the established policy calculation in
   assert.match(cardSource, /baseAmount = 0/);
   assert.match(cardSource, /firstPremium = 0/);
   assert.match(cardSource, /计算参照：本保单保险金额/);
+  assert.match(cardSource, /有效保险金额/);
   assert.match(cardSource, /计算参照：本保单首期保费/);
   assert.match(cardSource, /calculatedScenario/);
 });

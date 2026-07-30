@@ -512,7 +512,7 @@ test('computeScenarioEntries resolves a responsibility formula through a stored 
   assert.match(entries[0].calculationText, /100,000 × \(1 \+ 0\.035\) \^ \(3 - 1\).* = 214,245元/u);
 });
 
-test('computeScenarioEntries blocks a formula when a required basis term is unresolved', () => {
+test('computeScenarioEntries retains a lower bound when a required basis term is unresolved', () => {
   const entries = computeScenarioEntries([{
     coverageType: '疾病保障',
     liability: '身故保险金',
@@ -525,7 +525,10 @@ test('computeScenarioEntries blocks a formula when a required basis term is unre
     },
   }], { id: 90, name: '分红型两全保险', amount: 99888 });
 
-  assert.deepEqual(entries, []);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 599328);
+  assert.equal(entries[0].isMinimumEstimate, true);
+  assert.match(entries[0].calculationText, /最低可确认金额 599,328元/u);
 });
 
 test('computeScenarioEntries treats 基本保险金 as coverage amount instead of premium', () => {
@@ -1459,7 +1462,7 @@ test('computePolicyCashflow: normalizes maturity source excerpt names before mer
   assert.equal(entries[0].liability, '满期生存保险金');
 });
 
-test('computePolicyCashflow: blocks a benefit when an unresolved basis component is required', () => {
+test('computePolicyCashflow: retains the lower-bound benefit when a basis component is unresolved', () => {
   const policy = {
     id: 34,
     company: '测试保险',
@@ -1488,10 +1491,13 @@ test('computePolicyCashflow: blocks a benefit when an unresolved basis component
     },
   }]);
 
-  assert.deepEqual(entries, []);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 99888);
+  assert.equal(entries[0].isMinimumEstimate, true);
+  assert.match(entries[0].calcText, /最低可确认金额 99,888元/u);
 });
 
-test('responsibility calculation projection blocks a formula with an unresolved required input', () => {
+test('responsibility calculation projection retains a lower bound with an unresolved required input', () => {
   const policy = {
     id: 35,
     company: '测试保险',
@@ -1512,7 +1518,10 @@ test('responsibility calculation projection blocks a formula with an unresolved 
     },
   }]);
 
-  assert.deepEqual(calculations, []);
+  assert.equal(calculations.length, 1);
+  assert.equal(calculations[0].amount, 99888);
+  assert.equal(calculations[0].isMinimumEstimate, true);
+  assert.match(calculations[0].calculationText, /最低可确认金额 99,888元/u);
 });
 
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {

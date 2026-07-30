@@ -1560,7 +1560,7 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
     if (!String(indicator?.liability || indicator?.coverageType || '').trim()) return [];
     const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const result = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
-    if (result?.partial) return [];
+    if (result?.partial && !result?.isMinimumEstimate) return [];
     if (!result?.resolved && !result?.isMinimumEstimate) return [];
     const amount = result.isMinimumEstimate ? result.minimumAmount : result.amount;
     if (!(Number(amount) > 0)) return [];
@@ -1602,7 +1602,7 @@ export function computeScenarioEntries(indicators, policy) {
     const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
     if (indicator.calculationKey === 'not_calculable') continue;
-    if (resolved.partial) continue;
+    if (resolved.partial && !resolved.isMinimumEstimate) continue;
     // Legacy imports may mark a liability non-calculable even though its stored
     // formula has a safe lower bound from the policy's known inputs. Preserve
     // that lower bound and its uncertainty instead of discarding the scenario.
