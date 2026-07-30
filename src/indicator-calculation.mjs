@@ -621,6 +621,50 @@ function resolveNormalizedFormula(indicator = {}, inputs = {}) {
   };
 }
 
+const POLICY_FORMULA_INPUTS = [
+  { pattern: /基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u, label: '基本保险金额', value: (inputs) => inputs.baseAmount },
+  { pattern: /首期保费|首年保费|年交保费|年度保险费/u, label: '首期/首年保费', value: (inputs) => inputs.firstPremium },
+  { pattern: /累计已交保费|实际交纳保险费|实际交纳保费|已交保险费|已交保费|所交保费/u, label: '累计已交保费', value: (inputs) => {
+    const premium = formulaNumber(inputs.firstPremium);
+    const years = formulaNumber(inputs.paymentYears);
+    return premium !== null && years !== null ? premium * years : undefined;
+  } },
+];
+
+function formulaNeedsExternalOperand(formulaText = '') {
+  const text = displayText(formulaText);
+  if (!text) return false;
+  return /(?:给付|赔付|赔偿)比例|伤残(?:等级|程度)|残疾(?:等级|程度)|实际(?:医疗)?费用|免赔额|住院(?:天数|日数)|给付(?:天数|日数)|现金价值|账户价值|红利保险金额|比例表|领取计划/u.test(text)
+    && !/(?:给付|赔付|赔偿)比例[^。；;，,]{0,12}\d+(?:\.\d+)?\s*%/u.test(text);
+}
+
+function pendingFormulaProjection(indicator = {}, inputs = {}, meta = {}) {
+  const formulaText = displayText(indicator.formulaText || indicator.basis)
+    .replace(/现金价值不展示|现金价值不统计|现金价值不参与展示/gu, '')
+    .trim();
+  if (!formulaText) return null;
+  if (/(?:\bmax\b|\bmin\b|较大者|较小者|最大者|最小者)/iu.test(formulaText)) return null;
+  const substitutions = POLICY_FORMULA_INPUTS
+    .filter(({ pattern }) => pattern.test(formulaText))
+    .map(({ label, value }) => ({ label, value: formulaNumber(value(inputs)) }))
+    .filter(({ value }) => value !== null && value > 0);
+  const hasUnresolvedOperand = formulaNeedsExternalOperand(formulaText)
+    || meta.calculationEligible === false;
+  if (!substitutions.length || !hasUnresolvedOperand) return null;
+  const required = Array.isArray(indicator.requiredInputs)
+    ? indicator.requiredInputs.map(displayText).filter(Boolean)
+    : [];
+  const reason = displayText(meta.calculationReason)
+    || (required.length ? `缺少${required.join('、')}` : '仍缺少条款公式中的事件或表格变量');
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    calculationText: `条款公式：${formulaText}；已代入：${substitutions.map(({ label, value }) => `${label}${formatMoney(value)}元`).join('，')}；${reason}`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const meta = normalizeIndicatorCalculation(indicator);
   const normalizedFormulaResult = resolveNormalizedFormula(indicator, inputs);
@@ -633,19 +677,8 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
   const totalPremium = firstPremium * paymentYears;
   const value = Number(meta.value || 0);
 
-  const formulaText = displayText(indicator.formulaText || indicator.basis || indicator.sourceExcerpt);
-  const needsEventPayoutRate = /(?:伤残|残疾)[^。；;]{0,32}(?:等级|给付比例)|(?:伤残|残疾)等级[^。；;]{0,32}给付比例/u.test(formulaText)
-    && !/\d+(?:\.\d+)?\s*%/u.test(formulaText);
-  if (needsEventPayoutRate && baseAmount > 0) {
-    const label = displayText(indicator.liability) || '保险金';
-    return {
-      resolved: false,
-      partial: true,
-      amount: 0,
-      meta,
-      calculationText: `${label} = 伤残/残疾等级给付比例（待确定） × 基本保险金额${formatMoney(baseAmount)}元；缺少伤残/残疾等级给付比例，暂不计算`,
-    };
-  }
+  const pendingProjection = pendingFormulaProjection(indicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
+  if (pendingProjection) return pendingProjection;
 
   if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
 

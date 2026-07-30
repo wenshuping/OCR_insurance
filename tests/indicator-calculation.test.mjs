@@ -329,19 +329,21 @@ test('calculates a basic responsibility amount when unified evidence stores a nu
   assert.match(result.calculationText, /89,877元/u);
 });
 
-test('substitutes the policy amount into an injury-disability formula without inventing an event payout rate', () => {
+test('projects every display-only formula with known policy inputs without inventing missing operands', () => {
   const result = resolveIndicatorAmountFromCalculation({
-    liability: '意外伤残保险金',
-    formulaText: '意外伤残保险金 = 基本保险金额 × 伤残等级对应的给付比例',
-    basis: '基本保险金额、伤残等级对应的给付比例',
+    liability: '测试给付金',
+    formulaText: '测试给付金 = 基本保险金额 × 给付比例',
+    basis: '基本保险金额、给付比例',
     basisKey: 'basic_amount',
     calculationKey: 'basic_amount',
-    calculationEligible: true,
+    calculationEligible: false,
+    calculationReason: '缺少给付比例',
   }, { baseAmount: 100000 });
 
   assert.equal(result.resolved, false);
   assert.equal(result.partial, true);
   assert.equal(result.amount, 0);
   assert.match(result.calculationText, /基本保险金额100,000元/u);
-  assert.match(result.calculationText, /伤残\/残疾等级给付比例（待确定）/u);
+  assert.match(result.calculationText, /条款公式：测试给付金 = 基本保险金额 × 给付比例/u);
+  assert.match(result.calculationText, /缺少给付比例/u);
 });

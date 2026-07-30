@@ -1524,7 +1524,7 @@ test('responsibility calculation projection retains a lower bound with an unreso
   assert.match(calculations[0].calculationText, /最低可确认金额 99,888元/u);
 });
 
-test('responsibility calculation projection retains a pending event-rate formula with the policy amount substituted', () => {
+test('responsibility calculation projection retains a pending formula with every known policy input substituted', () => {
   const calculations = computePolicyResponsibilityCalculations({
     id: 36,
     company: '测试保险',
@@ -1533,17 +1533,19 @@ test('responsibility calculation projection retains a pending event-rate formula
   }, [{
     id: 'disability',
     coverageType: '意外',
-    liability: '意外伤残保险金',
-    formulaText: '意外伤残保险金 = 基本保险金额 × 伤残等级对应的给付比例',
+    liability: '测试给付金',
+    formulaText: '测试给付金 = 基本保险金额 × 给付比例',
     basisKey: 'basic_amount',
     calculationKey: 'basic_amount',
-    calculationEligible: true,
+    calculationEligible: false,
+    calculationReason: '缺少给付比例',
   }]);
 
   assert.equal(calculations.length, 1);
   assert.equal(calculations[0].amount, 0);
   assert.equal(calculations[0].isPending, true);
   assert.match(calculations[0].calculationText, /基本保险金额100,000元/u);
+  assert.match(calculations[0].calculationText, /条款公式/u);
 });
 
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {
