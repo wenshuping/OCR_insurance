@@ -2525,6 +2525,34 @@ export function createPolicyOcrApp(options = {}) {
     }
   }
 
+  function policyProductNamesForIndicatorLookup(policy = {}) {
+    const names = [
+      policy?.name,
+      ...(Array.isArray(policy?.plans) ? policy.plans.map((plan) => plan?.matchedProductName || plan?.productName || plan?.name) : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    return [...new Set(names.flatMap((name) => [
+      name,
+      name.replace(/^.{2,80}?(?:人寿保险股份有限公司|保险股份有限公司|人寿保险有限公司|保险有限公司|保险公司)/u, '').trim(),
+    ]).filter(Boolean))];
+  }
+
+  function loadCurrentPolicyIndicators(policy) {
+    if (!cashflowDb || ownsCashflowDb) return [];
+    const productNames = policyProductNamesForIndicatorLookup(policy);
+    if (!productNames.length) return [];
+    try {
+      const placeholders = productNames.map(() => '?').join(', ');
+      return cashflowDb.prepare(`
+        SELECT payload FROM insurance_indicator_records
+        WHERE product_name IN (${placeholders})
+      `).all(...productNames).map((row) => {
+        try { return JSON.parse(row.payload || ''); } catch { return null; }
+      }).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
   function hydrateCashflowIndicatorsFromCurrentProductIndex(policy, indicators = []) {
     const existing = Array.isArray(indicators) ? indicators : [];
     const needsHydration = !existing.length || existing.some((indicator) => (
@@ -2532,23 +2560,8 @@ export function createPolicyOcrApp(options = {}) {
     ));
     if (!needsHydration || !cashflowDb || ownsCashflowDb) return existing;
 
-    const productNames = [...new Set([
-      policy?.name,
-      ...(Array.isArray(policy?.plans) ? policy.plans.map((plan) => plan?.matchedProductName || plan?.productName || plan?.name) : []),
-    ].map((value) => String(value || '').trim()).filter(Boolean))];
-    if (!productNames.length) return existing;
-
     try {
-      const placeholders = productNames.map(() => '?').join(', ');
-      const rows = cashflowDb.prepare(`
-        SELECT payload FROM insurance_indicator_records
-        WHERE product_name IN (${placeholders})
-      `).all(...productNames);
-      const current = rows
-        .map((row) => {
-          try { return JSON.parse(row.payload || ''); } catch { return null; }
-        })
-        .filter(Boolean);
+      const current = loadCurrentPolicyIndicators(policy);
       if (!current.length) return existing;
       if (!existing.length) return current;
 
@@ -2660,6 +2673,7 @@ export function createPolicyOcrApp(options = {}) {
     computeAndStoreCashflow,
     computePolicyResponsibilityCalculations,
     hydrateCashflowIndicatorsFromCurrentProductIndex,
+    loadCurrentPolicyIndicators,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,

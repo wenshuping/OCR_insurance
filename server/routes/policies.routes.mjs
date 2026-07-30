@@ -79,6 +79,7 @@ export function createPolicyRoutes(context) {
     computeAndStoreCashflow,
     computePolicyResponsibilityCalculations,
     hydrateCashflowIndicatorsFromCurrentProductIndex,
+    loadCurrentPolicyIndicators,
     startPolicyReportGeneration,
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
@@ -164,9 +165,12 @@ export function createPolicyRoutes(context) {
 
   function buildDerivedResultForPolicy(policy) {
     if (typeof buildPolicyDerivedResult !== 'function') return null;
+    const currentIndicators = typeof loadCurrentPolicyIndicators === 'function'
+      ? loadCurrentPolicyIndicators(policy)
+      : [];
     return buildPolicyDerivedResult({
       policy,
-      indicatorRecords: state.insuranceIndicatorRecords,
+      indicatorRecords: currentIndicators.length ? currentIndicators : state.insuranceIndicatorRecords,
       knowledgeRecords: state.knowledgeRecords,
       officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       optionalResponsibilityRecords: state.optionalResponsibilityRecords,
