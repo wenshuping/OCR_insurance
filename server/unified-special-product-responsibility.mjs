@@ -165,22 +165,28 @@ function substantiveTextItems(entries) {
     : items.filter((item) => !isNavigationOnlyText(item.text));
 }
 
-function sentenceFor(textValue, pattern) {
+function sentenceFor(textValue, pattern, { preferPattern = null } = {}) {
   const content = text(textValue).replace(/\s+/gu, ' ');
   const sentences = content.split(/(?<=[。；;.!！？])/u).map((item) => item.trim()).filter(Boolean);
   const matches = sentences.filter((sentence) => pattern.test(sentence) && !NAVIGATION_RE.test(sentence));
-  return matches.find((sentence) => /(?:第\s*[一二三四五六七八九十百千万0-9]+\s*条|本合同|合同约定)/u.test(sentence)
-    && !NAVIGATION_RE.test(sentence)) || matches[0] || '';
+  const preferredMatches = preferPattern
+    ? matches.filter((sentence) => preferPattern.test(sentence))
+    : matches;
+  const isArticleBody = (sentence) => /(?:第\s*[一二三四五六七八九十百千万0-9]+\s*条|本合同|合同约定)/u.test(sentence);
+  return preferredMatches.find(isArticleBody) || preferredMatches[0] || matches.find(isArticleBody) || matches[0] || '';
 }
 
-function fieldEvidence(items, pattern, { numeric = false } = {}) {
+function fieldEvidence(items, pattern, { numeric = false, numericPattern = /\d+(?:\.\d+)?\s*%/u } = {}) {
   const candidates = items
-    .map((item) => ({ ...item, excerpt: sentenceFor(item.text, pattern) }))
+    .map((item) => ({
+      ...item,
+      excerpt: sentenceFor(item.text, pattern, { preferPattern: numeric ? numericPattern : null }),
+    }))
     .filter((item) => item.excerpt);
   const structured = candidates.find((item) => item.path.includes('mainFunctions') || item.path.includes('importantLimits') || item.path.includes('productFunctions'));
   if (!numeric) return structured || candidates[0] || null;
-  return structured
-    || candidates.find((item) => /\d+(?:\.\d+)?\s*%/u.test(item.excerpt))
+  return (structured && numericPattern.test(structured.excerpt) ? structured : null)
+    || candidates.find((item) => numericPattern.test(item.excerpt))
     || candidates[0]
     || null;
 }
@@ -204,7 +210,22 @@ function clausesFromOfficialText(items, pattern) {
 function universalFields(items) {
   const fields = {};
   const add = (key, label, pattern, options = {}) => {
-    const evidence = fieldEvidence(items, pattern, options);
+    if (options.combine) {
+      const excerpts = clausesFromOfficialText(items, pattern);
+      if (excerpts.length) {
+        fields[key] = {
+          label,
+          value: excerpts.join(' '),
+          sourceExcerpt: excerpts.join(' '),
+          sourceDigest: fieldEvidence(items, pattern)?.sourceDigest || '',
+        };
+        return;
+      }
+    }
+    const evidence = fieldEvidence(items, pattern, {
+      ...options,
+      numericPattern: options.ratePattern || options.numericPattern,
+    });
     if (evidence) fields[key] = {
       label,
       value: options.numeric ? rateFromExcerpt(evidence.excerpt, options.ratePattern) || evidence.excerpt : evidence.excerpt,
@@ -213,19 +234,26 @@ function universalFields(items) {
     };
   };
   add('minimumGuaranteedRate', '最低保证利率', /最低保证利率|保证利率/u, { numeric: true, ratePattern: /(?:最低保证利率|保证利率)[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
-  add('settlement', '账户结算', /结算(?:利率|频率|方式|方法)|公布.*结算|按月.*结算|按日.*结算/u);
+  add('settlement', '账户结算', /结算(?:利率|频率|方式|方法)|公布.*结算|按月.*结算|按日.*结算/u, { combine: true });
   add('singlePremiumInitialCharge', '趸交/一次交清初始费用', /(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔).*?(?:初始费用|费用|手续费)|(?:初始费用|费用|手续费).*?(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔)/u, { numeric: true, ratePattern: /(?:一次交清|一次性交纳|一次性缴纳|一次性支付|趸交|单笔)[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
   add('additionalPremiumInitialCharge', '追加初始费用', /追加[^。；;，,]{0,80}?(?:初始费用|费用|手续费|\d+(?:\.\d+)?\s*%)|(?:初始费用|费用|手续费)[^。；;，,]{0,80}?追加/u, { numeric: true, ratePattern: /追加[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
-  add('managementAndRiskFees', '管理费/风险费', /(?:保单管理费|账户管理费|管理费|风险保险费|风险费|投资管理费)/u);
+  add('managementAndRiskFees', '管理费/风险费', /(?:保单管理费|账户管理费|管理费|风险保险费|风险费|投资管理费)/u, { combine: true });
   add('withdrawalAndSurrenderCharges', '部分领取/退保手续费', /(?:部分领取|部分提取|退保).*?(?:手续费|费用|费率|比例)|(?:手续费|费用|费率|比例).*?(?:部分领取|部分提取|退保)/u);
   add('withdrawalEligibilityAndLimits', '领取/退保条件与限额', /(?:部分领取|部分提取|退保).*?(?:条件|资格|最低|限额|余额|次数|频率|保单年度)|(?:条件|资格|最低|限额|余额|次数|频率|保单年度).*?(?:部分领取|部分提取|退保)/u);
   add('accountValueRule', '账户价值规则', /账户价值.*?(?:等于|计算|扣除|加上|余额|积累|增长)|(?:等于|计算|扣除|加上|余额|积累|增长).*?账户价值/u);
-  const withdrawalRates = clausesFromOfficialText(items, /部分领取手续费率|部分领取.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
+  const partialWithdrawalRates = clausesFromOfficialText(items, /部分领取手续费率|部分领取.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
+  const surrenderRates = clausesFromOfficialText(items, /退保手续费率|退保.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
+  const withdrawalRates = unique([...partialWithdrawalRates, ...surrenderRates]);
   if (withdrawalRates.length) {
-    const percentages = unique(withdrawalRates.flatMap((clause) => [...clause.matchAll(/\d+(?:\.\d+)?\s*%/gu)].map((match) => match[0].replace(/\s+/gu, ''))));
+    const percentagesFor = (clauses) => unique(clauses.flatMap((clause) => [...clause.matchAll(/\d+(?:\.\d+)?\s*%/gu)].map((match) => match[0].replace(/\s+/gu, ''))));
+    const rateParts = [];
+    const partialPercentages = percentagesFor(partialWithdrawalRates);
+    const surrenderPercentages = percentagesFor(surrenderRates);
+    if (partialPercentages.length) rateParts.push(`部分领取手续费率：${partialPercentages.join(' / ')}`);
+    if (surrenderPercentages.length) rateParts.push(`退保手续费率：${surrenderPercentages.join(' / ')}`);
     fields.withdrawalAndSurrenderCharges = {
       label: '部分领取/退保手续费',
-      value: percentages.length ? `部分领取手续费率：${percentages.join(' / ')}` : withdrawalRates.join(' '),
+      value: rateParts.length ? rateParts.join('；') : withdrawalRates.join(' '),
       sourceExcerpt: withdrawalRates.join(' '),
       sourceDigest: withdrawalRates.length ? fieldEvidence(items, /部分领取手续费/u)?.sourceDigest || '' : '',
     };

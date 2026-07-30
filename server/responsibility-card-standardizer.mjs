@@ -592,6 +592,8 @@ function normalizeResponsibility(row = {}) {
     calculationDecisionSource: text(row.calculationDecisionSource),
     cashflowTreatment: text(row.cashflowTreatment),
     sourceUrl: sourceUrlFrom(row),
+    sourceDigest: firstNonEmpty(row.sourceDigest, row.source_digest),
+    responsibilitySourceDigest: firstNonEmpty(row.responsibilitySourceDigest, row.responsibility_source_digest),
     sourceTitle: firstNonEmpty(row.sourceTitle, row.title),
     sourceExcerpt: sourceExcerptFrom(row) || text(row.scenario || row.description || row.desc || row.content),
     sourceKind: text(row.sourceKind),
@@ -1075,6 +1077,21 @@ function cardSource({ indicator = {}, responsibility = {}, knowledge = {} }) {
   const evidenceFields = evidenceVerificationFields(sourceMeta);
   return {
     sourceUrl: firstNonEmpty(indicator.sourceUrl, responsibility.sourceUrl, sourceUrlFrom(knowledge)),
+    sourceDigest: firstNonEmpty(
+      indicator.sourceDigest,
+      indicator.responsibilitySourceDigest,
+      responsibility.sourceDigest,
+      responsibility.responsibilitySourceDigest,
+      knowledge.sourceDigest,
+    ),
+    responsibilitySourceDigest: firstNonEmpty(
+      indicator.responsibilitySourceDigest,
+      indicator.sourceDigest,
+      responsibility.responsibilitySourceDigest,
+      responsibility.sourceDigest,
+      knowledge.responsibilitySourceDigest,
+      knowledge.sourceDigest,
+    ),
     sourceTitle: firstNonEmpty(responsibility.sourceTitle, indicator.sourceTitle, knowledge.title),
     sourceExcerpt: firstNonEmpty(preferredExcerpt, responsibilityExcerpt, knowledgeExcerpt),
     sourceKind: sourceMeta.sourceKind,
@@ -1611,6 +1628,8 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
   if (!card.triggerCondition) card.triggerCondition = firstNonEmpty(indicator.triggerCondition, responsibility?.scenario);
   if (!card.payoutSummary) card.payoutSummary = firstNonEmpty(indicator.payoutSummary, responsibility?.payout, indicator.basis);
   const source = cardSource({ indicator, responsibility, knowledge });
+  if (!card.sourceDigest) card.sourceDigest = source.sourceDigest;
+  if (!card.responsibilitySourceDigest) card.responsibilitySourceDigest = source.responsibilitySourceDigest;
   if (!card.sourceUrl) card.sourceUrl = source.sourceUrl;
   if (!card.sourceTitle) card.sourceTitle = source.sourceTitle;
   if (!card.sourceExcerpt) card.sourceExcerpt = source.sourceExcerpt;

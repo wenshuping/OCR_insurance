@@ -191,6 +191,30 @@ test('universal lane keeps single and additional premium charges separate', () =
   );
 });
 
+test('universal lane selects numeric fee clauses and retains account fee rules', () => {
+  const evidence = universalChain('sha256:universal-fee-clause');
+  const body = [
+    '第十条 本合同设置万能账户，建立个人账户，每次交纳保险费在扣除初始费用后计入个人账户。',
+    '第十一条 一次性交纳保险费的初始费用收取比例为3%；追加保险费的初始费用收取比例为3%。',
+    '第十二条 保单管理费为每月0元；风险保险费按风险保额和年龄费率按月收取。',
+    '第十三条 我们于每月初确定账户结算利率，按日复利计算个人账户价值。',
+    '第十四条 部分领取手续费率如下：第一年至第五年为5%/4%/3%/2%/1%。',
+    '第十五条 退保手续费率如下：第一年至第五年为5%/4%/3%/2%/1%。',
+  ].join('\n');
+  evidence.artifacts[0].sourceExcerpt = body;
+  evidence.cards = evidence.cards.map((card) => ({ ...card, sourceExcerpt: body }));
+  evidence.indicators = evidence.indicators.map((indicator) => ({ ...indicator, sourceExcerpt: body, formulaText: body }));
+  const result = routeEvidence(evidence);
+
+  assert.equal(result.category, 'universal_account');
+  assert.equal(result.universalAccount.fields.singlePremiumInitialCharge.value, '3%');
+  assert.equal(result.universalAccount.fields.additionalPremiumInitialCharge.value, '3%');
+  assert.match(result.universalAccount.fields.managementAndRiskFees.value, /每月0元/u);
+  assert.match(result.universalAccount.fields.settlement.value, /按日复利/u);
+  assert.match(result.universalAccount.fields.withdrawalAndSurrenderCharges.value, /部分领取手续费率/u);
+  assert.match(result.universalAccount.fields.withdrawalAndSurrenderCharges.value, /退保手续费率/u);
+});
+
 test('universal lane omits unsupported fields and reports blockers', () => {
   const result = routeEvidence(universalChain('sha256:universal-sparse', { fields: false }));
   assert.equal(result.category, 'blocked');

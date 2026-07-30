@@ -1574,6 +1574,10 @@ test('reviewed canonical artifact import materializes only authoritative respons
         '身故或全残保险金',
       ]);
       const mainCard = cards.find((card) => card.title === '身故或全残保险金').payload;
+      assert.equal(mainCard.sourceDigest, sourceDigest);
+      assert.equal(mainCard.responsibilitySourceDigest, sourceDigest);
+      assert.ok(mainCard.indicators.every((indicator) => indicator.sourceDigest === sourceDigest));
+      assert.ok(mainCard.indicators.every((indicator) => indicator.responsibilitySourceDigest === sourceDigest));
       assert.deepEqual(mainCard.indicators.map((indicator) => ({
         indicatorName: indicator.indicatorName,
         formulaText: indicator.formulaText,
