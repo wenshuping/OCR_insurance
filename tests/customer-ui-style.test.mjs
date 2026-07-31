@@ -1388,6 +1388,18 @@ test('family report keeps verbose protection notes readable on mobile', () => {
   assert.match(source, /max-h-28 overflow-y-auto/);
 });
 
+test('family report responsibility table reserves readable space for conditions and source policies', () => {
+  const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /family-report-responsibility-table min-w-\[1175px\] table-fixed/);
+  assert.match(source, /<col className="w-\[110px\]" \/>/);
+  assert.match(source, /<col className="w-\[105px\]" \/>/);
+  assert.match(source, /<col className="w-\[350px\]" \/>/);
+  assert.match(source, /<col className="w-\[300px\]" \/>/);
+  assert.match(source, /<SourcePolicyList row=\{row\} \/>/);
+  assert.match(indexCssSource, /\.family-report-policy-name[\s\S]*word-break: keep-all/);
+});
+
 test('admin app exposes optional responsibility quantification governance list', () => {
   const governanceSource = adminGovernanceSource.replaceAll("from '../../", "from './");
   const apiSource = fs.readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8');
