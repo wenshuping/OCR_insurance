@@ -1427,11 +1427,11 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
         <table className="family-report-responsibility-table min-w-[960px] w-full table-fixed border-separate border-spacing-0 text-left">
           <colgroup>
             <col className="w-[14%]" />
-            <col className="w-[10%]" />
+            <col className="w-[17%]" />
+            <col className="w-[17%]" />
             <col className="w-[8%]" />
-            <col className="w-[8%]" />
-            <col className="w-[28%]" />
-            <col className="w-[32%]" />
+            <col className="w-[24%]" />
+            <col className="w-[20%]" />
           </colgroup>
           <thead>
             <tr>

@@ -1393,10 +1393,10 @@ test('family report responsibility table reserves readable space for conditions 
 
   assert.match(source, /family-report-responsibility-table min-w-\[960px\] w-full table-fixed/);
   assert.match(source, /<col className="w-\[14%\]" \/>/);
-  assert.match(source, /<col className="w-\[10%\]" \/>/);
+  assert.match(source, /<col className="w-\[17%\]" \/>/);
   assert.match(source, /<col className="w-\[8%\]" \/>/);
-  assert.match(source, /<col className="w-\[28%\]" \/>/);
-  assert.match(source, /<col className="w-\[32%\]" \/>/);
+  assert.match(source, /<col className="w-\[24%\]" \/>/);
+  assert.match(source, /<col className="w-\[20%\]" \/>/);
   assert.match(source, /familyReportResponsibilityTdClassName = 'min-w-0 break-words whitespace-normal/);
   assert.match(source, /<td className=\{familyReportResponsibilityTdClassName\}>\{emptyText\(row\.amountText\)\}<\/td>/);
   assert.match(source, /<SourcePolicyList row=\{row\} \/>/);
