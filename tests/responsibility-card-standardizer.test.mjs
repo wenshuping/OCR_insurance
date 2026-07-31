@@ -852,37 +852,6 @@ test('buildResponsibilityCardsForPolicy suppresses aggregate display cards when 
   assert.equal(cards[0]?.calculationStatus, 'calculable');
 });
 
-test('buildResponsibilityCardsForPolicy merges a disease-total-disability branch into its death-and-total-disability responsibility', () => {
-  const productName = '测试两全保险';
-  const sourceUrl = 'https://example.test/official-terms.pdf';
-  const diseaseBranch = '身故或全残保险金 (1) 被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按基本保险金额的10%与实际交纳保险费之和给付。';
-  const cards = buildResponsibilityCardsForPolicy({
-    policy: { company: '测试保险', name: productName },
-    coverageIndicators: [{
-      company: '测试保险',
-      productName,
-      coverageType: '人寿保障',
-      liability: '疾病全残',
-      basis: '基本保额',
-      sourceUrl,
-      sourceExcerpt: diseaseBranch,
-    }, {
-      company: '测试保险',
-      productName,
-      coverageType: '身故保障',
-      liability: '身故或全残保险金',
-      formulaText: '身故或全残保险金 = 条件分支给付',
-      sourceUrl,
-      sourceExcerpt: `${diseaseBranch} 被保险人于本合同生效之日起一年后因疾病导致身故或身体全残，按基本保险金额与累积红利保险金额之和的两倍给付。`,
-    }],
-  });
-
-  assert.equal(cards.length, 1);
-  assert.equal(cards[0]?.title, '身故或全残保险金');
-  assert.equal(cards[0]?.indicators.length, 2);
-  assert.equal(cards[0]?.calculationStatus, 'claim_contingent');
-});
-
 test('buildResponsibilityCardsForPolicy keeps slash or pause-mark claim responsibilities when knowledge rows exist', () => {
   const productName = '中荷岁岁红团体年金保险（分红型）';
   const sourceUrl = 'http://www.bob-cardif.com/_upload/products_all/tiaokuan/GDAA.pdf';

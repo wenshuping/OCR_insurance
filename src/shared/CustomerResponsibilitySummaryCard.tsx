@@ -147,7 +147,9 @@ export function CustomerResponsibilitySummaryCard({
               .sort((left, right) => Number(left.year) - Number(right.year));
             const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
             const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
-            const hasMinimumEstimate = calculatedRows.some((entry) => entry.isMinimumEstimate);
+            const hasMinimumEstimate = calculatedRows.some((entry) => (
+              entry.isMinimumEstimate || /最低可确认金额/u.test(cleanText(entry.calculationText || entry.calcText))
+            ));
             const uncertaintyNotes = Array.from(new Set(
               calculatedRows.map((entry) => cleanText(entry.uncertaintyNote)).filter(Boolean),
             ));
@@ -226,7 +228,7 @@ export function CustomerResponsibilitySummaryCard({
                       }`}>
                         <p className="font-black">
                           {calculatedResponsibility.isPending
-                            ? (cleanText(calculatedResponsibility.uncertaintyNote) || '已代入本保单数据，待补充计算条件')
+                            ? (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计')
                             : calculatedResponsibility.isMinimumEstimate
                             ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
                             : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}
@@ -241,7 +243,13 @@ export function CustomerResponsibilitySummaryCard({
                           {calculatedResponsibility.calculationText}
                         </p>
                         {cleanText(calculatedResponsibility.uncertaintyNote) ? (
-                          <p className={`mt-1 text-[11px] ${calculatedResponsibility.isMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                          <p className={`mt-1 text-[11px] ${
+                            calculatedResponsibility.isPending
+                              ? 'text-blue-700'
+                              : calculatedResponsibility.isMinimumEstimate
+                                ? 'text-amber-700'
+                                : 'text-cyan-700'
+                          }`}>
                             备注：{cleanText(calculatedResponsibility.uncertaintyNote)}
                           </p>
                         ) : null}
