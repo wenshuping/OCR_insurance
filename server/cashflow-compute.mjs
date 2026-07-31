@@ -2,6 +2,7 @@
 // Server-side cashflow computation engine.
 // Migrated from src/cashflow-engine.mjs with new template-based computation.
 import {
+  formulaVariablesFromIndicators,
   normalizeIndicatorCalculation,
   resolveIndicatorAmountForCurrentContext,
   resolveIndicatorAmountFromCalculation,
@@ -145,9 +146,71 @@ function policyPlanForIndicator(policy = {}, indicator = {}) {
     .find((plan) => policyPlanMatchesIndicator(plan, indicator)) || null;
 }
 
+function normalizedOptionalResponsibilityText(value) {
+  return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
+}
+
+function optionalResponsibilityForIndicator(policy = {}, indicator = {}) {
+  const items = Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [];
+  const optionalResponsibilityId = String(indicator?.optionalResponsibilityId || '').trim();
+  if (optionalResponsibilityId) {
+    const byId = items.find((item) => String(item?.id || '').trim() === optionalResponsibilityId);
+    if (byId) return byId;
+  }
+  const liability = normalizedOptionalResponsibilityText(indicator?.liability || indicator?.coverageType);
+  return items.find((item) => liability && liability === normalizedOptionalResponsibilityText(item?.liability || item?.title || item?.coverageType)) || null;
+}
+
+function optionalResponsibilityCoverageAmount(item = {}) {
+  for (const value of [item?.coverageAmount, item?.insuredAmount, item?.insuranceAmount, item?.amount]) {
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount > 0) return amount;
+  }
+  return 0;
+}
+
+function isOptionalIndicator(indicator = {}) {
+  return String(indicator?.responsibilityScope || '') === 'optional';
+}
+
+function contextualizeOptionalCalculation(result = {}, scopedPolicy = {}) {
+  if (!scopedPolicy?.__optionalResponsibility || !result?.calculationText) return result;
+  return {
+    ...result,
+    calculationText: String(result.calculationText)
+      .replace(/基本责任保险金额|基本保险金额|基本保险金|基本保额/gu, '可选责任保险金额'),
+  };
+}
+
 function policyScopedToIndicator(policy = {}, indicator = {}) {
-  if (policy?.__cashflowPlan) return policy;
+  if (policy?.__cashflowPlan || policy?.__optionalResponsibility) return policy;
   const plan = policyPlanForIndicator(policy, indicator);
+  const optionalIndicator = isOptionalIndicator(indicator);
+  const optionalResponsibility = optionalIndicator
+    ? optionalResponsibilityForIndicator(policy, indicator)
+    : null;
+  if (optionalIndicator) {
+    const planPremium = Number(plan?.premium || plan?.firstPremium || 0) || 0;
+    return {
+      ...policy,
+      ...(plan ? {
+        __rootPolicy: policy,
+        __cashflowPlan: plan,
+        company: plan.company || policy.company,
+        name: plan.matchedProductName || plan.name || indicator.productName || policy.name,
+        productName: plan.matchedProductName || plan.name || indicator.productName || policy.productName,
+        firstPremium: planPremium || Number(policy.firstPremium || policy.premium || 0) || 0,
+        premium: planPremium || Number(policy.premium || policy.firstPremium || 0) || 0,
+        paymentPeriod: plan.paymentPeriod || policy.paymentPeriod,
+        coveragePeriod: plan.coveragePeriod || policy.coveragePeriod,
+        date: plan.date || plan.effectiveDate || policy.date || policy.effectiveDate,
+      } : {}),
+      __optionalResponsibility: optionalResponsibility || {},
+      // Optional responsibility formulas must never inherit the main policy amount.
+      amount: optionalResponsibilityCoverageAmount(optionalResponsibility)
+        || optionalResponsibilityCoverageAmount({ coverageAmount: indicator?.optionalResponsibilityCoverageAmount }),
+    };
+  }
   if (!plan) return policy;
   const planPremium = Number(plan.premium || plan.firstPremium || 0) || 0;
   return {
@@ -225,36 +288,68 @@ function indicatorCalculationInputs(policy) {
     baseAmount: Number(policy.amount || 0) || 0,
     firstPremium: premium,
     paymentYears: years,
+    policyYear: Number(policy.policyYear || 0) || undefined,
+    formulaVariables: policy.formulaVariables,
   };
 }
 
-function resolveIndicatorAmountForCashflow(indicator, policy) {
-  if (shouldSkipCashflowIndicator(indicator)) return 0;
+function resolveIndicatorCashflowCalculation(indicator, policy) {
+  if (shouldSkipCashflowIndicator(indicator)) return { amount: 0 };
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
-  if (structured.resolved) return structured.amount;
-  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return 0;
+  const structured = contextualizeOptionalCalculation(
+    resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy)),
+    scopedPolicy,
+  );
+  if (structured.resolved) {
+    return {
+      amount: structured.amount,
+      calculationText: structured.calculationText,
+      formulaResolved: true,
+    };
+  }
+  if (structured.isMinimumEstimate) {
+    return {
+      amount: structured.minimumAmount,
+      isMinimumEstimate: true,
+      formulaResolved: true,
+      uncertaintyNote: '已按条款公式可确认最低值计算，未计入待补充的非负金额。',
+      calculationText: structured.calculationText,
+    };
+  }
+  if (structured.partial) {
+    return { amount: 0, blocked: true, calculationText: structured.calculationText };
+  }
+  if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false) return { amount: 0 };
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''} ${indicator.liability || ''}`;
   if (/实际交纳|已交保费|所交保费/.test(text)) {
     const premium = Number(scopedPolicy.firstPremium || scopedPolicy.premium || 0);
     const years = parsePaymentYearsFromText(scopedPolicy.paymentPeriod) || 1;
-    return premium * years;
+    return { amount: premium * years };
   }
   const value = Number(indicator.value);
   const unit = String(indicator.unit || '').trim();
   const basis = String(indicator.basis || '').trim();
   const amount = Number(scopedPolicy.amount || 0);
-  if (/%/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return amount * value / 100;
-  if (/倍/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return amount * value;
-  if (/(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis) && /公式/.test(unit)) return amount;
-  return amount || 0;
+  if (/%/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return { amount: amount * value / 100 };
+  if (/倍/.test(unit) && /(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis)) return { amount: amount * value };
+  if (/(?:基本保额|基本保险金额|基本保险金|保险金额)/.test(basis) && /公式/.test(unit)) return { amount };
+  return { amount: amount || 0 };
+}
+
+function resolveIndicatorAmountForCashflow(indicator, policy) {
+  const calculation = resolveIndicatorCashflowCalculation(indicator, policy);
+  return calculation.blocked ? 0 : calculation.amount;
 }
 
 /** Format calculation text for an indicator. */
 function formatCashflowCalculation(indicator, policy, amount) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy));
+  const structured = contextualizeOptionalCalculation(
+    resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy)),
+    scopedPolicy,
+  );
   if (structured.resolved && Math.abs(structured.amount - Number(amount || 0)) < 0.01) return structured.calculationText;
+  if (structured.isMinimumEstimate && Math.abs(structured.minimumAmount - Number(amount || 0)) < 0.01) return structured.calculationText;
   const text = `${indicator.formulaText || ''} ${indicator.basis || ''}`;
   if (/实际交纳|已交保费/.test(text)) {
     const premium = Number(scopedPolicy.firstPremium || scopedPolicy.premium || 0);
@@ -337,6 +432,7 @@ function resolveScenarioAmount(indicator, policy) {
   const scopedPolicy = policyScopedToIndicator(policy, indicator);
   const structured = resolveScenarioCalculation(indicator, scopedPolicy);
   if (structured.resolved) return structured.amount;
+  if (structured.partial) return 0;
   const value = Number(indicator.value);
   const amount = Number(scopedPolicy.amount || 0);
 
@@ -447,6 +543,14 @@ function isDeterministicWealthBenefitSection(section = {}) {
   return true;
 }
 
+function sectionUsesEffectiveInsuranceAmount(section = {}) {
+  const text = normalizeCashflowLookupText([
+    section.name,
+    section.content,
+  ].join(' '));
+  return /有效保险金额|基本保险金额与(?:累计|累积)红利保险金额(?:二者)?之和/u.test(text);
+}
+
 /** Parse a single benefit section into yearly items. */
 function parseBenefitSection(sec, ctx) {
   const { effectiveYear, birthYear, coverageEndYear, pensionStartAge, amount, policy } = ctx;
@@ -455,6 +559,65 @@ function parseBenefitSection(sec, ctx) {
   const compactText = normalizeCashflowLookupText(text);
   const name = sec.name;
   const results = [];
+
+  // A survival benefit can contain more than one age-bounded payment stage in
+  // the same responsibility clause. OCR commonly inserts spaces between the
+  // age, percentage, and year tokens, so inspect the normalized clause and
+  // expand every fixed-basic-amount stage before the single-range fallbacks.
+  if (/生存/u.test([name, compactText].join(' '))) {
+    const stagedPatterns = [
+      {
+        match: compactText.match(/生效满([一二三四五六七八九十百千万两\d]+)年起至(\d+)周岁保单生效对应日之前.*?保险金额的(\d+(?:\.\d+)?)%给付生存保险金/u),
+        startYear: (match) => effectiveYear + parseChineseInteger(match[1]),
+        endYear: (match) => birthYear + Number(match[2]) - 1,
+      },
+      {
+        match: compactText.match(/(\d+)周岁保单生效对应日起至(\d+)周岁保单生效对应日期间.*?保险金额的(\d+(?:\.\d+)?)%给付生存保险金/u),
+        startYear: (match) => birthYear + Number(match[1]),
+        endYear: (match) => birthYear + Number(match[2]),
+      },
+    ];
+    for (const stage of stagedPatterns) {
+      if (!stage.match) continue;
+      const percentage = Number(stage.match[stage.match.length - 1]);
+      const yearAmount = Math.round(amount * percentage / 100);
+      const startYear = stage.startYear(stage.match);
+      const endYear = Math.min(stage.endYear(stage.match), coverageEndYear);
+      for (let year = Math.max(startYear, effectiveYear); year <= endYear; year += 1) {
+        results.push({
+          year,
+          amount: yearAmount,
+          liability: name,
+          calculationText: `基本保额 ${amount.toLocaleString('zh-CN')} × ${percentage}% = ${yearAmount.toLocaleString('zh-CN')}元`,
+        });
+      }
+    }
+    if (results.length) return results;
+
+    // OCR can split a sequence of age milestones into `1 8、1 9、2 0、21`,
+    // and the product can put all education, marriage and pension payments in
+    // one survival-benefit clause.  Expand every explicit age list before the
+    // older product-name-specific fallbacks below.
+    const ageMilestonePattern = /被保险人生存至([\d、，,]+)周岁的保单生效对应日.*?有效保险金额(?:的)?(\d+(?:\.\d+)?)?%?给付[“"]?([^”"；;。\n]+)[”"]?/gu;
+    for (const match of compactText.matchAll(ageMilestonePattern)) {
+      const ages = [...new Set(match[1].split(/[、，,]/u).map(Number).filter(Number.isFinite))];
+      const percentage = match[2] == null || match[2] === '' ? 100 : Number(match[2]);
+      const liability = match[3].trim() || name;
+      const yearAmount = Math.round(amount * percentage / 100);
+      for (const age of ages) {
+        const year = birthYear + age;
+        if (year < effectiveYear || year > coverageEndYear) continue;
+        results.push({
+          year,
+          age,
+          amount: yearAmount,
+          liability,
+          calculationText: `基本保额 ${amount.toLocaleString('zh-CN')} × ${percentage}% = ${yearAmount.toLocaleString('zh-CN')}元`,
+        });
+      }
+    }
+    if (results.length) return results;
+  }
 
   const educationRangeMatch = compactText.match(/(?:十八|18)(?:[—\-至到－]+)(?:二十一|21)周岁.*?有效保险金额(?:[（(][^）)]*[）)])?(?:的)?(\d+(?:\.\d+)?)%/u);
   if (educationRangeMatch) {
@@ -903,7 +1066,9 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
     : [{ name: indicator.liability || '现金流', content: sourceText }];
   const entries = [];
   let cumulative = 0;
-  const indicatorAmount = resolveIndicatorAmountForCashflow(indicator, scopedPolicy);
+  const indicatorCalculation = resolveIndicatorCashflowCalculation(indicator, scopedPolicy);
+  if (indicatorCalculation.blocked) return [];
+  const indicatorAmount = indicatorCalculation.amount;
   for (const sec of effectiveSections) {
     if (/身故/u.test(sec.name)) continue;
     const parsed = parseBenefitSection(sec, {
@@ -914,10 +1079,14 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
       amount: ctx.basicAmount,
       policy: scopedPolicy,
     });
+    const requiresEffectiveInsuranceAmount = sectionUsesEffectiveInsuranceAmount(sec);
+    // “有效保险金额” cannot inherit the basic amount.  It is usable only when
+    // the indicator formula resolves it exactly or establishes a lower bound.
+    if (requiresEffectiveInsuranceAmount && !indicatorCalculation.formulaResolved) continue;
     for (const item of parsed) {
-      const shouldUseIndicatorAmount = indicatorAmount > 0
+      const shouldUseIndicatorAmount = requiresEffectiveInsuranceAmount || (indicatorAmount > 0
         && Number(item.amount) === Number(ctx.basicAmount)
-        && indicatorAmount !== Number(ctx.basicAmount);
+        && (indicatorCalculation.isMinimumEstimate || indicatorAmount !== Number(ctx.basicAmount)));
       const amount = shouldUseIndicatorAmount ? indicatorAmount : item.amount;
       cumulative += amount;
       entries.push({
@@ -931,8 +1100,10 @@ function expandCashflowIndicatorSourceText(indicator, policy, cashflowIndicators
         policyId: policy.id,
         productName: scopedPolicy.name || indicator.productName || policy.name || '',
         calcText: shouldUseIndicatorAmount
-          ? formatCashflowCalculation(indicator, scopedPolicy, amount)
+          ? (indicatorCalculation.calculationText || formatCashflowCalculation(indicator, scopedPolicy, amount))
           : item.calculationText,
+        isMinimumEstimate: Boolean(shouldUseIndicatorAmount && indicatorCalculation.isMinimumEstimate),
+        uncertaintyNote: shouldUseIndicatorAmount ? (indicatorCalculation.uncertaintyNote || '') : '',
         _cashflowSource: 'indicator_source_text',
         _cashflowIndicatorId: indicator.id || '',
       });
@@ -1315,22 +1486,36 @@ function computeFromResponsibilities(policy, ctx, cashflowIndicators) {
     if (/身故/.test(sec.name)) continue;
     if (sec.scope === 'optional' && !isSelectedOptionalResponsibilitySection(policy, sec)) continue;
 
-    const parsed = parseBenefitSection(sec, {
-      effectiveYear, birthYear, coverageEndYear, pensionStartAge,
-      amount, policy,
-    });
+      const parsed = parseBenefitSection(sec, {
+        effectiveYear, birthYear, coverageEndYear, pensionStartAge,
+        amount, policy,
+      });
+      const requiresEffectiveInsuranceAmount = sectionUsesEffectiveInsuranceAmount(sec);
 
-    for (const item of parsed) {
-      cumulative += item.amount;
-      entries.push({
+      for (const item of parsed) {
+        const indicator = cashflowIndicators.find((candidate) =>
+          normalizeCashflowLookupText(candidate?.liability) === normalizeCashflowLookupText(item.liability || sec.name)
+        );
+        const calculation = indicator ? resolveIndicatorCashflowCalculation(indicator, policy) : null;
+        if (calculation?.blocked) continue;
+        if (requiresEffectiveInsuranceAmount && !calculation?.formulaResolved) continue;
+        const amount = (requiresEffectiveInsuranceAmount || calculation?.isMinimumEstimate)
+          ? calculation.amount
+          : item.amount;
+        cumulative += amount;
+        entries.push({
         year: item.year,
         age: item.age ?? ageAtCalendarYear(policy, item.year, item.year - birthYear),
-        amount: item.amount,
+        amount,
         cumulative,
         liability: item.liability || sec.name,
         policyId: policy.id,
         productName,
-        calcText: item.calculationText,
+          calcText: (requiresEffectiveInsuranceAmount || calculation?.isMinimumEstimate)
+            ? calculation.calculationText
+            : item.calculationText,
+          isMinimumEstimate: Boolean(calculation?.isMinimumEstimate),
+        uncertaintyNote: calculation?.uncertaintyNote || '',
         _cashflowSource: 'responsibility',
       });
     }
@@ -1410,8 +1595,12 @@ function computeFromIndicators(cashflowIndicators, ctx) {
  * @returns {Array<object>} Sorted cashflow entries with cumulative amounts
  */
 export function computePolicyCashflow(policy, template, indicators) {
-  const ctx = buildContext(policy);
   const effectiveIndicators = (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
+  const policyWithFormulaVariables = {
+    ...policy,
+    formulaVariables: formulaVariablesFromIndicators(effectiveIndicators),
+  };
+  const ctx = buildContext(policyWithFormulaVariables);
   const cashflowIndicators = effectiveIndicators.filter(i => i.coverageType === '现金流');
   const rules = template?.rules || [];
 
@@ -1448,6 +1637,71 @@ export function computePolicyCashflow(policy, template, indicators) {
 }
 
 /**
+ * Resolve each selected responsibility against the current policy inputs.
+ * Unlike cashflow scheduling, this intentionally does not discard a benefit
+ * merely because its contractual payment age has already passed: policy detail
+ * still needs to explain the formula and any safe lower bound.
+ */
+export function computePolicyResponsibilityCalculations(policy = {}, indicators = []) {
+  const scopedIndicators = (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
+  const policyWithFormulaVariables = {
+    ...policy,
+    formulaVariables: formulaVariablesFromIndicators(scopedIndicators),
+  };
+
+  return scopedIndicators.flatMap((indicator) => {
+    if (!String(indicator?.liability || indicator?.coverageType || '').trim()) return [];
+    const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
+    const optionalResponsibility = scopedPolicy.__optionalResponsibility;
+    if (optionalResponsibility && Number(scopedPolicy.amount || 0) <= 0) {
+      return [{
+        indicatorId: String(indicator.id || ''),
+        liability: String(indicator.liability || indicator.coverageType || '').trim(),
+        amount: 0,
+        isMinimumEstimate: false,
+        isPending: true,
+        calculationText: `${String(indicator.liability || indicator.coverageType || '可选责任').trim()} = 可选责任保险金额（待补充）`,
+        uncertaintyNote: '已确认投保，缺少该可选责任的保险金额。',
+      }];
+    }
+    const result = contextualizeOptionalCalculation(
+      resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(scopedPolicy)),
+      scopedPolicy,
+    );
+    if (result?.partial && !result?.isMinimumEstimate) {
+      const formulaText = String(indicator.formulaText || indicator.basis || '').trim();
+      const baseAmount = Number(scopedPolicy.amount || 0) || 0;
+      const knownInput = formulaText && baseAmount > 0 && /基本责任保险金额|基本保险金额|基本保险金|基本保额/u.test(formulaText)
+        ? `条款公式：${formulaText}；已代入：基本保险金额${baseAmount.toLocaleString('zh-CN')}元；`
+        : '';
+      return [{
+        indicatorId: String(indicator.id || ''),
+        liability: String(indicator.liability || indicator.coverageType || '').trim(),
+        amount: 0,
+        isMinimumEstimate: false,
+        isPending: true,
+        hasBranchScenarios: result.hasBranchScenarios === true,
+        calculationText: `${knownInput}${String(result.calculationText || '')}`,
+        uncertaintyNote: String(result.uncertaintyNote || ''),
+      }];
+    }
+    if (!result?.resolved && !result?.isMinimumEstimate) return [];
+    const amount = result.isMinimumEstimate ? result.minimumAmount : result.amount;
+    if (!(Number(amount) > 0)) return [];
+    return [{
+      indicatorId: String(indicator.id || ''),
+      liability: String(indicator.liability || indicator.coverageType || '').trim(),
+      amount: Number(amount),
+      isMinimumEstimate: result.isMinimumEstimate === true,
+      calculationText: String(result.calculationText || ''),
+      uncertaintyNote: result.isMinimumEstimate
+        ? '已按条款公式可确认最低值计算，未计入待补充的非负金额。'
+        : '',
+    }];
+  });
+}
+
+/**
  * Build scenario entries for non-cashflow indicators (accident, illness, nursing, etc.).
  * Migrated from buildScenarioEntries in src/cashflow-engine.mjs.
  *
@@ -1456,18 +1710,32 @@ export function computePolicyCashflow(policy, template, indicators) {
  * @returns {Array<object>} Scenario entries
  */
 export function computeScenarioEntries(indicators, policy) {
+  const policyWithFormulaVariables = {
+    ...policy,
+    formulaVariables: formulaVariablesFromIndicators(indicators),
+  };
   const entries = [];
   for (const indicator of (Array.isArray(indicators) ? indicators : [])) {
     if (!isSelectedCoverageIndicator(indicator)) continue;
     if (indicator.coverageType === '现金流') continue;
     if (indicator.coverageType === '规则参数') continue;
+    if (/定义$/u.test(String(indicator.liability || '')) && /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/u.test(String(indicator.normalizedFormula || ''))) continue;
     if (indicatorHasUncertainValue(indicator)) continue;
     if (scenarioIndicatorIsRatioOnly(indicator)) continue;
 
-    const scopedPolicy = policyScopedToIndicator(policy, indicator);
+    const scopedPolicy = policyScopedToIndicator(policyWithFormulaVariables, indicator);
     const resolved = resolveScenarioCalculation(indicator, scopedPolicy);
-    if (indicator.calculationEligible === false || indicator.calculationKey === 'not_calculable') continue;
-    const amount = resolveScenarioAmount(indicator, scopedPolicy);
+    if (indicator.calculationKey === 'not_calculable') continue;
+    if (resolved.partial && !resolved.isMinimumEstimate) continue;
+    // Legacy imports may mark a liability non-calculable even though its stored
+    // formula has a safe lower bound from the policy's known inputs. Preserve
+    // that lower bound and its uncertainty instead of discarding the scenario.
+    if (indicator.calculationEligible === false && !resolved.resolved && !resolved.isMinimumEstimate) continue;
+    const amount = resolved.resolved
+      ? resolved.amount
+      : resolved.isMinimumEstimate
+        ? resolved.minimumAmount
+        : resolveScenarioAmount(indicator, scopedPolicy);
     const formula = buildScenarioFormula(indicator, scopedPolicy, amount);
 
     entries.push({
@@ -1475,10 +1743,16 @@ export function computeScenarioEntries(indicators, policy) {
       formula,
       amount,
       condition: indicator.condition || '',
-      policyId: policy.id,
-      productName: scopedPolicy.name || indicator.productName || policy.name || '',
-      calculationText: resolved.resolved ? resolved.calculationText : `${formula} = ${amount.toLocaleString('zh-CN')}元`,
+      policyId: policyWithFormulaVariables.id,
+      productName: scopedPolicy.name || indicator.productName || policyWithFormulaVariables.name || '',
+      calculationText: resolved.resolved || resolved.isMinimumEstimate
+        ? resolved.calculationText
+        : `${formula} = ${amount.toLocaleString('zh-CN')}元`,
       calculationDecisionSource: resolved.meta?.decisionSource || indicator.calculationDecisionSource || 'code_inference',
+      isMinimumEstimate: resolved.isMinimumEstimate === true,
+      uncertaintyNote: resolved.isMinimumEstimate
+        ? '已按条款公式可确认最低值计算，未计入待补充的非负金额。'
+        : '',
     });
   }
   return entries;

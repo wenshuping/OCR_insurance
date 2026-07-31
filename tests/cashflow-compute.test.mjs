@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   computePolicyCashflow,
+  computePolicyResponsibilityCalculations,
   computeScenarioEntries,
 } from '../server/cashflow-compute.mjs';
 
@@ -212,7 +213,7 @@ test('computePolicyCashflow: duplicate generic and concrete anniversary indicato
   assert.equal(entries.at(-1).cumulative, 24000);
 });
 
-test('computePolicyCashflow: single-age policy effective dates use the insured age year', () => {
+test('computePolicyCashflow: does not substitute basic amount for undefined effective insured amount', () => {
   const policy = {
     id: 500556,
     name: '成长阳光少儿两全保险(A款)（分红型）',
@@ -243,9 +244,7 @@ test('computePolicyCashflow: single-age policy effective dates use the insured a
 
   const entries = computePolicyCashflow(policy, null, indicators);
 
-  assert.deepEqual(entries.map((entry) => entry.year), [2029, 2032]);
-  assert.deepEqual(entries.map((entry) => entry.amount), [99012, 132016]);
-  assert.deepEqual(entries.map((entry) => entry.liability), ['深造金', '立业金']);
+  assert.deepEqual(entries, []);
 });
 
 test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
@@ -474,6 +473,30 @@ test('computeScenarioEntries resolves the current age branch for conditional dea
   assert.match(entries[0].calculationText, /基本保险金额50,000元 × 3倍 = 150,000元/u);
 });
 
+test('computeScenarioEntries excludes conditional death and total-disability claims without event facts', () => {
+  const sourceExcerpt = '2、身故或全残保险金 (1)被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按本合同基本保险金额的10%与本合同项下所实际交纳的保险费二者之和给付身故或全残保险金，本合同终止。被保险人于本合同生效之日起一年后因疾病导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。(2)被保险人因意外伤害导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。';
+  const entries = computeScenarioEntries([{
+    id: 'death-disability',
+    coverageType: '身故保障',
+    liability: '身故或全残保险金',
+    formulaText: '身故或全残保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl: 'https://example.test/official-terms.pdf',
+    sourceExcerpt,
+  }], {
+    id: 2001,
+    company: '测试保险',
+    name: '测试两全保险',
+    amount: 200000,
+    firstPremium: 0,
+    paymentPeriod: '1年交',
+  });
+
+  assert.deepEqual(entries, []);
+});
+
 test('computeScenarioEntries calculates quantified health and accident benefits generically', () => {
   const policy = { id: 88, name: '综合保障', amount: 200000, insuredBirthday: '1990-01-01' };
   const indicators = [
@@ -485,6 +508,49 @@ test('computeScenarioEntries calculates quantified health and accident benefits 
   const entries = computeScenarioEntries(indicators, policy);
 
   assert.deepEqual(entries.map((entry) => entry.amount), [40000, 1000000, 30000]);
+});
+
+test('computeScenarioEntries resolves a responsibility formula through a stored atomic definition', () => {
+  const policy = { id: 89, name: '公式保障', amount: 100000, insuredBirthday: '1990-01-01' };
+  const entries = computeScenarioEntries([
+    {
+      coverageType: '疾病保障',
+      liability: '有效保险金额定义',
+      normalizedFormula: 'effective_insured_amount = basic_insured_amount * (1 + 0.035) ^ (policy_year - 1)',
+      calculationEligible: false,
+    },
+    {
+      coverageType: '疾病保障',
+      liability: '身故保险金',
+      normalizedFormula: 'death_benefit = effective_insured_amount * 2',
+      formulaText: '按有效保险金额的2倍给付',
+      calculationEligible: true,
+    },
+  ], { ...policy, policyYear: 3 });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].scenario, '身故保险金');
+  assert.equal(entries[0].amount, 214245);
+  assert.match(entries[0].calculationText, /100,000 × \(1 \+ 0\.035\) \^ \(3 - 1\).* = 214,245元/u);
+});
+
+test('computeScenarioEntries retains a lower bound when a required basis term is unresolved', () => {
+  const entries = computeScenarioEntries([{
+    coverageType: '疾病保障',
+    liability: '身故保险金',
+    formulaText: '身故时有效保险金额 × 6',
+    calculationEligible: false,
+    calculationKey: 'multiple_of_basis',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+  }], { id: 90, name: '分红型两全保险', amount: 99888 });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 599328);
+  assert.equal(entries[0].isMinimumEstimate, true);
+  assert.match(entries[0].calculationText, /最低可确认金额 599,328元/u);
 });
 
 test('computeScenarioEntries treats 基本保险金 as coverage amount instead of premium', () => {
@@ -540,9 +606,12 @@ test('computeScenarioEntries: skips optional indicators unless selected', () => 
   const indicators = [
     { coverageType: '意外保障', liability: '可选航空意外', value: 20, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'unknown' },
     { coverageType: '意外保障', liability: '可选交通意外', value: 10, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'not_selected' },
-    { coverageType: '意外保障', liability: '已投保航空意外', value: 5, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', selectionStatus: 'selected', quantificationStatus: 'quantified' },
+    { id: 'air-selected', coverageType: '意外保障', liability: '已投保航空意外', value: 5, unit: '倍', basis: '基本保额', responsibilityScope: 'optional', optionalResponsibilityId: 'air-selected', selectionStatus: 'selected', quantificationStatus: 'quantified' },
   ];
-  const entries = computeScenarioEntries(indicators, changxingPolicy);
+  const entries = computeScenarioEntries(indicators, {
+    ...changxingPolicy,
+    optionalResponsibilities: [{ id: 'air-selected', selectionStatus: 'selected', coverageAmount: 60000 }],
+  });
   assert.equal(entries.length, 1);
   assert.equal(entries[0].scenario, '已投保航空意外');
   assert.equal(entries[0].amount, 300000);
@@ -714,11 +783,21 @@ test('computePolicyCashflow: skips optional cashflow indicators unless selected'
     responsibilityScope: 'optional',
     selectionStatus: 'unknown',
   };
-  const selectedMaturity = { ...optionalMaturity, liability: '已投保满期金', selectionStatus: 'selected', quantificationStatus: 'quantified' };
+  const selectedMaturity = {
+    ...optionalMaturity,
+    id: 'maturity-selected',
+    liability: '已投保满期金',
+    optionalResponsibilityId: 'maturity-selected',
+    selectionStatus: 'selected',
+    quantificationStatus: 'quantified',
+  };
 
   assert.deepEqual(computePolicyCashflow(shengshiPolicy, null, [optionalMaturity]), []);
 
-  const entries = computePolicyCashflow(shengshiPolicy, null, [selectedMaturity]);
+  const entries = computePolicyCashflow({
+    ...shengshiPolicy,
+    optionalResponsibilities: [{ id: 'maturity-selected', selectionStatus: 'selected', coverageAmount: shengshiPolicy.amount }],
+  }, null, [selectedMaturity]);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].liability, '已投保满期金');
   assert.equal(entries[0].amount, shengshiPolicy.amount);
@@ -907,6 +986,44 @@ test('computePolicyCashflow: responsibility text path produces entries when no t
   assert.equal(entries[0].liability, '生存保险金');
 });
 
+test('computePolicyCashflow: keeps OCR-spaced staged survival benefits alongside maturity', () => {
+  const policy = {
+    id: 516634,
+    name: '尊尚人生两全保险（分红型）',
+    company: '新华保险',
+    amount: 89877,
+    firstPremium: 10000,
+    date: '2024-11-24',
+    insuredBirthday: '1988-12-16',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: [
+        '（1）生存保险金',
+        '被保险人于本合同生效满 三 年起至 60 周岁保单生效对应日之前 （ 不含 60 周岁保单生效对应日 ） ， 在 每一保单生效对应日零时生存 ， 本公司按该保单生效对应日基本责任的保险金额的 5 % 给付生存保险金 ；',
+        '被保险人于 60 周岁保单生效对应日起至 80 周岁保单生效对应日期间 （ 含 80 周岁保单生效对应日 ） ， 在 每一保单生效对应日零时生存 ， 本公司按该保单生效对应日基本责任的保险金额的 10% 给付生存保险金 。',
+        '（2）满期保险金 被保险人生存至年满 80 周岁保单生效对应日零时 ， 本公司按基本责任的保险金额给付满期保险金 ， 本合同终止 。',
+      ].join('\n'),
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+  const survival = entries.filter((entry) => entry.liability === '生存保险金');
+
+  assert.equal(survival.length, 42);
+  assert.deepEqual(survival.slice(0, 2).map(({ year, amount }) => [year, amount]), [
+    [2027, 4494],
+    [2028, 4494],
+  ]);
+  assert.deepEqual(survival.slice(-2).map(({ year, amount }) => [year, amount]), [
+    [2067, 8988],
+    [2068, 8988],
+  ]);
+  assert.deepEqual(entries.filter((entry) => /满期/.test(entry.liability)).map(({ year, amount }) => [year, amount]), [
+    [2068, 89877],
+  ]);
+});
+
 test('computePolicyCashflow: responsibility text path skips unselected optional rows', () => {
   const policy = {
     ...policyWithResponsibilities,
@@ -1009,7 +1126,7 @@ test('computePolicyCashflow: responsibility text path cumulative is correct', ()
   assert.equal(entries[entries.length - 1].cumulative, entries.length * 10000);
 });
 
-test('computePolicyCashflow: responsibility text path expands child education staged benefits', () => {
+test('computePolicyCashflow: leaves staged effective-insured-amount benefits uncomputed without a basis definition', () => {
   const policy = {
     id: 508870,
     company: '新华保险',
@@ -1035,16 +1152,35 @@ test('computePolicyCashflow: responsibility text path expands child education st
 
   const entries = computePolicyCashflow(policy, null, []);
 
-  assert.deepEqual(entries.map((entry) => [entry.year, entry.age, entry.liability, entry.amount]), [
-    [2031, 18, '大学教育金', 7752],
-    [2032, 19, '大学教育金', 7752],
-    [2033, 20, '大学教育金', 7752],
-    [2034, 21, '大学教育金', 7752],
-    [2035, 22, '深造金', 23256],
-    [2038, 25, '立业金', 31008],
-    [2041, 28, '婚嫁金', 31008],
-  ]);
-  assert.equal(entries.at(-1).cumulative, 116280);
+  assert.deepEqual(entries, []);
+});
+
+test('computePolicyCashflow: does not infer OCR-spaced effective-insured-amount payments without a basis definition', () => {
+  const policy = {
+    id: 516630,
+    company: '新华保险',
+    name: '阳光灿烂少儿两全保险（分红型）',
+    amount: 99888,
+    firstPremium: 10000,
+    date: '2024-11-24',
+    insuredBirthday: '1988-12-16',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: [
+        '一、 生存保险金',
+        '1、被保险人生存至 1 8、1 9、2 0、21周岁的保单生效对应日，本公司将按各保单生效对应日有效保险金额的20%给付“高等教育金”；',
+        '2、被保险人生存至 2 2、2 3、24周岁的保单生效对应日，本公司将按各保单生效对应日有效保险金额的25%给付“深造金”；',
+        '3、被保险人生存至25周岁的保单生效对应日，本公司将按该保单生效对应日有效保险金额的50%给付“婚嫁金”；',
+        '4、被保险人生存至30周岁的保单生效对应日，本公司将按该保单生效对应日有效保险金额给付“发展金”；',
+        '5、被保险人生存至60周岁的保单生效对应日，本公司将按该保单生效对应日有效保险金额给付“养老金”；',
+      ].join('\n'),
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, []);
+
+  assert.deepEqual(entries, []);
 });
 
 test('computePolicyCashflow: responsibility parser ignores OCR-split decimal multipliers', () => {
@@ -1348,6 +1484,124 @@ test('computePolicyCashflow: normalizes maturity source excerpt names before mer
   assert.equal(entries.length, 1);
   assert.equal(entries[0].year, 2050);
   assert.equal(entries[0].liability, '满期生存保险金');
+});
+
+test('computePolicyCashflow: retains the lower-bound benefit when a basis component is unresolved', () => {
+  const policy = {
+    id: 34,
+    company: '测试保险',
+    name: '测试分红两全保险',
+    amount: 99888,
+    date: '2024-11-24',
+    insuredBirthday: '1988-12-16',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: '一、养老金 被保险人生存至60周岁的保单生效对应日，本公司将按该保单生效对应日有效保险金额给付养老金。',
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [{
+    id: 'pension',
+    coverageType: '现金流',
+    liability: '养老金',
+    formulaText: '该保单生效对应日有效保险金额 × 100%',
+    unit: '公式',
+    sourceExcerpt: '5、被保险人生存至60周岁的保单生效对应日，本公司将按该保单生效对应日有效保险金额给付“养老金”；',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+      sourceExcerpt: '有效保险金额：指基本保险金额与累计红利保险金额两部分之和。',
+    },
+  }]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].amount, 99888);
+  assert.equal(entries[0].isMinimumEstimate, true);
+  assert.match(entries[0].calcText, /最低可确认金额 99,888元/u);
+});
+
+test('computePolicyCashflow: schedules an effective-insured-amount benefit at its proven lower bound', () => {
+  const policy = {
+    id: 3401,
+    company: '测试保险',
+    name: '测试分红两全保险',
+    amount: 99888,
+    date: '2024-11-24',
+    insuredBirthday: '2018-12-16',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: '一、婚嫁金 被保险人生存至25周岁的保单生效对应日，本公司按该保单生效对应日有效保险金额的50%给付婚嫁金。',
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [{
+    id: 'marriage',
+    coverageType: '现金流',
+    liability: '婚嫁金',
+    formulaText: '该保单生效对应日有效保险金额 × 50%',
+    unit: '公式',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+    },
+  }]);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.amount, entry.isMinimumEstimate]), [[2043, 49944, true]]);
+  assert.match(entries[0].calcText, /\(99,888 \+ 累计红利保险金额（待补充）\) × 0\.5/u);
+  assert.match(entries[0].uncertaintyNote, /未计入待补充的非负金额/u);
+});
+
+test('responsibility calculation projection retains a lower bound with an unresolved required input', () => {
+  const policy = {
+    id: 35,
+    company: '测试保险',
+    name: '测试分红两全保险',
+    amount: 99888,
+    date: '2024-11-24',
+    insuredBirthday: '1988-12-16',
+  };
+  const calculations = computePolicyResponsibilityCalculations(policy, [{
+    id: 'development',
+    coverageType: '现金流',
+    liability: '发展金',
+    formulaText: '该保单生效对应日有效保险金额 × 100%',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+    },
+  }]);
+
+  assert.equal(calculations.length, 1);
+  assert.equal(calculations[0].amount, 99888);
+  assert.equal(calculations[0].isMinimumEstimate, true);
+  assert.match(calculations[0].calculationText, /最低可确认金额 99,888元/u);
+});
+
+test('responsibility calculation projection retains a pending formula with every known policy input substituted', () => {
+  const calculations = computePolicyResponsibilityCalculations({
+    id: 36,
+    company: '测试保险',
+    name: '测试意外险',
+    amount: 100000,
+  }, [{
+    id: 'disability',
+    coverageType: '意外',
+    liability: '测试给付金',
+    formulaText: '测试给付金 = 基本保险金额 × 给付比例',
+    basisKey: 'basic_amount',
+    calculationKey: 'basic_amount',
+    calculationEligible: false,
+    calculationReason: '缺少给付比例',
+  }]);
+
+  assert.equal(calculations.length, 1);
+  assert.equal(calculations[0].amount, 0);
+  assert.equal(calculations[0].isPending, true);
+  assert.match(calculations[0].calculationText, /基本保险金额100,000元/u);
+  assert.match(calculations[0].calculationText, /条款公式/u);
 });
 
 test('computePolicyCashflow: expands China Life multi-plan annuity source excerpts with plan amounts', () => {

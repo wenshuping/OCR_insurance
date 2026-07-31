@@ -1,6 +1,10 @@
 export type IndicatorCalculationResult = {
   resolved: boolean;
+  partial?: boolean;
   amount: number;
+  minimumAmount?: number;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
   calculationText: string;
   meta: {
     calculationEligible: boolean;

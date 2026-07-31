@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import type { CustomerResponsibilitySummary } from '../api/contracts/responsibility';
 import type { CashflowEntry, ScenarioEntry } from '../api/contracts/cashflow';
+import type { ResponsibilityCalculation } from '../api/contracts/policy';
 import { formatCurrency } from './formatters';
 import { hasQuantifiedCalculationSignal } from '../indicator-calculation.mjs';
 import {
@@ -36,12 +37,14 @@ export function CustomerResponsibilitySummaryCard({
   scenarioEntries = [],
   baseAmount = 0,
   firstPremium = 0,
+  responsibilityCalculations = [],
 }: {
   summary: CustomerResponsibilitySummary;
   cashflowEntries?: CashflowEntry[];
   scenarioEntries?: ScenarioEntry[];
   baseAmount?: string | number;
   firstPremium?: string | number;
+  responsibilityCalculations?: ResponsibilityCalculation[];
 }) {
   const blocks = (Array.isArray(summary.contentBlocks) ? summary.contentBlocks : [])
     .map((block) => ({
@@ -136,15 +139,26 @@ export function CustomerResponsibilitySummaryCard({
           </div>
           {responsibilities.map((item, index) => {
             const hasQuantifiedIndicator = hasQuantifiedCalculationSignal(item.howItPays);
-            const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(item.howItPays);
+            const isOptionalResponsibility = /可选(?:保险)?责任|可选择(?:的)?保险责任/u.test(`${item.title} ${item.plainText} ${item.howItPays}`);
+            const usesPolicyAmount = !isOptionalResponsibility && /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额)/u.test(item.howItPays) && !/有效保险金额/u.test(item.howItPays);
             const usesPolicyPremium = /(?:首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费)/u.test(item.howItPays);
             const calculatedRows = cashflowEntries
               .filter((entry) => item.title && responsibilityTitlesMatch(item.title, entry.liability))
               .sort((left, right) => Number(left.year) - Number(right.year));
             const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
             const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
+            const hasMinimumEstimate = calculatedRows.some((entry) => (
+              entry.isMinimumEstimate || /最低可确认金额/u.test(cleanText(entry.calculationText || entry.calcText))
+            ));
+            const uncertaintyNotes = Array.from(new Set(
+              calculatedRows.map((entry) => cleanText(entry.uncertaintyNote)).filter(Boolean),
+            ));
             const calculatedScenario = scenarioEntries.find((entry) => (
               responsibilityTitlesMatch(item.title, entry.scenario) && Number(entry.amount) > 0
+            ));
+            const hasMinimumScenarioEstimate = calculatedScenario?.isMinimumEstimate === true;
+            const calculatedResponsibility = responsibilityCalculations.find((entry) => (
+              responsibilityTitlesMatch(item.title, entry.liability)
             ));
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
@@ -161,10 +175,10 @@ export function CustomerResponsibilitySummaryCard({
                         <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                           <p className="text-[11px] font-black text-blue-700">量化指标</p>
                           {usesPolicyAmount && Number(baseAmount) > 0 ? (
-                            <p className="mt-1 text-xs font-black text-cyan-800">本保单保险金额：{formatCurrency(Number(baseAmount))}</p>
+                            <p className="mt-1 text-[11px] font-semibold text-slate-500">计算参照：本保单保险金额 {formatCurrency(Number(baseAmount))}</p>
                           ) : null}
                           {usesPolicyPremium && Number(firstPremium) > 0 ? (
-                            <p className="mt-1 text-xs font-black text-cyan-800">本保单首期保费：{formatCurrency(Number(firstPremium))}</p>
+                            <p className="mt-1 text-[11px] font-semibold text-slate-500">计算参照：本保单首期保费 {formatCurrency(Number(firstPremium))}</p>
                           ) : null}
                           <p className="mt-1 break-words text-xs font-black leading-5 text-blue-700">{item.howItPays}</p>
                         </div>
@@ -173,21 +187,74 @@ export function CustomerResponsibilitySummaryCard({
                       )
                     ) : null}
                     {calculatedRows.length ? (
-                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
-                        <p className="font-black">已按本保单指标计算</p>
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        hasMinimumEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">{hasMinimumEstimate ? '含不确定因素，按最低值统计' : '已按本保单指标计算'}</p>
                         <p className="mt-1">
                           {calculatedAmounts.length === 1 ? `每次 ${formatCurrency(calculatedAmounts[0])}，` : ''}
                           共 {calculatedRows.length} 次，合同计划累计 {formatCurrency(calculatedTotal)}
                           （{calculatedRows[0].year}—{calculatedRows[calculatedRows.length - 1].year}年）
                         </p>
-                        <p className="mt-1 text-[11px] text-cyan-700">
+                        <p className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
                           {calculatedRows[0].calculationText || calculatedRows[0].calcText || '按保险责任指标计算'}
                         </p>
+                        {uncertaintyNotes.map((note) => (
+                          <p key={note} className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            备注：{note}
+                          </p>
+                        ))}
                       </div>
                     ) : calculatedScenario ? (
-                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
-                        <p className="font-black">已按本保单当前条件计算：{formatCurrency(calculatedScenario.amount)}</p>
-                        <p className="mt-1 text-[11px] text-cyan-700">{calculatedScenario.calculationText}</p>
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        hasMinimumScenarioEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">{hasMinimumScenarioEstimate ? '含不确定因素，按最低值统计' : `已按本保单当前条件计算：${formatCurrency(calculatedScenario.amount)}`}</p>
+                        {hasMinimumScenarioEstimate ? <p className="mt-1">最低可确认金额：{formatCurrency(calculatedScenario.amount)}</p> : null}
+                        <p className={`mt-1 text-[11px] ${hasMinimumScenarioEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>{calculatedScenario.calculationText}</p>
+                        {cleanText(calculatedScenario.uncertaintyNote) ? <p className={`mt-1 text-[11px] ${hasMinimumScenarioEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>备注：{cleanText(calculatedScenario.uncertaintyNote)}</p> : null}
+                      </div>
+                    ) : calculatedResponsibility ? (
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        calculatedResponsibility.isPending
+                          ? 'bg-blue-50 text-blue-800 ring-blue-100'
+                          : calculatedResponsibility.isMinimumEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">
+                          {calculatedResponsibility.isPending
+                            ? (calculatedResponsibility.hasBranchScenarios
+                              ? '已按本保单数据列出条款分支测算，未计入统计'
+                              : (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计'))
+                            : calculatedResponsibility.isMinimumEstimate
+                            ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
+                            : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}
+                        </p>
+                        <p className={`mt-1 whitespace-pre-wrap text-[11px] ${
+                          calculatedResponsibility.isPending
+                            ? 'text-blue-700'
+                            : calculatedResponsibility.isMinimumEstimate
+                              ? 'text-amber-700'
+                              : 'text-cyan-700'
+                        }`}>
+                          {calculatedResponsibility.calculationText}
+                        </p>
+                        {cleanText(calculatedResponsibility.uncertaintyNote) ? (
+                          <p className={`mt-1 text-[11px] ${
+                            calculatedResponsibility.isPending
+                              ? 'text-blue-700'
+                              : calculatedResponsibility.isMinimumEstimate
+                                ? 'text-amber-700'
+                                : 'text-cyan-700'
+                          }`}>
+                            备注：{cleanText(calculatedResponsibility.uncertaintyNote)}
+                          </p>
+                        ) : null}
                       </div>
                     ) : item.calculationStatus ? (
                       <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">

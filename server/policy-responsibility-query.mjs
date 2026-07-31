@@ -684,10 +684,22 @@ async function resolveKnowledgeRecordsForResponsibilityQuery({
   policy,
   officialDomainProfiles = [],
   knowledgeRecords = [],
+  loadKnowledgeRecords = null,
   resolveFeishuKnowledgeRecords,
   allowExternalReferences = false,
 }) {
-  const localRecords = Array.isArray(knowledgeRecords) ? knowledgeRecords : [];
+  let localRecords = Array.isArray(knowledgeRecords) ? knowledgeRecords : [];
+  if (typeof loadKnowledgeRecords === 'function') {
+    try {
+      const loaded = await loadKnowledgeRecords({
+        company: text(policy?.company),
+        productName: text(policy?.name || policy?.productName),
+      });
+      if (Array.isArray(loaded)) localRecords = loaded;
+    } catch {
+      // Keep the in-memory snapshot as a safe fallback when lazy loading fails.
+    }
+  }
   const localArtifacts = buildKnowledgeSearchArtifacts({
     policy,
     records: localRecords,
@@ -716,6 +728,7 @@ export async function queryPolicyResponsibilities({
   query = analyzeInsurancePolicyResponsibilities,
   officialDomainProfiles = [],
   knowledgeRecords = [],
+  loadKnowledgeRecords = null,
   resolveFeishuKnowledgeRecords = null,
   preferLocalKnowledgeAnswer = false,
   allowExternalReferences = false,
@@ -726,6 +739,7 @@ export async function queryPolicyResponsibilities({
     policy,
     officialDomainProfiles,
     knowledgeRecords,
+    loadKnowledgeRecords,
     resolveFeishuKnowledgeRecords,
     allowExternalReferences,
   });

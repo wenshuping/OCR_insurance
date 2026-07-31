@@ -115,6 +115,8 @@ export type FamilyWealthPolicyCashflowRow = {
   cumulative: number;
   liability: string;
   calculationText?: string;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
   policyId: number;
   productName: string;
 };
@@ -164,9 +166,18 @@ export type FamilyWealthPolicyReport = {
   company: string;
   annualPremium: number;
   cashflowRows: FamilyWealthPolicyCashflowRow[];
+  confirmedCashflowRows: FamilyWealthPolicyCashflowRow[];
   cashValueRows: FamilyWealthPolicyCashValueRow[];
   excludedCashflowRows: FamilyWealthPolicyCashflowRow[];
   excludedCashValueRows: FamilyWealthPolicyCashValueRow[];
+  minimumEstimateCashflowRows: FamilyWealthPolicyCashflowRow[];
+  uncomputedCashflowItems: Array<{
+    policyId?: number | string | null;
+    productName: string;
+    liability: string;
+    missingInputs: string[];
+    calculationText: string;
+  }>;
   annualCashflowRows: FamilyWealthPolicyAnnualCashflowRow[];
   uncertaintyItems: FamilyWealthUncertaintyItem[];
   uncertaintyNote: string;
@@ -222,6 +233,18 @@ export type FamilyWealthExcludedPolicy = {
 export type FamilyWealthReport = {
   memberReports: FamilyMemberWealthReport[];
   excludedPolicies: FamilyWealthExcludedPolicy[];
+  cashflowSummary: {
+    exactAmount: number;
+    minimumAmount: number;
+    uncomputedCount: number;
+  };
+  uncomputedCashflowItems: Array<{
+    policyId?: number | string | null;
+    productName: string;
+    liability: string;
+    missingInputs: string[];
+    calculationText: string;
+  }>;
   statisticsScopeNote: string;
   aggregateRows: FamilyWealthAggregateRow[];
   keyPoints: FamilyWealthKeyPoint[];

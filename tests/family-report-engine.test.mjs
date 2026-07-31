@@ -43,6 +43,9 @@ function makePolicy(overrides = {}) {
     createdAt: overrides.createdAt ?? '2026-05-30T00:00:00.000Z',
     cashflowEntries: overrides.cashflowEntries ?? [],
     scenarioEntries: overrides.scenarioEntries ?? [],
+    ...(Object.prototype.hasOwnProperty.call(overrides, 'responsibilityCalculations')
+      ? { responsibilityCalculations: overrides.responsibilityCalculations }
+      : {}),
     totalCashflow: overrides.totalCashflow ?? 0,
     cashValues: overrides.cashValues ?? [],
     participantReviewStatus: overrides.participantReviewStatus,
@@ -2148,6 +2151,94 @@ test('buildFamilyReport keeps dividend and universal account uncertainty out of 
   assert.equal(universalReport.wealth.aggregateRows.length, 0);
   assert.equal(radarScore(universalReport.radar.family, 'wealth').amount, 0);
   assert.equal(universalPolicy.attentionItems.some((item) => /缺少现金价值表/u.test(item)), false);
+});
+
+test('buildFamilyReport keeps a contract-backed minimum cashflow while labeling its unresolved upside', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 34,
+      insured: '妈妈',
+      name: '阳光少儿两全保险（分红型）',
+      date: '2024-11-24',
+      amount: 99888,
+      cashflowEntries: [{
+        year: 2048,
+        age: 60,
+        amount: 99888,
+        cumulative: 99888,
+        liability: '养老金',
+        policyId: 34,
+        productName: '阳光少儿两全保险（分红型）',
+        isMinimumEstimate: true,
+        uncertaintyNote: '已按条款公式可确认最低值计算，未计入待补充的非负金额。',
+      }],
+    }),
+  ]);
+
+  const policy = report.wealth.memberReports.find((item) => item.member === '妈妈').policies.find((item) => item.policyId === 34);
+  assert.equal(policy.cashflowRows[0].amount, 99888);
+  assert.equal(policy.minimumEstimateCashflowRows.length, 1);
+  assert.match(policy.uncertaintyNote, /已按条款公式可确认最低值统计1笔给付/u);
+  assert.match(policy.attentionItems.join(' '), /未确定增量未计入/u);
+});
+
+test('buildFamilyReport consumes the policy-detail projection for critical, accident, and cashflow status', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 340,
+      insured: '妈妈',
+      name: '家庭统一投影测试保单',
+      coverageIndicators: [
+        { id: 'critical', coverageType: '重大疾病', liability: '重大疾病保险金', formulaText: '基本保险金额的100%' },
+        { id: 'accident', coverageType: '意外保障', liability: '意外身故保险金', formulaText: '基本保险金额的100%' },
+        { id: 'education', coverageType: '现金流', liability: '教育金', formulaText: '基本保险金额的20%' },
+        { id: 'birthday', coverageType: '现金流', liability: '祝寿金', formulaText: '可选责任保险金额' },
+      ],
+      responsibilityCalculations: [
+        { indicatorId: 'critical', liability: '重大疾病保险金', amount: 188888, calculationText: '保单详情重疾计算 = 188,888元' },
+        { indicatorId: 'accident', liability: '意外身故保险金', amount: 0, isPending: true, calculationText: '缺少事故条件' },
+        { indicatorId: 'birthday', liability: '祝寿金', amount: 0, isPending: true, calculationText: '缺少可选责任保险金额' },
+      ],
+      scenarioEntries: [
+        { scenario: '意外身故保险金', amount: 288888, calculationText: '保单详情意外计算 = 288,888元' },
+      ],
+      cashflowEntries: [
+        { year: 2040, age: 40, amount: 20000, cumulative: 20000, liability: '教育金', policyId: 340, productName: '家庭统一投影测试保单', calculationText: '保单详情现金流 = 20,000元' },
+        { year: 2045, age: 45, amount: 10000, cumulative: 30000, liability: '婚嫁金', policyId: 340, productName: '家庭统一投影测试保单', isMinimumEstimate: true, uncertaintyNote: '未计入累计红利保险金额', calculationText: '最低可确认金额 = 10,000元' },
+      ],
+    }),
+  ]);
+
+  const critical = report.criticalIllness.members[0].rows.find((row) => row.key === 'critical_first');
+  const accident = report.accident.members[0].rows.find((row) => row.key === 'general_accident');
+  assert.equal(critical.amount, 188888);
+  assert.equal(critical.sourcePolicies[0].calculationText, '保单详情重疾计算 = 188,888元');
+  assert.equal(accident.amount, 288888);
+  assert.equal(accident.sourcePolicies[0].calculationText, '保单详情意外计算 = 288,888元');
+  assert.deepEqual(report.wealth.cashflowSummary, {
+    exactAmount: 20000,
+    minimumAmount: 10000,
+    uncomputedCount: 1,
+  });
+  assert.deepEqual(report.wealth.uncomputedCashflowItems[0].missingInputs, ['可选责任保险金额']);
+  assert.equal(report.wealth.uncomputedCashflowItems[0].liability, '祝寿金');
+});
+
+test('buildFamilyReport does not recalculate protection amounts when a policy detail projection is present', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 341,
+      name: '详情投影未计算保单',
+      amount: 500000,
+      coverageIndicators: [{ id: 'critical', coverageType: '重大疾病', liability: '重大疾病保险金', formulaText: '基本保险金额的100%' }],
+      responsibilityCalculations: [],
+      scenarioEntries: [],
+    }),
+  ]);
+
+  const critical = report.criticalIllness.members[0].rows.find((row) => row.key === 'critical_first');
+  assert.equal(critical.amount, 0);
+  assert.equal(critical.status, 'formula');
 });
 
 test('buildFamilyReport explains future deterministic payout totals by liability and year range', () => {

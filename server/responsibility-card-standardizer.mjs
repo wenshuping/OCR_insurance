@@ -1,6 +1,7 @@
 import {
   CALCULATION_INPUT_SCHEMA_VERSION,
   normalizeIndicatorCalculation,
+  repairIndicatorFormulaFromOfficialExcerptForDisplay,
   requiredCalculationInputsForMeta,
 } from '../src/indicator-calculation.mjs';
 import {
@@ -110,7 +111,7 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   if (withoutForPrefix && withoutForPrefix !== liability && /保险金/u.test(withoutForPrefix)) return withoutForPrefix;
   const cleanedLiability = cleanClauseTitle(liability);
   if (cleanedLiability && cleanedLiability !== liability) return cleanedLiability;
-  if (name === '疾病全残' && excerpt.includes('身故或身体全残保险金')) return '身故或身体全残保险金';
+  if (name === '疾病全残' && /^身故或身体全残保险金/u.test(excerpt)) return '身故或身体全残保险金';
   if (name === '满期返还' && excerpt.includes('满期保险金')) return '满期保险金';
   const concreteLiability = concreteScheduledLiabilityFromExcerptForAggregate(indicator, sourceExcerpt);
   if (concreteLiability) return concreteLiability;
@@ -230,10 +231,21 @@ function hasReviewedIndicatorMetadata(indicator = {}) {
 }
 
 function reviewedCalculationMeta(indicator = {}, meta = {}) {
+  if (meta.calculationKey === 'claim_event_facts') return meta;
   const hasReviewedMetadata = hasReviewedIndicatorMetadata(indicator);
   const basisKey = text(indicator.basisKey);
   const calculationKey = text(indicator.calculationKey);
   if (!hasReviewedMetadata || (!basisKey && !calculationKey)) return meta;
+
+  // The June reviewed import used display_only for every contract-defined
+  // effective insured amount. Its status is historic metadata, not a safety
+  // constraint: the current formula evaluator can derive an exact amount or a
+  // safe lower bound from known policy inputs. Do not let that old flag erase
+  // the evaluator's non-blocked calculation decision during later imports.
+  const recoverableLegacyDecision = indicator.calculationEligible === false
+    && meta.calculationEligible === true
+    && !hasBlockedCalculationDependency(meta);
+  if (recoverableLegacyDecision) return meta;
 
   return {
     ...meta,
@@ -424,58 +436,118 @@ function indicatorSelectionFields(indicator = {}) {
   };
 }
 
+function structuredFormulaFields(indicator = {}) {
+  const normalizedFormula = text(indicator.normalizedFormula);
+  const branchSemanticContract = text(indicator.branchSemanticContract);
+  return {
+    ...(normalizedFormula ? { normalizedFormula } : {}),
+    ...(indicator.basisDefinition && typeof indicator.basisDefinition === 'object' && !Array.isArray(indicator.basisDefinition)
+      ? { basisDefinition: { ...indicator.basisDefinition } }
+      : {}),
+    ...(Array.isArray(indicator.operands) ? {
+      operands: indicator.operands.map((operand) => (
+        operand && typeof operand === 'object' && !Array.isArray(operand) ? { ...operand } : operand
+      )),
+    } : {}),
+    ...(Array.isArray(indicator.branches) ? { branches: indicator.branches.map((branch) => ({ ...branch })) } : {}),
+    ...(branchSemanticContract ? { branchSemanticContract } : {}),
+  };
+}
+
 export function standardizeResponsibilityIndicator(indicator = {}, { policy = {} } = {}) {
-  const meta = reviewedCalculationMeta(indicator, semanticCalculationMeta(indicator, normalizeIndicatorCalculation(indicator)));
-  const calculationReason = calculationReasonFor(indicator, meta);
+  const repairedIndicator = repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator);
+  const meta = reviewedCalculationMeta(repairedIndicator, semanticCalculationMeta(repairedIndicator, normalizeIndicatorCalculation(repairedIndicator)));
+  const calculationReason = calculationReasonFor(repairedIndicator, meta);
   const calculationEligible = Boolean(meta.calculationEligible) && !calculationReason;
-  const sourceUrl = sourceUrlFrom(indicator);
-  const sourceExcerpt = sourceExcerptFrom(indicator);
-  const treatment = hasOfficialEvidence(indicator)
-    ? reviewedCashflowTreatment(indicator, cashflowTreatmentFor(indicator, { ...meta, calculationEligible }))
+  const sourceUrl = sourceUrlFrom(repairedIndicator);
+  const sourceExcerpt = sourceExcerptFrom(repairedIndicator);
+  const treatment = hasOfficialEvidence(repairedIndicator)
+    ? reviewedCashflowTreatment(repairedIndicator, cashflowTreatmentFor(repairedIndicator, { ...meta, calculationEligible }))
     : 'not_cashflow';
-  const liability = displayLiabilityName(indicator, sourceExcerpt);
-  const selectionFields = indicatorSelectionFields(indicator);
-  const reviewedReason = hasReviewedIndicatorMetadata(indicator) ? text(indicator.calculationReason) : '';
-  const evidenceFields = evidenceVerificationFields(indicator);
+  const liability = displayLiabilityName(repairedIndicator, sourceExcerpt);
+  const selectionFields = indicatorSelectionFields(repairedIndicator);
+  const reviewedReason = hasReviewedIndicatorMetadata(repairedIndicator) && !calculationEligible
+    ? text(repairedIndicator.calculationReason)
+    : '';
+  const verifiedCalculationReason = calculationEligible
+    && text(repairedIndicator.indicatorCheckStatus) === 'verified_calculable'
+    ? text(repairedIndicator.calculationReason)
+    : '';
+  const evidenceFields = evidenceVerificationFields(repairedIndicator);
   const normalized = {
-    id: text(indicator.id),
-    company: firstNonEmpty(indicator.company, policy.company),
-    productName: firstNonEmpty(indicator.productName, policy.productName, policy.name),
-    coverageType: text(indicator.coverageType),
+    id: text(repairedIndicator.id),
+    company: firstNonEmpty(repairedIndicator.company, policy.company),
+    productName: firstNonEmpty(repairedIndicator.productName, policy.productName, policy.name),
+    coverageType: text(repairedIndicator.coverageType),
     liability,
-    category: categoryFromIndicator(indicator, sourceExcerpt),
-    triggerCondition: firstNonEmpty(indicator.triggerCondition, indicator.condition),
-    payoutSummary: firstNonEmpty(indicator.payoutSummary, indicator.formulaText, indicator.basis),
-    basis: text(indicator.basis),
-    formulaText: text(indicator.formulaText),
-    value: meta.value ?? indicator.value ?? null,
-    valueText: text(indicator.valueText),
-    unit: firstNonEmpty(meta.unit, indicator.unit),
+    indicatorName: text(repairedIndicator.indicatorName),
+    category: categoryFromIndicator(repairedIndicator, sourceExcerpt),
+    triggerCondition: firstNonEmpty(repairedIndicator.triggerCondition, repairedIndicator.condition),
+    payoutSummary: firstNonEmpty(repairedIndicator.payoutSummary, repairedIndicator.formulaText, repairedIndicator.basis),
+    customerSummary: text(repairedIndicator.customerSummary),
+    importantLimits: Array.isArray(repairedIndicator.importantLimits)
+      ? repairedIndicator.importantLimits.map(text).filter(Boolean)
+      : [],
+    basis: text(repairedIndicator.basis),
+    formulaText: text(repairedIndicator.formulaText),
+    ...structuredFormulaFields(repairedIndicator),
+    value: meta.value ?? repairedIndicator.value ?? null,
+    valueText: text(repairedIndicator.valueText),
+    unit: firstNonEmpty(meta.unit, repairedIndicator.unit),
     basisKey: meta.basisKey,
     calculationKey: meta.calculationKey,
-    requiredInputs: Array.isArray(indicator.requiredInputs) && indicator.requiredInputs.length
-      ? indicator.requiredInputs.map(text).filter(Boolean)
+    requiredInputs: Array.isArray(repairedIndicator.requiredInputs)
+      ? repairedIndicator.requiredInputs.map(text).filter(Boolean)
       : requiredCalculationInputsForMeta(meta),
-    calculationInputSchemaVersion: text(indicator.calculationInputSchemaVersion) || CALCULATION_INPUT_SCHEMA_VERSION,
+    unresolvedRequiredInputs: Array.isArray(repairedIndicator.unresolvedRequiredInputs)
+      ? repairedIndicator.unresolvedRequiredInputs.map((item) => ({ ...item }))
+      : [],
+    calculationInputSchemaVersion: text(repairedIndicator.calculationInputSchemaVersion) || CALCULATION_INPUT_SCHEMA_VERSION,
     calculationEligible,
-    calculationReason: reviewedReason || (calculationEligible ? '' : calculationReason),
-    calculationDecisionSource: text(indicator.calculationDecisionSource) || meta.decisionSource,
-    calculationMetadataVersion: text(indicator.calculationMetadataVersion),
-    indicatorCheckStatus: reviewedIndicatorStatus(indicator),
-    reviewedCalculationStatus: reviewedIndicatorCalculationStatus(indicator),
-    reviewedIndicatorCheckStatus: reviewedIndicatorStatus(indicator),
+    calculationReason: reviewedReason || verifiedCalculationReason || (calculationEligible ? '' : calculationReason),
+    calculationDecisionSource: text(repairedIndicator.calculationDecisionSource) || meta.decisionSource,
+    calculationMetadataVersion: text(repairedIndicator.calculationMetadataVersion),
+    indicatorCheckStatus: reviewedIndicatorStatus(repairedIndicator),
+    reviewedCalculationStatus: reviewedIndicatorCalculationStatus(repairedIndicator),
+    reviewedIndicatorCheckStatus: reviewedIndicatorStatus(repairedIndicator),
     cashflowTreatment: treatment,
     sourceUrl,
-    sourceTitle: text(indicator.sourceTitle),
+    sourceTitle: text(repairedIndicator.sourceTitle),
     sourceExcerpt,
-    sourceKind: text(indicator.sourceKind),
-    evidenceLabel: text(indicator.evidenceLabel),
-    evidenceLevel: text(indicator.evidenceLevel || indicator.sourceLevel),
+    sourceKind: text(repairedIndicator.sourceKind),
+    evidenceLabel: text(repairedIndicator.evidenceLabel),
+    evidenceLevel: text(repairedIndicator.evidenceLevel || repairedIndicator.sourceLevel),
     verificationStatus: evidenceFields.verificationStatus,
     verificationLabel: evidenceFields.verificationLabel,
     referenceOnly: evidenceFields.referenceOnly,
-    official: typeof indicator.official === 'boolean' ? indicator.official : undefined,
+    official: typeof repairedIndicator.official === 'boolean' ? repairedIndicator.official : undefined,
     confidence: sourceUrl && sourceExcerpt ? 'high' : 'low',
+    responsibilityId: text(repairedIndicator.responsibilityId),
+    parentResponsibilityId: text(repairedIndicator.parentResponsibilityId),
+    branchId: text(repairedIndicator.branchId),
+    payout: text(repairedIndicator.payout),
+    mutuallyExclusiveGroup: text(repairedIndicator.mutuallyExclusiveGroup),
+    responsibilityKind: text(repairedIndicator.responsibilityKind),
+    coverageAggregation: text(repairedIndicator.coverageAggregation),
+    evidenceTokens: Array.isArray(repairedIndicator.evidenceTokens)
+      ? repairedIndicator.evidenceTokens.map(text).filter(Boolean)
+      : [],
+    ruleRefs: Array.isArray(repairedIndicator.ruleRefs)
+      ? repairedIndicator.ruleRefs.map(text).filter(Boolean)
+      : [],
+    responsibilityArtifactId: text(repairedIndicator.responsibilityArtifactId),
+    responsibilityRepairVersion: text(repairedIndicator.responsibilityRepairVersion),
+    responsibilitySourceDigest: text(repairedIndicator.responsibilitySourceDigest),
+    sourceDigest: text(repairedIndicator.sourceDigest),
+    reviewedResponsibilityIndex: Number.isFinite(Number(repairedIndicator.reviewedResponsibilityIndex))
+      ? Number(repairedIndicator.reviewedResponsibilityIndex)
+      : undefined,
+    reviewedIndicatorIndex: Number.isFinite(Number(repairedIndicator.reviewedIndicatorIndex))
+      ? Number(repairedIndicator.reviewedIndicatorIndex)
+      : undefined,
+    ...(repairedIndicator.provenance && typeof repairedIndicator.provenance === 'object' && !Array.isArray(repairedIndicator.provenance)
+      ? { provenance: { ...repairedIndicator.provenance } }
+      : {}),
     ...selectionFields,
   };
 
@@ -502,6 +574,7 @@ function normalizeResponsibility(row = {}) {
     company: firstNonEmpty(row.company, row.companyName, row.insurer),
     productName: firstNonEmpty(row.productName, row.product_name, row.matchedProductName, row.policyName),
     canonicalProductId: firstNonEmpty(row.canonicalProductId, row.canonical_product_id),
+    responsibilityId: text(row.responsibilityId),
     title: responsibilityTitle(row),
     coverageType: text(row.coverageType),
     scenario: text(row.scenario || row.description || row.desc || row.content),
@@ -522,6 +595,8 @@ function normalizeResponsibility(row = {}) {
     calculationDecisionSource: text(row.calculationDecisionSource),
     cashflowTreatment: text(row.cashflowTreatment),
     sourceUrl: sourceUrlFrom(row),
+    sourceDigest: firstNonEmpty(row.sourceDigest, row.source_digest),
+    responsibilitySourceDigest: firstNonEmpty(row.responsibilitySourceDigest, row.responsibility_source_digest),
     sourceTitle: firstNonEmpty(row.sourceTitle, row.title),
     sourceExcerpt: sourceExcerptFrom(row) || text(row.scenario || row.description || row.desc || row.content),
     sourceKind: text(row.sourceKind),
@@ -532,6 +607,8 @@ function normalizeResponsibility(row = {}) {
     referenceOnly: evidenceFields.referenceOnly,
     official: typeof row.official === 'boolean' ? row.official : undefined,
     responsibilityScope: text(row.responsibilityScope),
+    responsibilityKind: text(row.responsibilityKind),
+    coverageAggregation: text(row.coverageAggregation),
     selectionStatus: text(row.selectionStatus),
     selectionEvidence: text(row.selectionEvidence),
   };
@@ -880,7 +957,9 @@ function shouldUseKnowledgeResponsibilities({
   responsibilities = [],
   coverageIndicators = [],
   optionalResponsibilityRecords = [],
+  knowledgeResponsibilityMode = 'auto',
 } = {}) {
+  if (knowledgeResponsibilityMode === 'authoritative_only') return false;
   if (objectRows(responsibilities).length >= 3) return false;
   if (objectRows(optionalResponsibilityRecords).length >= 3) return false;
   return objectRows(coverageIndicators).length <= 5;
@@ -896,6 +975,13 @@ function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
   const responsibilityProductName = compact(responsibility.productName);
   const indicatorProductName = compact(indicator.productName);
   if (responsibilityProductName && indicatorProductName && responsibilityProductName !== indicatorProductName) return false;
+  const responsibilityId = compact(responsibility.responsibilityId);
+  const indicatorResponsibilityIds = [
+    indicator.responsibilityId,
+    indicator.parentResponsibilityId,
+  ].map(compact).filter(Boolean);
+  if (responsibilityId && indicatorResponsibilityIds.includes(responsibilityId)) return true;
+  if (responsibilityId && indicatorResponsibilityIds.length) return false;
   const indicatorTitle = compact(indicator.liability);
   if (!indicatorTitle || isWeakLiabilityName(indicatorTitle)) return false;
   const target = joinedText(
@@ -922,7 +1008,7 @@ function isAggregateLiabilityName(value = '') {
 }
 
 function shouldCreateIndicatorCard(indicator = {}, { responsibility = null, hasKnowledgeResponsibilities = false } = {}) {
-  if (isInvalidResponsibilityTitle(indicator.liability)) return false;
+  if (indicator.responsibilityKind !== 'waiting_period_refund' && isInvalidResponsibilityTitle(indicator.liability)) return false;
   if (isWeakLiabilityName(indicator.liability)) return false;
   if (isSentenceFragmentTitle(indicator.liability)) return false;
   if (isRuleParameterText(joinedText(indicator.coverageType, indicator.liability))) return false;
@@ -931,6 +1017,22 @@ function shouldCreateIndicatorCard(indicator = {}, { responsibility = null, hasK
   if (!hasKnowledgeResponsibilities) return true;
   if (isAggregateLiabilityName(indicator.liability) && categoryFromIndicator(indicator, indicator.sourceExcerpt) === '现金流') return false;
   return true;
+}
+
+function finiteOrder(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : Number.POSITIVE_INFINITY;
+}
+
+function sortIndicatorsByReviewedOrder(indicators = []) {
+  return indicators
+    .map((indicator, sourceOrder) => ({ indicator, sourceOrder }))
+    .sort((left, right) => (
+      finiteOrder(left.indicator.reviewedResponsibilityIndex) - finiteOrder(right.indicator.reviewedResponsibilityIndex)
+      || finiteOrder(left.indicator.reviewedIndicatorIndex) - finiteOrder(right.indicator.reviewedIndicatorIndex)
+      || left.sourceOrder - right.sourceOrder
+    ))
+    .map((item) => item.indicator);
 }
 
 function cardIdFor({ policy = {}, company = '', productName = '', title = '', index = 0 }) {
@@ -978,6 +1080,21 @@ function cardSource({ indicator = {}, responsibility = {}, knowledge = {} }) {
   const evidenceFields = evidenceVerificationFields(sourceMeta);
   return {
     sourceUrl: firstNonEmpty(indicator.sourceUrl, responsibility.sourceUrl, sourceUrlFrom(knowledge)),
+    sourceDigest: firstNonEmpty(
+      indicator.sourceDigest,
+      indicator.responsibilitySourceDigest,
+      responsibility.sourceDigest,
+      responsibility.responsibilitySourceDigest,
+      knowledge.sourceDigest,
+    ),
+    responsibilitySourceDigest: firstNonEmpty(
+      indicator.responsibilitySourceDigest,
+      indicator.sourceDigest,
+      responsibility.responsibilitySourceDigest,
+      responsibility.sourceDigest,
+      knowledge.responsibilitySourceDigest,
+      knowledge.sourceDigest,
+    ),
     sourceTitle: firstNonEmpty(responsibility.sourceTitle, indicator.sourceTitle, knowledge.title),
     sourceExcerpt: firstNonEmpty(preferredExcerpt, responsibilityExcerpt, knowledgeExcerpt),
     sourceKind: sourceMeta.sourceKind,
@@ -1474,8 +1591,8 @@ function simpleScheduledPayoutSummary({ title = '', clause = '' } = {}) {
   return `${text(title)} = ${basis}`;
 }
 
-function createIndicatorCard({ indicator, responsibility, knowledge, policy, index }) {
-  const title = firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
+function createIndicatorCard({ indicator, responsibility, knowledge, policy, index, title: titleOverride = '' }) {
+  const title = firstNonEmpty(titleOverride, indicator.liability, responsibility?.title, '保险责任');
   const triggerCondition = firstNonEmpty(indicator.triggerCondition, responsibility?.scenario);
   const payoutSummary = firstNonEmpty(indicator.payoutSummary, responsibility?.payout, indicator.basis);
   const source = cardSource({ indicator, responsibility, knowledge });
@@ -1489,7 +1606,7 @@ function createIndicatorCard({ indicator, responsibility, knowledge, policy, ind
     productName,
     title,
     category: categoryFromText(firstNonEmpty(indicator.coverageType, indicator.category, responsibility?.coverageType, title)),
-    plainSummary: plainSummaryFor({ title, triggerCondition, payoutSummary }),
+    plainSummary: firstNonEmpty(indicator.customerSummary, responsibility?.customerSummary, plainSummaryFor({ title, triggerCondition, payoutSummary })),
     triggerCondition,
     payoutSummary,
     ...source,
@@ -1498,6 +1615,8 @@ function createIndicatorCard({ indicator, responsibility, knowledge, policy, ind
     calculationReason: indicator.calculationReason,
     cashflowTreatment: indicator.cashflowTreatment,
     responsibilityScope: firstNonEmpty(indicator.responsibilityScope, responsibility?.responsibilityScope),
+    responsibilityKind: firstNonEmpty(indicator.responsibilityKind, responsibility?.responsibilityKind),
+    coverageAggregation: firstNonEmpty(indicator.coverageAggregation, responsibility?.coverageAggregation),
     selectionStatus: firstNonEmpty(indicator.selectionStatus, responsibility?.selectionStatus),
     selectionEvidence: firstNonEmpty(indicator.selectionEvidence, responsibility?.selectionEvidence),
     indicators,
@@ -1512,6 +1631,8 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
   if (!card.triggerCondition) card.triggerCondition = firstNonEmpty(indicator.triggerCondition, responsibility?.scenario);
   if (!card.payoutSummary) card.payoutSummary = firstNonEmpty(indicator.payoutSummary, responsibility?.payout, indicator.basis);
   const source = cardSource({ indicator, responsibility, knowledge });
+  if (!card.sourceDigest) card.sourceDigest = source.sourceDigest;
+  if (!card.responsibilitySourceDigest) card.responsibilitySourceDigest = source.responsibilitySourceDigest;
   if (!card.sourceUrl) card.sourceUrl = source.sourceUrl;
   if (!card.sourceTitle) card.sourceTitle = source.sourceTitle;
   if (!card.sourceExcerpt) card.sourceExcerpt = source.sourceExcerpt;
@@ -1525,11 +1646,11 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
   if (!card.responsibilityScope) card.responsibilityScope = firstNonEmpty(indicator.responsibilityScope, responsibility?.responsibilityScope);
   if (!card.selectionStatus) card.selectionStatus = firstNonEmpty(indicator.selectionStatus, responsibility?.selectionStatus);
   if (!card.selectionEvidence) card.selectionEvidence = firstNonEmpty(indicator.selectionEvidence, responsibility?.selectionEvidence);
-  card.plainSummary = plainSummaryFor({
+  card.plainSummary = firstNonEmpty(card.plainSummary, indicator.customerSummary, responsibility?.customerSummary, plainSummaryFor({
     title: card.title,
     triggerCondition: card.triggerCondition,
     payoutSummary: card.payoutSummary,
-  });
+  }));
 }
 
 function createResponsibilityCard({ responsibility, knowledge, policy, index }) {
@@ -1590,24 +1711,31 @@ export function buildResponsibilityCardsForPolicy({
   coverageIndicators = policy.coverageIndicators,
   knowledgeRecords = [],
   optionalResponsibilityRecords = [],
+  knowledgeResponsibilityMode = 'auto',
 } = {}) {
+  const authoritativeOnly = knowledgeResponsibilityMode === 'authoritative_only';
   const derivedKnowledgeResponsibilities = shouldUseKnowledgeResponsibilities({
     responsibilities,
     coverageIndicators,
     optionalResponsibilityRecords,
+    knowledgeResponsibilityMode,
   })
     ? knowledgeResponsibilities(knowledgeRecords, policy)
     : [];
   const normalizedResponsibilities = [
     ...derivedKnowledgeResponsibilities,
     ...objectRows(responsibilities),
-    ...objectRows(optionalResponsibilityRecords),
+    ...(authoritativeOnly ? [] : objectRows(optionalResponsibilityRecords)),
   ]
     .map(normalizeResponsibility)
-    .filter((responsibility) => !isInvalidResponsibilityTitle(responsibility.title) && !isWeakLiabilityName(responsibility.title) && !isSentenceFragmentTitle(responsibility.title));
-  const normalizedIndicators = objectRows(coverageIndicators)
+    .filter((responsibility) => (
+      (responsibility.responsibilityKind === 'waiting_period_refund' || !isInvalidResponsibilityTitle(responsibility.title))
+      && !isWeakLiabilityName(responsibility.title)
+      && !isSentenceFragmentTitle(responsibility.title)
+    ));
+  const normalizedIndicators = sortIndicatorsByReviewedOrder(objectRows(coverageIndicators)
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }))
-    .filter(isFormalResponsibilityEvidence);
+    .filter(isFormalResponsibilityEvidence));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
   const matchedResponsibilities = new Set();
   const cardsByKey = new Map();
@@ -1615,13 +1743,16 @@ export function buildResponsibilityCardsForPolicy({
 
   normalizedIndicators.forEach((indicator) => {
     const responsibility = normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
+    if (authoritativeOnly && !responsibility) return;
     const shouldCreateCard = shouldCreateIndicatorCard(indicator, {
       responsibility,
       hasKnowledgeResponsibilities: derivedKnowledgeResponsibilities.length > 0,
     });
     if (responsibility && shouldCreateCard) matchedResponsibilities.add(responsibility);
     if (!shouldCreateCard) return;
-    const title = firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
+    const title = authoritativeOnly
+      ? firstNonEmpty(responsibility?.title, indicator.liability, '保险责任')
+      : firstNonEmpty(indicator.liability, responsibility?.title, '保险责任');
     const key = cardKeyFor({ policy, indicator, responsibility, title });
     const existing = cardsByKey.get(key);
     if (existing) {
@@ -1634,6 +1765,7 @@ export function buildResponsibilityCardsForPolicy({
       knowledge,
       policy,
       index: cards.length,
+      title,
     });
     cardsByKey.set(key, card);
     cards.push(card);
@@ -1643,6 +1775,9 @@ export function buildResponsibilityCardsForPolicy({
     if (matchedResponsibilities.has(responsibility)) return;
     const key = cardKeyFor({ policy, responsibility, title: responsibility.title });
     if (cardsByKey.has(key)) return;
+    if (authoritativeOnly) {
+      throw new Error(`authoritative_responsibility_without_indicator:${responsibility.title}`);
+    }
     const card = createResponsibilityCard({
       responsibility,
       knowledge,

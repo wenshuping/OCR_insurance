@@ -3,7 +3,9 @@ import test from 'node:test';
 import {
   hasQuantifiedCalculationSignal,
   indicatorCalculationPayloadFields,
+  formulaVariablesFromIndicators,
   normalizeIndicatorCalculation,
+  requiredCalculationInputsForMeta,
   resolveIndicatorAmountFromCalculation,
 } from '../src/indicator-calculation.mjs';
 
@@ -200,8 +202,8 @@ test('normalizeIndicatorCalculation blocks conditional early or late payout form
   });
 
   assert.equal(meta.calculationEligible, false);
-  assert.equal(meta.calculationKey, 'manual_formula');
-  assert.match(meta.calculationReason, /条件化给付/u);
+  assert.equal(meta.calculationKey, 'claim_event_facts');
+  assert.match(meta.calculationReason, /出险原因和出险日期/u);
 });
 
 test('normalizeIndicatorCalculation treats basic-amount day-count benefits as daily allowance dependent', () => {
@@ -216,4 +218,203 @@ test('normalizeIndicatorCalculation treats basic-amount day-count benefits as da
   assert.equal(meta.basisKey, 'daily_allowance');
   assert.equal(meta.calculationKey, 'daily_allowance');
   assert.equal(meta.calculationEligible, false);
+});
+
+test('resolves a stored normalized formula with parentheses, division, powers, and square roots', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '公式给付金',
+    normalizedFormula: 'benefit_amount = (basic_insured_amount + first_premium / 10) ^ 2 + sqrt(payment_years)',
+    formulaText: '按条款公式给付',
+    basisKey: 'basic_amount',
+    calculationKey: 'manual_formula',
+    calculationEligible: true,
+  }, {
+    baseAmount: 100,
+    firstPremium: 50,
+    paymentYears: 9,
+  });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 11028);
+  assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
+});
+
+test('substitutes known rider inputs into a display-only formula without inventing a prior paid benefit', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '意外身故保险金',
+    formulaText: '意外身故保险金 = 基本保险金额 - 已给付伤残保险金',
+  }, { baseAmount: 200000 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.match(result.calculationText, /意外身故保险金 = 200,000 - 已给付保险金（待补充）/u);
+  assert.match(result.calculationText, /暂不计算/u);
+});
+
+test('evaluates a display-only rider formula with all known arithmetic inputs', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '示例附加险保险金',
+    formulaText: '示例附加险保险金 = (基本保险金额 + 首期保费 ÷ 10) ^ 2 + √(缴费年期)',
+  }, { baseAmount: 100, firstPremium: 50, paymentYears: 9 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 11028);
+  assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
+});
+
+test('keeps the known lower bound for an unresolved normalized formula', () => {
+  const formulaVariables = formulaVariablesFromIndicators([{
+    normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
+  }]);
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    normalizedFormula: 'pension_amount = effective_insured_amount * 1.0',
+    formulaText: '按该保单生效对应日有效保险金额给付养老金',
+  }, {
+    baseAmount: 99888,
+    formulaVariables,
+  });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.equal(result.amount, 0);
+  assert.equal(result.minimumAmount, 99888);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.match(result.calculationText, /养老金 = \(99,888 \+ 累计红利保险金额（待补充）\) × 1/u);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
+  assert.match(result.calculationText, /最低可确认金额 99,888元/u);
+});
+
+test('does not treat effective insured amount as the policy basic amount', () => {
+  const meta = normalizeIndicatorCalculation({
+    liability: '婚嫁金',
+    formulaText: '按该保单生效对应日有效保险金额的50%给付婚嫁金',
+    value: 50,
+    unit: '%',
+  });
+
+  assert.equal(meta.basisKey, 'effective_insured_amount');
+  assert.equal(meta.calculationKey, 'formula_projection');
+  assert.deepEqual(requiredCalculationInputsForMeta(meta), ['effectiveInsuranceAmount', 'policyYearOrAge']);
+});
+
+test('derives a minimum from an official basis definition when the unresolved term can only increase the payout', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    formulaText: '该保单生效对应日有效保险金额 × 100%',
+    value: 100,
+    unit: '%',
+    basisDefinition: {
+      key: 'contract_defined_effective_insured_amount',
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+      requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+      sourceExcerpt: '有效保险金额：指基本保险金额与累计红利保险金额两部分之和。',
+    },
+  }, { baseAmount: 99888 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.minimumAmount, 99888);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.match(result.calculationText, /最低可确认金额 99,888元/u);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）/u);
+});
+
+test('derives a minimum from a plain multiplication formula when a legacy record omits the multiplier unit', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '身故保险金',
+    formulaText: '身故时有效保险金额 × 6',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+  }, { baseAmount: 99888 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.equal(result.minimumAmount, 599328);
+  assert.match(result.calculationText, /累计红利保险金额（待补充）.*× 6/u);
+  assert.match(result.calculationText, /最低可确认金额 599,328元/u);
+});
+
+test('repairs a leaked adjacent liability formula from the official clause before calculating', () => {
+  const sourceUrl = 'https://example.test/official-terms.pdf';
+  const sourceExcerpt = '保险责任：1、满期生存保险金 被保险人生存至保险期间届满，本公司按基本保险金额与累积红利保险金额二者之和给付满期生存保险金，本合同效力即行终止。2、身故或全残保险金 (1)被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按本合同基本保险金额的10%与本合同项下所实际交纳的保险费二者之和给付身故或全残保险金，本合同终止。被保险人于本合同生效之日起一年后因疾病导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。(2)被保险人因意外伤害导致身故或身体全残，本公司按基本保险金额与累积红利保险金额二者之和的两倍给付身故或全残保险金，本合同终止。';
+  const maturity = resolveIndicatorAmountFromCalculation({
+    liability: '满期生存保险金',
+    formulaText: '满期生存保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl,
+    sourceExcerpt,
+  }, { baseAmount: 200000 });
+  const death = resolveIndicatorAmountFromCalculation({
+    liability: '身故或全残保险金',
+    formulaText: '身故或全残保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl,
+    sourceExcerpt,
+  }, { baseAmount: 200000, firstPremium: 0, paymentYears: 1 });
+
+  assert.equal(maturity.isMinimumEstimate, true);
+  assert.equal(maturity.minimumAmount, 200000);
+  assert.match(maturity.calculationText, /满期生存保险金 = 200,000 \+ 累计红利保险金额（待补充）/u);
+  assert.equal(death.resolved, false);
+  assert.equal(death.partial, true);
+  assert.equal(death.isMinimumEstimate, undefined);
+  assert.equal(death.hasBranchScenarios, true);
+  assert.match(death.calculationText, /首年疾病导致身故或全残：基本保险金额200,000元 × 10% \+ 当前累计已交保费0元 = 20,000元/u);
+  assert.match(death.calculationText, /满一年后疾病导致身故或全残：（基本保险金额200,000元 \+ 累计红利保险金额（待补充））× 2；最低可确认金额 400,000元/u);
+  assert.match(death.calculationText, /未计入统计/u);
+  assert.deepEqual(requiredCalculationInputsForMeta(death.meta), ['eventCause', 'eventDate']);
+});
+
+test('resolves a normalized formula stored as a bare basic-responsibility expression', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '满期保险金',
+    normalizedFormula: 'basic_sum_assured',
+    formulaText: '按基本责任的保险金额给付满期保险金',
+  }, { baseAmount: 89877 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 89877);
+  assert.match(result.calculationText, /89,877元/u);
+});
+
+test('calculates a basic responsibility amount when unified evidence stores a null basis definition', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '满期保险金',
+    formulaText: '基本责任的保险金额',
+    normalizedFormula: 'basic_insurance_amount',
+    basis: '基本责任的保险金额',
+    basisKey: 'basic_insurance_amount',
+    calculationKey: 'flat_amount',
+    calculationEligible: false,
+    basisDefinition: null,
+  }, { baseAmount: 89877 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 89877);
+  assert.match(result.calculationText, /89,877元/u);
+});
+
+test('projects every display-only formula with known policy inputs without inventing missing operands', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '测试给付金',
+    formulaText: '测试给付金 = 基本保险金额 × 给付比例',
+    basis: '基本保险金额、给付比例',
+    basisKey: 'basic_amount',
+    calculationKey: 'basic_amount',
+    calculationEligible: false,
+    calculationReason: '缺少给付比例',
+  }, { baseAmount: 100000 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.equal(result.amount, 0);
+  assert.match(result.calculationText, /测试给付金 = 100,000 × 给付比例（待补充）/u);
+  assert.match(result.calculationText, /缺少给付比例/u);
 });

@@ -284,7 +284,6 @@ export function CoveragePeriodField(props: {
 export function OptionalResponsibilityReview({
   items = [],
   indicators = [],
-  baseAmount = 0,
   firstPremium = 0,
   paymentPeriod = '',
   disabled = false,
@@ -296,7 +295,6 @@ export function OptionalResponsibilityReview({
 }: {
   items?: OptionalResponsibility[];
   indicators?: Array<Partial<CoverageIndicator>>;
-  baseAmount?: string | number;
   firstPremium?: string | number;
   paymentPeriod?: string;
   disabled?: boolean;
@@ -332,6 +330,7 @@ export function OptionalResponsibilityReview({
           const displayName = optionalResponsibilityDisplayName(item);
           const contentText = optionalResponsibilityContentText(item);
           const contentClampClass = compact ? 'line-clamp-3' : 'line-clamp-2';
+          const coverageAmount = Number(item.coverageAmount || 0);
           const indicatorIds = new Set(Array.isArray(item.indicatorIds) ? item.indicatorIds : []);
           const linkedIndicators = indicators.filter((indicator) => indicator.id && indicatorIds.has(indicator.id));
           return (
@@ -374,14 +373,28 @@ export function OptionalResponsibilityReview({
                   {contentText}
                 </p>
               ) : null}
+              {status === 'selected' ? (
+                coverageAmount > 0 ? (
+                  <p className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-black leading-5 text-cyan-800 ring-1 ring-cyan-100">
+                    可选责任保险金额：{formatCurrency(coverageAmount)}
+                  </p>
+                ) : (
+                  <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
+                    已确认投保，待补充该可选责任的保险金额；不会使用主险保额代算。
+                  </p>
+                )
+              ) : null}
               {linkedIndicators.length ? (
                 <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                   <p className="text-[11px] font-black text-blue-700">量化指标（{linkedIndicators.length}项）</p>
                   <div className="mt-1.5 space-y-1">
                     {linkedIndicators.map((indicator) => {
                       const calculation = status === 'selected'
-                        ? resolveIndicatorAmountFromCalculation(indicator, { baseAmount, firstPremium, paymentYears })
+                        && coverageAmount > 0
+                        ? resolveIndicatorAmountFromCalculation(indicator, { baseAmount: coverageAmount, firstPremium, paymentYears })
                         : null;
+                      const calculationText = String(calculation?.calculationText || '')
+                        .replace(/基本责任保险金额|基本保险金额|基本保险金|基本保额/gu, '可选责任保险金额');
                       return (
                         <div key={indicator.id} className="text-xs font-bold leading-5 text-slate-600">
                           <p>
@@ -391,7 +404,7 @@ export function OptionalResponsibilityReview({
                           {calculation?.resolved ? (
                             <div className="mt-1 rounded-lg bg-cyan-50 px-2.5 py-2 text-cyan-800 ring-1 ring-cyan-100">
                               <p className="font-black">已按本保单计算：{formatCurrency(calculation.amount)}</p>
-                              <p className="text-[11px] text-cyan-700">{calculation.calculationText}</p>
+                              <p className="text-[11px] text-cyan-700">{calculationText}</p>
                             </div>
                           ) : null}
                         </div>

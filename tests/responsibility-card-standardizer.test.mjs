@@ -46,6 +46,28 @@ test('standardizeResponsibilityIndicator keeps first basic responsibility premiu
   assert.equal(result.calculationReason, '');
 });
 
+test('standardizeResponsibilityIndicator corrects a formula leaked from the next official responsibility', () => {
+  const sourceExcerpt = '1、满期生存保险金 被保险人生存至保险期间届满，本公司按基本保险金额与累积红利保险金额二者之和给付满期生存保险金，本合同终止。2、身故或全残保险金 被保险人于本合同生效之日起一年内因疾病导致身故或身体全残，本公司按本合同基本保险金额的10%与实际交纳的保险费二者之和给付身故或全残保险金。';
+  const result = standardizeResponsibilityIndicator({
+    id: 'ind_maturity_leak',
+    company: '测试保险',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    liability: '满期生存保险金',
+    formulaText: '满期生存保险金 = 有效保险金额 × 10%',
+    value: 10,
+    unit: '%',
+    basis: '有效保险金额',
+    sourceUrl: 'https://example.test/official-terms.pdf',
+    sourceExcerpt,
+  });
+
+  assert.equal(result.formulaText, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
+  assert.equal(result.payoutSummary, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
+  assert.equal(result.cashflowTreatment, 'scheduled_cashflow');
+  assert.equal(result.responsibilityRepairVersion, '2026-07-31-official-clause-formula-repair');
+});
+
 test('standardizeResponsibilityIndicator blocks indicators without official source excerpt', () => {
   const result = standardizeResponsibilityIndicator({
     company: '新华保险',
@@ -98,6 +120,35 @@ test('standardizeResponsibilityIndicator classifies claim-trigger benefits as cl
   }, { policy: { company: '友邦人寿', name: '友邦金钥匙抵押贷款定期寿险' } });
   assert.equal(disability.cashflowTreatment, 'claim_contingent');
   assert.equal(disability.calculationStatus, 'claim_contingent');
+});
+
+test('standardizeResponsibilityIndicator supersedes legacy display-only metadata when a formula has a safe policy basis', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '新华人寿保险股份有限公司',
+    productName: '阳光灿烂少儿两全保险（分红型）',
+    coverageType: '人寿保障',
+    liability: '身故保险金',
+    basis: '按身故时有效保险金额的6倍给付身故保险金',
+    formulaText: '身故时有效保险金额 × 6',
+    value: 6,
+    unit: '倍',
+    basisKey: 'contract_defined_effective_insured_amount',
+    calculationKey: 'multiple_of_basis',
+    calculationEligible: false,
+    calculationReason: '缺少当前保单的身故时有效保险金额输入值',
+    calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/example.pdf',
+    sourceExcerpt: '被保险人身故时，本公司按身故时有效保险金额的6倍给付身故保险金。',
+  }, { policy: basePolicy });
+
+  assert.equal(result.calculationEligible, true);
+  assert.equal(result.calculationKey, 'formula_projection');
+  assert.equal(result.calculationReason, '');
+  assert.equal(result.cashflowTreatment, 'claim_contingent');
 });
 
 test('standardizeResponsibilityIndicator preserves embedded quoted disease liability names', () => {
@@ -1885,4 +1936,27 @@ test('buildResponsibilityCardsForPolicy ignores AIA claim application and benefi
     '意外烧伤保险金',
   ]);
   assert.equal(cards.every((card) => card.indicatorCheckStatus === 'verified_claim_contingent'), true);
+});
+
+test('standardizeResponsibilityIndicator preserves scalar formula operands', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '中邮人寿',
+    productName: '中邮年年好邮保一生A款终身寿险',
+    coverageType: '人寿保障',
+    liability: '身故、全残保险金',
+    basis: '现金价值、已交保险费和基本保险金额的条件化比较',
+    formulaText: 'max(已交保险费,现金价值,基本保险金额×(1+3.5%)^(n-1))',
+    normalizedFormula: 'max(paid_premium,cash_value,basic_amount*policy_year_factor)',
+    operands: ['cumulative_paid_premium_at_event', 'cash_value', 'basic_insurance_amount'],
+    branches: [{ branchId: 'after_payment_end', formula: 'max(...)' }],
+    sourceUrl: 'https://www.chinapost-life.com/example.pdf',
+    sourceExcerpt: '身故、全残保险金按已交保险费、现金价值和基本保险金额的较大者给付。',
+  }, { policy: { company: '中邮人寿', name: '中邮年年好邮保一生A款终身寿险' } });
+
+  assert.deepEqual(result.operands, [
+    'cumulative_paid_premium_at_event',
+    'cash_value',
+    'basic_insurance_amount',
+  ]);
+  assert.deepEqual(result.branches, [{ branchId: 'after_payment_end', formula: 'max(...)' }]);
 });

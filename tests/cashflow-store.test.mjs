@@ -89,6 +89,14 @@ describe('cashflow-store', () => {
       ).get();
       assert.ok(tableInfo);
     });
+
+    it('migrates the minimum-estimate fields onto an existing cache table', () => {
+      db.exec('CREATE TABLE policy_cashflows (id INTEGER PRIMARY KEY, policy_id INTEGER, year INTEGER, age INTEGER, amount REAL, cumulative REAL, liability TEXT, calc_text TEXT)');
+      ensureCashflowTable(db);
+      const columns = db.prepare('PRAGMA table_info(policy_cashflows)').all().map((row) => row.name);
+      assert.ok(columns.includes('is_minimum_estimate'));
+      assert.ok(columns.includes('uncertainty_note'));
+    });
   });
 
   describe('createCashflowStore', () => {
@@ -205,6 +213,20 @@ describe('cashflow-store', () => {
       assert.equal(entries[0].amount, 1000);
       assert.equal(entries[0].cumulative, 1000);
       assert.equal(entries[0].liability, 'maturity');
+    });
+
+    it('preserves the minimum-estimate note used by family reports', () => {
+      store.replaceEntries(1, [
+        {
+          year: 2026, age: 30, amount: 99888, cumulative: 99888, liability: '养老金',
+          calcText: '最低可确认金额 99,888元', isMinimumEstimate: true,
+          uncertaintyNote: '未计入累计红利保险金额。',
+        },
+      ]);
+
+      const [entry] = store.getEntries(1);
+      assert.equal(entry.isMinimumEstimate, true);
+      assert.equal(entry.uncertaintyNote, '未计入累计红利保险金额。');
     });
 
     it('handles entries with null calcText', () => {

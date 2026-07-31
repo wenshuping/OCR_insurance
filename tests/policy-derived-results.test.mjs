@@ -5,8 +5,10 @@ import {
   buildPolicyDerivedResult,
   deriveIndicatorProductKeys,
   derivePolicyProductKeys,
+  isCurrentResponsibilityProjection,
   mergePolicyDerivedResult,
   productKeyFromParts,
+  RESPONSIBILITY_PROJECTION_VERSION,
 } from '../server/policy-derived-results.service.mjs';
 
 test('product key prefers canonical product id and normalizes company product fallback', () => {
@@ -74,6 +76,8 @@ test('buildPolicyDerivedResult stores attached indicators and status metadata', 
   assert.deepEqual(row.productKeys, ['company_product:新华保险:多倍保障重大疾病保险']);
   assert.equal(row.coverageIndicators.length, 1);
   assert.deepEqual(row.indicatorVersions, { 'company_product:新华保险:多倍保障重大疾病保险': 3 });
+  assert.equal(row.responsibilityProjectionVersion, RESPONSIBILITY_PROJECTION_VERSION);
+  assert.equal(isCurrentResponsibilityProjection(row), true);
 });
 
 test('buildPolicyDerivedResult stores responsibility cards and verifies existing indicators', () => {
@@ -275,12 +279,18 @@ test('mergePolicyDerivedResult attaches persisted payload and derived status wit
     optionalResponsibilities: [{ id: 'opt_1' }],
     responsibilityCards: [{ id: 'card_1', title: '关爱年金', indicators: [] }],
     generatedAt: '2026-06-15T00:00:00.000Z',
+    responsibilityProjectionVersion: RESPONSIBILITY_PROJECTION_VERSION,
   });
 
   assert.deepEqual(merged.coverageIndicators, [{ id: 'ind_1' }]);
   assert.deepEqual(merged.optionalResponsibilities, [{ id: 'opt_1' }]);
   assert.deepEqual(merged.responsibilityCards, [{ id: 'card_1', title: '关爱年金', indicators: [] }]);
   assert.equal(merged.derivedStatus, 'ready');
+  assert.equal(merged.derivedResponsibilityProjectionVersion, RESPONSIBILITY_PROJECTION_VERSION);
+});
+
+test('old derived projections are identifiable for read-time reconstruction', () => {
+  assert.equal(isCurrentResponsibilityProjection({ responsibilityProjectionVersion: '2026-06-23-reviewed-responsibility-artifact-import' }), false);
 });
 
 test('mergePolicyDerivedResult keeps existing responsibility cards when derived row is missing', () => {

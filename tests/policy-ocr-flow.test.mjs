@@ -5631,8 +5631,8 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(first.payload.ok, true);
     assert.equal(first.payload.source, 'generated');
     assert.equal(first.payload.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
-    assert.equal(first.payload.summary.contentBlocks.at(-1).title, '保单服务');
-    assert.deepEqual(first.payload.summary.contentBlocks.at(-1).sourceRefs, ['M1']);
+    const materialBlock = first.payload.summary.contentBlocks.find((block) => block.title === '保单服务');
+    assert.deepEqual(materialBlock?.sourceRefs, ['M1']);
     assert.equal(modelCalls, 1);
     assert.equal(materialModelCalls, 1);
     assert.equal(persistedSummaries.size, 1);
@@ -5645,9 +5645,9 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.source, 'database');
     assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
-    assert.equal(second.payload.summary.contentBlocks.at(-1).title, '保单服务');
+    assert.equal(second.payload.summary.contentBlocks.some((block) => block.title === '保单服务'), false);
     assert.equal(modelCalls, 1);
-    assert.equal(materialModelCalls, 2);
+    assert.equal(materialModelCalls, 1);
   } finally {
     await server.close();
     db.close();
@@ -12559,7 +12559,7 @@ test('scan endpoint preserves confirmed optional responsibilities when draft has
   }
 });
 
-test('scan endpoint uses checked responsibility cards as policy summary rows', async () => {
+test('scan endpoint keeps checked responsibility cards without persisting a legacy card summary', async () => {
   const state = createInitialState();
   let analyzerCalls = 0;
   const app = createPolicyOcrApp({
@@ -12609,8 +12609,7 @@ test('scan endpoint uses checked responsibility cards as policy summary rows', a
     const policy = state.policies.find((row) => Number(row.id) === Number(saved.payload.policy.id));
     assert.equal(analyzerCalls, 0);
     assert.equal(policy.reportStatus, 'ready');
-    assert.match(policy.report, /本产品主要提供合同约定保险责任/u);
-    assert.match(policy.report, /保障类责任包括：身故保险金/u);
+    assert.equal(policy.report, '');
     assert.equal(policy.responsibilities[0].coverageType, '身故保险金');
     assert.equal(policy.responsibilities[0].payout, '以正式条款为准');
   } finally {

@@ -103,7 +103,11 @@ import {
   normalizeOfficialDomainProfile,
 } from './c-policy-analysis.service.mjs';
 import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
-import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
+import {
+  computePolicyCashflow,
+  computePolicyResponsibilityCalculations,
+  computeScenarioEntries,
+} from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
 import {
@@ -2476,6 +2480,57 @@ export function createPolicyOcrApp(options = {}) {
     }
   }
 
+  function policyProductNamesForIndicatorLookup(policy = {}) {
+    const names = [
+      policy?.name,
+      ...(Array.isArray(policy?.plans) ? policy.plans.map((plan) => plan?.matchedProductName || plan?.productName || plan?.name) : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    return [...new Set(names.flatMap((name) => [
+      name,
+      name.replace(/^.{2,80}?(?:人寿保险股份有限公司|保险股份有限公司|人寿保险有限公司|保险有限公司|保险公司)/u, '').trim(),
+    ]).filter(Boolean))];
+  }
+
+  function loadCurrentPolicyIndicators(policy) {
+    if (!cashflowDb || ownsCashflowDb) return [];
+    const productNames = policyProductNamesForIndicatorLookup(policy);
+    if (!productNames.length) return [];
+    try {
+      const placeholders = productNames.map(() => '?').join(', ');
+      return cashflowDb.prepare(`
+        SELECT payload FROM insurance_indicator_records
+        WHERE product_name IN (${placeholders})
+      `).all(...productNames).map((row) => {
+        try { return JSON.parse(row.payload || ''); } catch { return null; }
+      }).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  function hydrateCashflowIndicatorsFromCurrentProductIndex(policy, indicators = []) {
+    const existing = Array.isArray(indicators) ? indicators : [];
+    const needsHydration = !existing.length || existing.some((indicator) => (
+      String(indicator?.basisKey || '').startsWith('contract_defined_') && !indicator?.basisDefinition
+    ));
+    if (!needsHydration || !cashflowDb || ownsCashflowDb) return existing;
+
+    const current = loadCurrentPolicyIndicators(policy);
+    if (!current.length) return existing;
+    if (!existing.length) return current;
+
+    const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
+    return existing.map((indicator) => {
+      const latest = byId.get(String(indicator?.id || ''));
+      return latest ? {
+        ...latest,
+        responsibilityScope: indicator.responsibilityScope || latest.responsibilityScope,
+        selectionStatus: indicator.selectionStatus || latest.selectionStatus,
+        selectionEvidence: indicator.selectionEvidence || latest.selectionEvidence,
+      } : indicator;
+    });
+  }
+
   /**
    * Compute cashflow entries for a policy and persist them to the cashflow store.
    * Returns { cashflowEntries, scenarioEntries, totalCashflow }.
@@ -2486,7 +2541,9 @@ export function createPolicyOcrApp(options = {}) {
     const policyIndicators = derivedResult && Array.isArray(policyForCashflow.coverageIndicators)
       ? policyForCashflow.coverageIndicators
       : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
-    const selectedIndicators = selectedCoverageIndicators(policyIndicators);
+    const selectedIndicators = selectedCoverageIndicators(
+      hydrateCashflowIndicatorsFromCurrentProductIndex(policyForCashflow, policyIndicators),
+    );
     const template = findProductCashflowTemplate(policyForCashflow, state.knowledgeRecords);
     const cashflowEntries = computePolicyCashflow(policyForCashflow, template, selectedIndicators);
     const scenarioEntries = computeScenarioEntries(selectedIndicators, policyForCashflow);
@@ -2564,6 +2621,9 @@ export function createPolicyOcrApp(options = {}) {
     resolveOcrServiceUrl,
     resolveOcrProviderForScenario,
     computeAndStoreCashflow,
+    computePolicyResponsibilityCalculations,
+    hydrateCashflowIndicatorsFromCurrentProductIndex,
+    loadCurrentPolicyIndicators,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,
