@@ -1157,6 +1157,19 @@ test('customer policy detail moves coverage amount into plan details', () => {
   assert.match(summarySource, /保额：\{formatCoverageAmount\(Number\(planAmount \|\| 0\)\)\}/);
 });
 
+test('customer policy plan cards show the matched rider responsibilities', () => {
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  const entrySource = componentSource('AnalysisReportPage', null, normalizedPolicyEntrySource);
+  const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
+
+  assert.match(detailSource, /coverageIndicators=\{policy\.coverageIndicators\}/);
+  assert.match(entrySource, /coverageIndicators=\{\(analysis\.responsibilityCards \|\| \[\]\)\.flatMap\(\(card\) => card\.indicators \|\| \[\]\)\}/);
+  assert.match(summarySource, /planCoverageResponsibilityIndicators\(plan, coverageIndicators\)/);
+  assert.match(customerPolicyComponentsSource, /function planMatchesCoverageIndicator/);
+  assert.match(summarySource, /保险责任/);
+  assert.match(customerPolicyComponentsSource, /indicator\.coverageType \|\| ''\)\.trim\(\) === '规则参数'/);
+});
+
 test('customer policy cards derive validity status from coverage period', () => {
   const validitySource = fs.readFileSync(new URL('../src/policy-validity.mjs', import.meta.url), 'utf8');
   const listItemSource = componentSource('PolicyListItem', null);

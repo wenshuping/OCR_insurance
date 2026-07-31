@@ -416,6 +416,7 @@ export function PolicyDetailSheet({
 
         <PolicyPlanSummary
           plans={normalizePolicyPlanList(policy.plans, policy.company)}
+          coverageIndicators={policy.coverageIndicators}
           effectiveDate={policy.date}
           insuredBirthday={policy.insuredBirthday}
           paymentPeriod={policy.paymentPeriod}

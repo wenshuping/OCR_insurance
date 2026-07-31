@@ -84,6 +84,7 @@ export type CoverageIndicator = {
   version?: string;
   company: string;
   productName: string;
+  canonicalProductId?: string;
   productType?: string;
   salesStatus?: string;
   coverageType: string;
@@ -99,6 +100,8 @@ export type CoverageIndicator = {
   calculationEligible?: boolean;
   calculationReason?: string;
   formulaText?: string;
+  payoutSummary?: string;
+  triggerCondition?: string;
   condition?: string;
   extractionMethod?: string;
   sourceRecordId?: string;
