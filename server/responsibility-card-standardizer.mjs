@@ -1004,6 +1004,7 @@ function bestKnowledgeRecord(records = []) {
 
 function isAggregateLiabilityName(value = '') {
   const target = compact(value);
+  if (target === '高等教育金') return false;
   return /[\/／、]|等|综合|汇总/u.test(target);
 }
 

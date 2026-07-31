@@ -79,6 +79,22 @@
     ]
   },
   {
+    "name": "production-responsibility-handoff",
+    "patterns": [
+      "scripts/import-reviewed-responsibility-artifacts.mjs",
+      "scripts/import-production-responsibility-handoff.mjs",
+      "server/responsibility-card-standardizer.mjs",
+      "tests/import-production-responsibility-handoff.test.mjs",
+      "tests/materialize-product-responsibility-cards.test.mjs",
+      "tests/responsibility-card-standardizer.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/import-production-responsibility-handoff.test.mjs",
+      "node --test tests/materialize-product-responsibility-cards.test.mjs",
+      "node --test tests/responsibility-card-standardizer.test.mjs"
+    ]
+  },
+  {
     "name": "ping-an-coverage-audit",
     "patterns": [
       "scripts/audit-ping-an-coverage.mjs",
