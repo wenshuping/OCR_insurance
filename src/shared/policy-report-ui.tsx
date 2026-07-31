@@ -1,5 +1,5 @@
 import type { OptionalResponsibility, Policy, PolicyFormData, ResponsibilityCard } from '../api';
-import { hasQuantifiedCalculationSignal } from '../indicator-calculation.mjs';
+import { hasQuantifiedCalculationSignal, resolveIndicatorAmountFromCalculation } from '../indicator-calculation.mjs';
 
 export type ResponsibilitySourceLink = {
   title: string;
@@ -194,6 +194,12 @@ function quantifiedIndicatorText(indicator: NonNullable<ResponsibilityCard['indi
   return [indicator.basis, indicator.value, indicator.unit].filter((value) => value !== null && value !== undefined && String(value).trim()).join(' × ');
 }
 
+function paymentYearsFromPeriod(value: string | number | undefined) {
+  const text = String(value || '');
+  const match = text.match(/(\d+(?:\.\d+)?)\s*年/u);
+  return Number(match?.[1] || (/趸交|一次交清/u.test(text) ? 1 : 0)) || 1;
+}
+
 function optionalResponsibilityTitle(item: OptionalResponsibility) {
   return String(item.liability || item.title || item.coverageType || '').trim();
 }
@@ -237,13 +243,16 @@ export function ResponsibilityCardList({
   optionalResponsibilities = [],
   baseAmount = 0,
   firstPremium = 0,
+  paymentPeriod = '',
 }: {
   cards?: ResponsibilityCard[];
   optionalResponsibilities?: OptionalResponsibility[];
   baseAmount?: string | number;
   firstPremium?: string | number;
+  paymentPeriod?: string | number;
 }) {
   const visibleCards = getVisibleResponsibilityCards(cards, optionalResponsibilities);
+  const paymentYears = paymentYearsFromPeriod(paymentPeriod);
   if (!visibleCards.length) return null;
 
   return (
@@ -296,11 +305,35 @@ export function ResponsibilityCardList({
                   <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                     <p className="text-xs font-black text-blue-700">量化指标（{quantifiedIndicators.length}项）</p>
                     <div className="mt-1.5 space-y-1">
-                      {quantifiedIndicators.map(({ indicator, formula }, indicatorIndex) => (
-                        <p key={indicator.id || `${indicator.liability}-${indicatorIndex}`} className="text-xs font-bold leading-5 text-slate-600">
-                          {indicator.liability || indicator.coverageType || '保险责任'}{formula ? `：${formula}` : ''}
-                        </p>
-                      ))}
+                      {quantifiedIndicators.map(({ indicator, formula }, indicatorIndex) => {
+                        const calculation = resolveIndicatorAmountFromCalculation(indicator, {
+                          baseAmount,
+                          firstPremium,
+                          paymentYears,
+                        });
+                        return (
+                          <div key={indicator.id || `${indicator.liability}-${indicatorIndex}`} className="text-xs font-bold leading-5 text-slate-600">
+                            <p>{indicator.liability || indicator.coverageType || '保险责任'}{formula ? `：${formula}` : ''}</p>
+                            {calculation.resolved ? (
+                              <div className="mt-1 rounded-lg bg-cyan-50 px-2.5 py-2 text-cyan-800 ring-1 ring-cyan-100">
+                                <p className="font-black">已按本险种数据计算：{Number(calculation.amount).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>
+                                <p className="text-[11px] text-cyan-700">{calculation.calculationText}</p>
+                              </div>
+                            ) : null}
+                            {calculation.partial ? (
+                              <div className="mt-1 rounded-lg bg-amber-50 px-2.5 py-2 text-amber-800 ring-1 ring-amber-100">
+                                <p className="font-black">
+                                  {calculation.isMinimumEstimate
+                                    ? `最低可确认金额：${Number(calculation.minimumAmount || 0).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}`
+                                    : '已代入本险种已知数据，待补充计算条件'}
+                                </p>
+                                <p className="text-[11px] text-amber-700">{calculation.calculationText}</p>
+                                {calculation.uncertaintyNote ? <p className="mt-1 text-[11px] text-amber-700">{calculation.uncertaintyNote}</p> : null}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })}
                     </div>
                     {usesPolicyAmount && Number(baseAmount) > 0 ? (
                       <p className="mt-1.5 text-[11px] font-semibold text-slate-500">计算参照：本保单保险金额 {Number(baseAmount).toLocaleString('zh-CN', { style: 'currency', currency: 'CNY', maximumFractionDigits: 2 })}</p>

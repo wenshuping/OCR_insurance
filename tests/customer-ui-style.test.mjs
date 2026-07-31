@@ -1167,7 +1167,17 @@ test('customer policy detail shows each rider inside responsibility cards', () =
   assert.match(detailSource, /<ResponsibilityCardList/);
   assert.match(detailSource, /baseAmount=\{plan\.amount\}/);
   assert.match(detailSource, /firstPremium=\{plan\.premium\}/);
+  assert.match(detailSource, /paymentPeriod=\{plan\.paymentPeriod\}/);
   assert.doesNotMatch(summarySource, /保险责任/);
+});
+
+test('responsibility cards calculate each plan indicator with its own known values', () => {
+  const reportUiSource = sharedReportUiSource;
+
+  assert.match(reportUiSource, /resolveIndicatorAmountFromCalculation\(indicator, \{[\s\S]*baseAmount,[\s\S]*firstPremium,[\s\S]*paymentYears,/);
+  assert.match(reportUiSource, /已按本险种数据计算/);
+  assert.match(reportUiSource, /最低可确认金额/);
+  assert.match(reportUiSource, /已代入本险种已知数据，待补充计算条件/);
 });
 
 test('customer policy cards derive validity status from coverage period', () => {

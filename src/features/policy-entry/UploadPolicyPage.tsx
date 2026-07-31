@@ -1230,6 +1230,7 @@ export function AnalysisReportPage(props: {
               optionalResponsibilities={optionalResponsibilities}
               baseAmount={formData.amount}
               firstPremium={formData.firstPremium}
+              paymentPeriod={formData.paymentPeriod}
             />
           ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

@@ -239,6 +239,29 @@ test('resolves a stored normalized formula with parentheses, division, powers, a
   assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
 });
 
+test('substitutes known rider inputs into a display-only formula without inventing a prior paid benefit', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '意外身故保险金',
+    formulaText: '意外身故保险金 = 基本保险金额 - 已给付伤残保险金',
+  }, { baseAmount: 200000 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.match(result.calculationText, /意外身故保险金 = 200,000 - 已给付保险金（待补充）/u);
+  assert.match(result.calculationText, /暂不计算/u);
+});
+
+test('evaluates a display-only rider formula with all known arithmetic inputs', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '示例附加险保险金',
+    formulaText: '示例附加险保险金 = (基本保险金额 + 首期保费 ÷ 10) ^ 2 + √(缴费年期)',
+  }, { baseAmount: 100, firstPremium: 50, paymentYears: 9 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 11028);
+  assert.match(result.calculationText, /\(100 \+ 50 ÷ 10\) \^ 2 \+ sqrt\(9\) = 11,028元/u);
+});
+
 test('keeps the known lower bound for an unresolved normalized formula', () => {
   const formulaVariables = formulaVariablesFromIndicators([{
     normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
@@ -392,7 +415,6 @@ test('projects every display-only formula with known policy inputs without inven
   assert.equal(result.resolved, false);
   assert.equal(result.partial, true);
   assert.equal(result.amount, 0);
-  assert.match(result.calculationText, /基本保险金额100,000元/u);
-  assert.match(result.calculationText, /条款公式：测试给付金 = 基本保险金额 × 给付比例/u);
+  assert.match(result.calculationText, /测试给付金 = 100,000 × 给付比例（待补充）/u);
   assert.match(result.calculationText, /缺少给付比例/u);
 });

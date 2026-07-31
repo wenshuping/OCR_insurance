@@ -336,6 +336,13 @@ const FORMULA_VARIABLE_LABELS = {
   policy_year: '保单年度',
   cash_value: '现金价值',
   account_value: '账户价值',
+  paid_benefit_amount: '已给付保险金',
+  disability_payout_ratio: '伤残等级给付比例',
+  payout_ratio: '给付比例',
+  actual_medical_expense: '实际医疗费用',
+  deductible: '免赔额',
+  third_party_paid_amount: '其他途径已补偿金额',
+  remaining_liability_limit: '剩余责任限额',
 };
 
 function formulaNumber(value) {
@@ -532,6 +539,13 @@ const NON_NEGATIVE_FORMULA_VARIABLES = new Set([
   'total_paid_premium',
   'first_premium',
   'annual_premium',
+  'paid_benefit_amount',
+  'disability_payout_ratio',
+  'payout_ratio',
+  'actual_medical_expense',
+  'deductible',
+  'third_party_paid_amount',
+  'remaining_liability_limit',
 ]);
 
 function formulaLowerBound(node) {
@@ -587,9 +601,55 @@ function formulaExpressionFromBasisDefinition(definition = {}) {
   return parseFormulaExpression(expression) ? expression : '';
 }
 
+function normalizedFormulaFromDisplayFormula(indicator = {}) {
+  const formulaText = displayText(indicator.formulaText).normalize('NFKC');
+  const equalsIndex = formulaText.indexOf('=');
+  if (equalsIndex < 1 || formulaText.indexOf('=', equalsIndex + 1) >= 0) return '';
+
+  let expression = formulaText.slice(equalsIndex + 1)
+    .replace(/[（]/gu, '(')
+    .replace(/[）]/gu, ')')
+    .replace(/[×xX]/gu, '*')
+    .replace(/[÷]/gu, '/')
+    .replace(/[＋]/gu, '+')
+    .replace(/[－]/gu, '-')
+    .replace(/乘以/gu, '*')
+    .replace(/除以/gu, '/')
+    .replace(/扣除|减去/gu, '-')
+    .replace(/加上/gu, '+')
+    .replace(/(?:sqrt|√)\s*\(/gu, 'sqrt(')
+    .replace(/(\d+(?:\.\d+)?)\s*[%％]/gu, (_match, value) => String(Number(value) / 100));
+
+  const replacements = [
+    [/其他(?:途径|来源)已补偿金额|已从其他途径(?:取得|获得)补偿金额/gu, 'third_party_paid_amount'],
+    [/已给付(?:的)?(?:意外)?(?:伤残|残疾|全残)?保险金|已给付保险金/gu, 'paid_benefit_amount'],
+    [/剩余(?:保险)?责任限额|剩余保险金额/gu, 'remaining_liability_limit'],
+    [/实际(?:合理且必要的)?医疗费用|实际医疗费用/gu, 'actual_medical_expense'],
+    [/累计红利保险金额|累积红利保险金额/gu, 'accumulated_dividend_insured_amount'],
+    [/有效保险金额/gu, 'effective_insured_amount'],
+    [/累计已交保险费|累计已交保费|实际交纳(?:的)?保险费|已交保险费|已交保费|所交保险费|所交保费/gu, 'total_paid_premium'],
+    [/首期保险费|首期保费|首年保险费|首年保费|年交保险费|年交保费/gu, 'first_premium'],
+    [/缴费年期|缴费期间|交费年期|交费期间/gu, 'payment_years'],
+    [/伤残(?:等级|程度)?(?:对应)?(?:的)?(?:保险金)?给付比例|伤残\/残疾等级给付比例|残疾(?:等级|程度)?(?:对应)?(?:的)?(?:保险金)?给付比例/gu, 'disability_payout_ratio'],
+    [/赔付比例|赔偿比例|给付比例/gu, 'payout_ratio'],
+    [/免赔额/gu, 'deductible'],
+    [/基本责任保险金额|基本责任保险金|基本保险金额|基本保险金|基本保额|保险金额|保额/gu, 'basic_insured_amount'],
+  ];
+  for (const [pattern, variable] of replacements) expression = expression.replace(pattern, variable);
+
+  expression = expression
+    .replace(/(?:元|圆)/gu, '')
+    .replace(/\s+/gu, '')
+    .replace(/的(?=\d)/gu, '*');
+  if (!/^[A-Za-z0-9_+\-*/^().]+$/u.test(expression)) return '';
+  return parseFormulaExpression(expression) ? `benefit_amount = ${expression}` : '';
+}
+
 function normalizedFormulaForIndicator(indicator = {}) {
   const stored = displayText(indicator.normalizedFormula);
   if (stored) return stored;
+  const displayFormula = normalizedFormulaFromDisplayFormula(indicator);
+  if (displayFormula) return displayFormula;
   const basisExpression = formulaExpressionFromBasisDefinition(indicator.basisDefinition);
   const value = finiteNumber(indicator.value);
   const unit = displayText(indicator.unit);

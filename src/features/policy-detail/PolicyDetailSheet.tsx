@@ -505,6 +505,7 @@ export function PolicyDetailSheet({
                     optionalResponsibilities={optionalResponsibilities}
                     baseAmount={plan.amount}
                     firstPremium={plan.premium}
+                    paymentPeriod={plan.paymentPeriod}
                   />
                 </section>
               ))}
