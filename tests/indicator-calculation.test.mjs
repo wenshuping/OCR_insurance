@@ -342,8 +342,10 @@ test('repairs a leaked adjacent liability formula from the official clause befor
   assert.equal(death.resolved, false);
   assert.equal(death.partial, true);
   assert.equal(death.isMinimumEstimate, undefined);
-  assert.match(death.calculationText, /需根据出险原因和出险日期选择条款给付分支/u);
-  assert.match(death.calculationText, /暂不计算/u);
+  assert.equal(death.hasBranchScenarios, true);
+  assert.match(death.calculationText, /首年疾病导致身故或全残：基本保险金额200,000元 × 10% \+ 当前累计已交保费0元 = 20,000元/u);
+  assert.match(death.calculationText, /满一年后疾病导致身故或全残：（基本保险金额200,000元 \+ 累计红利保险金额（待补充））× 2；最低可确认金额 400,000元/u);
+  assert.match(death.calculationText, /未计入统计/u);
   assert.deepEqual(requiredCalculationInputsForMeta(death.meta), ['eventCause', 'eventDate']);
 });
 

@@ -228,12 +228,14 @@ export function CustomerResponsibilitySummaryCard({
                       }`}>
                         <p className="font-black">
                           {calculatedResponsibility.isPending
-                            ? (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计')
+                            ? (calculatedResponsibility.hasBranchScenarios
+                              ? '已按本保单数据列出条款分支测算，未计入统计'
+                              : (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计'))
                             : calculatedResponsibility.isMinimumEstimate
                             ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
                             : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}
                         </p>
-                        <p className={`mt-1 text-[11px] ${
+                        <p className={`mt-1 whitespace-pre-wrap text-[11px] ${
                           calculatedResponsibility.isPending
                             ? 'text-blue-700'
                             : calculatedResponsibility.isMinimumEstimate

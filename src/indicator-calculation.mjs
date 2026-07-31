@@ -737,9 +737,9 @@ function repairIndicatorFormulaFromOfficialExcerpt(indicator = {}) {
   const clause = officialClauseForLiability(indicator);
   if (!liability || !clause) return indicator;
   const hasEffectiveAmountSum = /(?:基本保险金额|基本保险金|基本保额)(?:与|及|和)(?:累计|累积)红利保险金额(?:二者)?之和/u.test(clause);
-  if (!hasEffectiveAmountSum) return indicator;
   const isScheduledBenefit = /满期|生存|年金|祝寿|教育|婚嫁|关爱|养老/u.test(liability);
   if (isScheduledBenefit) {
+    if (!hasEffectiveAmountSum) return indicator;
     return {
       ...indicator,
       basis: '有效保险金额',
@@ -807,15 +807,78 @@ export function repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator = 
   return repairIndicatorFormulaFromOfficialExcerpt(indicator);
 }
 
+function claimBranchLabel(branch = {}) {
+  const labels = {
+    disease_within_first_year: '首年疾病导致身故或全残',
+    disease_after_first_year: '满一年后疾病导致身故或全残',
+    accidental: '意外伤害导致身故或全残',
+  };
+  return labels[displayText(branch.branchId)] || displayText(branch.condition) || '条款条件分支';
+}
+
+function claimBranchCalculationText(branch = {}, result = {}, inputs = {}) {
+  const formula = displayText(branch.normalizedFormula);
+  const baseAmount = Number(inputs.baseAmount || 0) || 0;
+  const firstPremium = Number(inputs.firstPremium || 0) || 0;
+  const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
+  const earlyDisease = formula.match(/^benefit_amount\s*=\s*basic_insured_amount\s*\*\s*([\d.]+)\s*\+\s*total_paid_premium$/u);
+  if (earlyDisease && result.resolved) {
+    const percentage = Number(earlyDisease[1]) * 100;
+    return `基本保险金额${formatMoney(baseAmount)}元 × ${formatMoney(percentage)}% + 当前累计已交保费${formatMoney(firstPremium * paymentYears)}元 = ${formatMoney(result.amount)}元`;
+  }
+  const effectiveAmount = formula.match(/^benefit_amount\s*=\s*\(basic_insured_amount\s*\+\s*accumulated_dividend_insured_amount\)\s*\*\s*([\d.]+)$/u);
+  if (effectiveAmount && result.isMinimumEstimate) {
+    return `（基本保险金额${formatMoney(baseAmount)}元 + 累计红利保险金额（待补充））× ${formatMoney(Number(effectiveAmount[1]))}；最低可确认金额 ${formatMoney(result.minimumAmount)}元（未计入累计红利保险金额）`;
+  }
+  return displayText(result.calculationText);
+}
+
+function resolveClaimEventBranchScenarios(indicator = {}, inputs = {}, meta = {}) {
+  const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
+  if (!branches.length) return null;
+  const lines = branches.map((branch) => {
+    const result = resolveIndicatorAmountFromCalculation({
+      ...indicator,
+      ...branch,
+      liability: '',
+      coverageType: '',
+      sourceExcerpt: '',
+      condition: '',
+      branches: [],
+      branchSemanticContract: '',
+      __skipOfficialFormulaRepair: true,
+      value: null,
+      valueText: '',
+      unit: '公式',
+      basisKey: '',
+      calculationKey: '',
+      calculationEligible: undefined,
+    }, inputs);
+    return `${claimBranchLabel(branch)}：${claimBranchCalculationText(branch, result, inputs)}`;
+  });
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    hasBranchScenarios: true,
+    uncertaintyNote: '需补充出险原因和出险日期以选择实际给付分支；以下仅为按当前保单数据的分支情景测算，未计入统计。',
+    calculationText: `条款分支情景测算（未计入统计）：\n${lines.join('\n')}`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const repairedIndicator = repairIndicatorFormulaFromOfficialExcerpt(indicator);
   const meta = normalizeIndicatorCalculation(repairedIndicator);
   if (meta.calculationKey === 'claim_event_facts') {
+    const branchScenarios = resolveClaimEventBranchScenarios(repairedIndicator, inputs, meta);
+    if (branchScenarios) return branchScenarios;
     return {
       resolved: false,
       partial: true,
       amount: 0,
       meta,
+      uncertaintyNote: '需补充出险原因和出险日期以选择实际给付分支，未计入统计。',
       calculationText: `${displayText(repairedIndicator.liability || repairedIndicator.coverageType)}需根据出险原因和出险日期选择条款给付分支，当前未提供，暂不计算`,
     };
   }

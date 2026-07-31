@@ -77,6 +77,7 @@ export type ResponsibilityCalculation = {
   amount: number;
   isMinimumEstimate: boolean;
   isPending?: boolean;
+  hasBranchScenarios?: boolean;
   calculationText: string;
   uncertaintyNote?: string;
 };

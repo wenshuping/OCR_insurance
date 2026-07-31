@@ -1674,8 +1674,9 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
         amount: 0,
         isMinimumEstimate: false,
         isPending: true,
+        hasBranchScenarios: result.hasBranchScenarios === true,
         calculationText: String(result.calculationText || ''),
-        uncertaintyNote: '',
+        uncertaintyNote: String(result.uncertaintyNote || ''),
       }];
     }
     if (!result?.resolved && !result?.isMinimumEstimate) return [];
