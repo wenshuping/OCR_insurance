@@ -1391,9 +1391,11 @@ test('family report keeps verbose protection notes readable on mobile', () => {
 test('family report responsibility table reserves readable space for conditions and source policies', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
-  assert.match(source, /family-report-responsibility-table min-w-full table-auto/);
-  assert.doesNotMatch(source, /family-report-responsibility-table[^\n]*table-fixed/);
-  assert.doesNotMatch(source, /family-report-responsibility-table[^\n]*w-\[1175px\]/);
+  assert.match(source, /family-report-responsibility-table min-w-\[960px\] w-full table-fixed/);
+  assert.match(source, /<col className="w-\[12%\]" \/>/);
+  assert.match(source, /<col className="w-\[10%\]" \/>/);
+  assert.match(source, /<col className="w-\[25%\]" \/>/);
+  assert.match(source, /<col className="w-\[26%\]" \/>/);
   assert.match(source, /<SourcePolicyList row=\{row\} \/>/);
   assert.match(indexCssSource, /\.family-report-policy-name[\s\S]*word-break: keep-all/);
 });
