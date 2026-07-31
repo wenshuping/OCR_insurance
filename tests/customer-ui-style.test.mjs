@@ -1392,12 +1392,16 @@ test('family report responsibility table reserves readable space for conditions 
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
   assert.match(source, /family-report-responsibility-table min-w-\[960px\] w-full table-fixed/);
-  assert.match(source, /<col className="w-\[12%\]" \/>/);
+  assert.match(source, /<col className="w-\[14%\]" \/>/);
   assert.match(source, /<col className="w-\[10%\]" \/>/);
-  assert.match(source, /<col className="w-\[25%\]" \/>/);
-  assert.match(source, /<col className="w-\[26%\]" \/>/);
+  assert.match(source, /<col className="w-\[8%\]" \/>/);
+  assert.match(source, /<col className="w-\[28%\]" \/>/);
+  assert.match(source, /<col className="w-\[32%\]" \/>/);
+  assert.match(source, /familyReportResponsibilityTdClassName = 'min-w-0 break-words whitespace-normal/);
+  assert.match(source, /<td className=\{familyReportResponsibilityTdClassName\}>\{emptyText\(row\.amountText\)\}<\/td>/);
   assert.match(source, /<SourcePolicyList row=\{row\} \/>/);
   assert.match(indexCssSource, /\.family-report-policy-name[\s\S]*word-break: keep-all/);
+  assert.match(indexCssSource, /\.family-report-responsibility-table th,[\s\S]*overflow-wrap: anywhere/);
 });
 
 test('admin app exposes optional responsibility quantification governance list', () => {

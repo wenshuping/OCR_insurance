@@ -478,6 +478,7 @@ function RadarCalculationDetails({
 
 const thClassName = 'bg-blue-500 px-3 py-2.5 text-left text-xs font-black text-white';
 const tdClassName = 'whitespace-nowrap bg-white px-3 py-2.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
+const familyReportResponsibilityTdClassName = 'min-w-0 break-words whitespace-normal bg-white px-3 py-2.5 align-top text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 const compactThClassName = 'bg-blue-500 px-2 py-1.5 text-center text-xs font-black text-white';
 const compactTdClassName = 'whitespace-nowrap bg-white px-2 py-1.5 text-xs font-semibold text-slate-700 ring-1 ring-[#E1EAF5]';
 
@@ -1425,12 +1426,12 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
         <TableWrap>
         <table className="family-report-responsibility-table min-w-[960px] w-full table-fixed border-separate border-spacing-0 text-left">
           <colgroup>
-            <col className="w-[18%]" />
-            <col className="w-[12%]" />
+            <col className="w-[14%]" />
             <col className="w-[10%]" />
-            <col className="w-[9%]" />
-            <col className="w-[25%]" />
-            <col className="w-[26%]" />
+            <col className="w-[8%]" />
+            <col className="w-[8%]" />
+            <col className="w-[28%]" />
+            <col className="w-[32%]" />
           </colgroup>
           <thead>
             <tr>
@@ -1445,9 +1446,9 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
           <tbody>
             {member.rows.map((row) => (
               <tr key={row.key}>
-                <td className={tdClassName}>{row.label}</td>
-                <td className={tdClassName}>{emptyText(row.amountText)}</td>
-                <td className={tdClassName}>{emptyText(row.countText)}</td>
+                <td className={familyReportResponsibilityTdClassName}>{row.label}</td>
+                <td className={familyReportResponsibilityTdClassName}>{emptyText(row.amountText)}</td>
+                <td className={familyReportResponsibilityTdClassName}>{emptyText(row.countText)}</td>
                 <td className={tdClassName}>
                   <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-bold ring-1 ${statusClassName(row.status)}`}>
                     {statusLabel(row.status)}
