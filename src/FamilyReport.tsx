@@ -1423,15 +1423,7 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
       </div>
       <div data-report-canvas-skip data-report-export-table className="hidden md:block">
         <TableWrap>
-        <table className="family-report-responsibility-table min-w-[1175px] table-fixed border-separate border-spacing-0 text-left">
-          <colgroup>
-            <col className="w-[210px]" />
-            <col className="w-[110px]" />
-            <col className="w-[105px]" />
-            <col className="w-[100px]" />
-            <col className="w-[350px]" />
-            <col className="w-[300px]" />
-          </colgroup>
+        <table className="family-report-responsibility-table min-w-full table-auto border-separate border-spacing-0 text-left">
           <thead>
             <tr>
               <th className={`${thClassName} rounded-tl-[18px]`}>责任颗粒度</th>
@@ -1453,7 +1445,7 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
                     {statusLabel(row.status)}
                   </span>
                 </td>
-                <td className="max-w-[300px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium text-slate-500">
+                <td className="border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium text-slate-500">
                   <ConditionSummary text={row.conditionText} />
                 </td>
                 <td className="family-report-source-cell border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium leading-5 text-slate-500">
