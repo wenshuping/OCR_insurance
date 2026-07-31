@@ -9182,6 +9182,7 @@ test('responsibility assistant company suggestions match legal-suffix variants w
 });
 
 test('responsibility assistant product suggestions are scoped to selected company', async () => {
+  let scopedLookupCalls = 0;
   const app = createPolicyOcrApp({
     state: {
       users: [],
@@ -9223,6 +9224,20 @@ test('responsibility assistant product suggestions are scoped to selected compan
       policies: [],
       nextId: 4,
     },
+    loadKnowledgeRecords: async ({ company, productName }) => {
+      scopedLookupCalls += 1;
+      assert.equal(company, '中国平安');
+      assert.equal(productName, 'e生');
+      return [{
+        id: 1,
+        company: '中国平安',
+        productName: '平安e生保医疗保险',
+        title: '平安e生保医疗保险产品条款',
+        url: 'https://life.pingan.example/pingan-esheng.pdf',
+        pageText: '保险责任包括一般医疗保险金。',
+        official: true,
+      }];
+    },
   });
   const server = await listen(app);
 
@@ -9232,6 +9247,7 @@ test('responsibility assistant product suggestions are scoped to selected compan
     assert.equal(suggested.payload.ok, true);
     assert.ok(suggested.payload.suggestions.some((item) => item.productName === '平安e生保医疗保险'));
     assert.equal(suggested.payload.suggestions.some((item) => item.company === '中国太平'), false);
+    assert.equal(scopedLookupCalls, 1);
   } finally {
     await server.close();
   }

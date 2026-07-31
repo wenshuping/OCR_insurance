@@ -1603,7 +1603,12 @@ function isProductSuggestionKnowledgeRecord(record = {}) {
   );
 }
 
-function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults } = {}) {
+function buildResponsibilityProductSuggestions(state, {
+  company = '',
+  query = '',
+  maxResults,
+  knowledgeRecords,
+} = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const parentheticalCode = String(query || '')
@@ -1614,7 +1619,10 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     ? String(query || '').normalize('NFKC').replace(/\([A-Z0-9][A-Z0-9_-]{1,23}\)/iu, '')
     : query;
   const normalizedNameQuery = normalizeSuggestionText(nameQuery) || normalizedQuery;
-  const suggestionIndex = getResponsibilitySuggestionIndex(state);
+  const suggestionState = Array.isArray(knowledgeRecords)
+    ? { ...state, knowledgeRecords }
+    : state;
+  const suggestionIndex = getResponsibilitySuggestionIndex(suggestionState);
   const candidatesByKey = new Map();
   for (const companyKey of companyKeysForSuggestionIndex(company, suggestionIndex.officialDomainProfiles)) {
     for (const row of suggestionIndex.productRowsByCompanyKey.get(companyKey) || []) {
@@ -2338,6 +2346,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: true,
       }));
@@ -2349,6 +2358,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer !== false,
         allowExternalReferences: Boolean(input.allowExternalReferences),
@@ -2739,6 +2749,8 @@ export function createPolicyOcrApp(options = {}) {
     wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
+    loadKnowledgeRecords: options.loadKnowledgeRecords,
+    loadResponsibilityIndexes: options.loadResponsibilityIndexes,
     findKnowledgeProductCandidates,
     legacyExternalProductReferenceRecords,
     withPolicyProductMatchStatus,
