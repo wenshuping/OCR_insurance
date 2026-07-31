@@ -138,6 +138,7 @@ function reportMemberKey(member: { memberKey?: string; member?: string; name?: s
 function statusClassName(status: string) {
   if (status === 'covered') return 'bg-emerald-50 text-emerald-700 ring-emerald-100';
   if (status === 'partial' || status === 'formula') return 'bg-amber-50 text-amber-700 ring-amber-100';
+  if (status === 'legacy_reference') return 'bg-orange-50 text-orange-700 ring-orange-100';
   if (status === 'inactive') return 'bg-red-50 text-red-700 ring-red-100';
   if (status === 'missing') return 'bg-slate-100 text-slate-500 ring-slate-200';
   return 'bg-blue-50 text-blue-700 ring-blue-100';
@@ -147,6 +148,7 @@ function statusLabel(status: string) {
   if (status === 'covered') return '已覆盖';
   if (status === 'partial') return '部分覆盖';
   if (status === 'formula') return '公式型';
+  if (status === 'legacy_reference') return '旧指标参考/待生成';
   if (status === 'inactive') return '已失效';
   if (status === 'missing') return '未识别';
   return '待确认';
