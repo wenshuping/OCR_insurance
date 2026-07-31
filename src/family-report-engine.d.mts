@@ -90,7 +90,7 @@ export type FamilyProtectionRow = {
   amount: number;
   amountText: string;
   countText: string;
-  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'unknown';
+  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'legacy_reference' | 'unknown';
   conditionText: string;
   sourcePolicies: FamilyProtectionSourcePolicy[];
 };

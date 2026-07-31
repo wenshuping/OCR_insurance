@@ -36,6 +36,7 @@ function makePolicy(overrides = {}) {
     ocrText: overrides.ocrText ?? '',
     responsibilities: overrides.responsibilities ?? [],
     coverageIndicators: overrides.coverageIndicators ?? [],
+    responsibilityCards: overrides.responsibilityCards ?? [],
     optionalResponsibilities: overrides.optionalResponsibilities ?? [],
     report: overrides.report ?? '',
     policyNumber: overrides.policyNumber ?? '',
@@ -1474,8 +1475,8 @@ test('buildFamilyReport keeps accident indicators out of critical death and disa
   assert.deepEqual(deathRow.sourcePolicies.map((policy) => policy.productName), [xinhuaNursing, xinhuaWholeLife]);
 
   const accidentMember = report.accident.members.find((item) => item.member === '温舒萍');
-  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'covered');
-  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'covered');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'legacy_reference');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'legacy_reference');
 });
 
 test('buildFamilyReport resolves critical illness amounts from formula text', () => {
@@ -1624,7 +1625,7 @@ test('buildFamilyReport does not fall back to active main policy amount from ina
   const member = report.criticalIllness.members.find((item) => item.member === '冯力');
   const row = member.rows.find((item) => item.key === 'critical_first');
   assert.equal(row.amount, 0);
-  assert.equal(row.status, 'missing');
+  assert.equal(row.status, 'inactive');
 });
 
 test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {
