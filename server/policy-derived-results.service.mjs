@@ -3,7 +3,7 @@ import { isPolicyOfficialSourceUrl } from './c-policy-analysis.service.mjs';
 import { findKnowledgeRecordsForPolicy, normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
-export const RESPONSIBILITY_PROJECTION_VERSION = '2026-07-31-official-clause-formula-repair';
+export const RESPONSIBILITY_PROJECTION_VERSION = '2026-07-31-claim-event-facts-required';
 
 export function isCurrentResponsibilityProjection(derived = {}) {
   return String(derived?.responsibilityProjectionVersion || '').trim() === RESPONSIBILITY_PROJECTION_VERSION;

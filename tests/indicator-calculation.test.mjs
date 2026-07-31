@@ -202,8 +202,8 @@ test('normalizeIndicatorCalculation blocks conditional early or late payout form
   });
 
   assert.equal(meta.calculationEligible, false);
-  assert.equal(meta.calculationKey, 'manual_formula');
-  assert.match(meta.calculationReason, /条件化给付/u);
+  assert.equal(meta.calculationKey, 'claim_event_facts');
+  assert.match(meta.calculationReason, /出险原因和出险日期/u);
 });
 
 test('normalizeIndicatorCalculation treats basic-amount day-count benefits as daily allowance dependent', () => {
@@ -339,10 +339,12 @@ test('repairs a leaked adjacent liability formula from the official clause befor
   assert.equal(maturity.isMinimumEstimate, true);
   assert.equal(maturity.minimumAmount, 200000);
   assert.match(maturity.calculationText, /满期生存保险金 = 200,000 \+ 累计红利保险金额（待补充）/u);
-  assert.equal(death.isMinimumEstimate, true);
-  assert.equal(death.minimumAmount, 20000);
-  assert.match(death.calculationText, /按出险条件分别计算/u);
-  assert.match(death.calculationText, /最低可确认金额 20,000元/u);
+  assert.equal(death.resolved, false);
+  assert.equal(death.partial, true);
+  assert.equal(death.isMinimumEstimate, undefined);
+  assert.match(death.calculationText, /需根据出险原因和出险日期选择条款给付分支/u);
+  assert.match(death.calculationText, /暂不计算/u);
+  assert.deepEqual(requiredCalculationInputsForMeta(death.meta), ['eventCause', 'eventDate']);
 });
 
 test('resolves a normalized formula stored as a bare basic-responsibility expression', () => {

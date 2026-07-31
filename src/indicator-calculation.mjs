@@ -35,6 +35,13 @@ function isExpenseReimbursementText(value = '') {
   return /医疗费用|实际合理医疗费用|实际合理[^。；;，,]{0,20}费用|实际[^。；;，,]{0,20}费用|免赔额|报销|补偿/u.test(value);
 }
 
+function requiresClaimEventFacts(indicator = {}) {
+  const liability = normalizeText(indicator.liability || indicator.coverageType);
+  if (!/(?:身故|死亡|全残|伤残|残疾|重疾|重大疾病)/u.test(liability)) return false;
+  const text = normalizeText(indicatorCoreText(indicator));
+  return /(?:因疾病|因意外(?:伤害)?|出险原因|出险日期|事故原因|事故日期|合同生效(?:或复效)?之日起.{0,8}(?:年内|年后)|复效.{0,12}(?:年内|年后))/u.test(text);
+}
+
 const MODEL_CALCULATION_PAIRS = new Set([
   'basic_amount:basic_amount',
   'basic_amount:percent_of_basic_amount',
@@ -59,7 +66,7 @@ export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculatio
 export function requiredCalculationInputsForMeta(meta = {}) {
   const calculationKey = displayText(meta.calculationKey);
   const basisKey = displayText(meta.basisKey);
-  if (calculationKey === 'event_condition_branch_minimum') return ['eventCondition'];
+  if (calculationKey === 'claim_event_facts') return ['eventCause', 'eventDate'];
   if (calculationKey === 'fixed_amount') return [];
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
@@ -132,12 +139,24 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     && indicator.branches.length > 0
     && indicator.branches.every((branch) => displayText(branch?.normalizedFormula || branch?.formulaText));
 
+  if (requiresClaimEventFacts(indicator)) {
+    return {
+      basisKey: 'claim_event_facts',
+      calculationKey: 'claim_event_facts',
+      calculationEligible: false,
+      calculationReason: '需补充出险原因和出险日期后选择条款给付分支，暂不计算',
+      decisionSource: 'code_safety_rule',
+      value,
+      unit: '公式',
+    };
+  }
+
   if (hasStructuredEventBranches) {
     return {
       basisKey: 'event_condition',
-      calculationKey: 'event_condition_branch_minimum',
-      calculationEligible: true,
-      calculationReason: '',
+      calculationKey: 'claim_event_facts',
+      calculationEligible: false,
+      calculationReason: '需补充出险原因和出险日期后选择条款给付分支，暂不计算',
       decisionSource: 'official_clause_branch_repair',
       value,
       unit: '公式',
@@ -732,7 +751,7 @@ function repairIndicatorFormulaFromOfficialExcerpt(indicator = {}) {
       valueText: '',
       unit: '公式',
       basisKey: 'effective_insured_amount',
-      calculationKey: 'event_condition_branch_minimum',
+      calculationKey: 'unknown',
       calculationEligible: true,
       calculationReason: '',
       responsibilityRepairVersion: '2026-07-31-official-clause-formula-repair',
@@ -775,11 +794,11 @@ function repairIndicatorFormulaFromOfficialExcerpt(indicator = {}) {
     valueText: '',
     unit: '公式',
     basisKey: 'event_condition',
-    calculationKey: 'event_condition_branch_minimum',
-    calculationEligible: true,
-    calculationReason: '',
+    calculationKey: 'claim_event_facts',
+    calculationEligible: false,
+    calculationReason: '需补充出险原因和出险日期后选择条款给付分支，暂不计算',
     branches,
-    branchSemanticContract: 'minimum-across-official-event-branches',
+    branchSemanticContract: 'official-claim-event-branches',
     responsibilityRepairVersion: '2026-07-31-official-clause-formula-repair',
   };
 }
@@ -788,51 +807,18 @@ export function repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator = 
   return repairIndicatorFormulaFromOfficialExcerpt(indicator);
 }
 
-function resolveOfficialBranchMinimum(indicator = {}, inputs = {}, meta = {}) {
-  const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
-  if (!branches.length) return null;
-  const results = branches.map((branch) => ({
-    branch,
-    result: resolveIndicatorAmountFromCalculation({
-      ...indicator,
-      ...branch,
-      branches: [],
-      branchSemanticContract: '',
-      __skipOfficialFormulaRepair: true,
-      value: null,
-      valueText: '',
-      unit: '公式',
-      basisKey: '',
-      calculationKey: '',
-      calculationEligible: undefined,
-      formulaText: displayText(branch.formulaText),
-      normalizedFormula: displayText(branch.normalizedFormula),
-    }, inputs),
-  }));
-  const amounts = results.map(({ result }) => (
-    result.resolved ? Number(result.amount) : (result.isMinimumEstimate ? Number(result.minimumAmount) : 0)
-  ));
-  if (amounts.some((amount) => !(amount > 0))) return null;
-  const minimumAmount = roundMoney(Math.min(...amounts));
-  const branchText = results.map(({ branch, result }) => (
-    `${displayText(branch.condition) || '条款分支'}：${displayText(result.calculationText)}`
-  )).join('；');
-  return {
-    resolved: false,
-    partial: true,
-    amount: 0,
-    minimumAmount,
-    isMinimumEstimate: true,
-    meta,
-    calculationText: `${displayText(indicator.liability || indicator.coverageType)}按出险条件分别计算；${branchText}；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入待补充的非负金额）`,
-  };
-}
-
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const repairedIndicator = repairIndicatorFormulaFromOfficialExcerpt(indicator);
   const meta = normalizeIndicatorCalculation(repairedIndicator);
-  const branchMinimum = resolveOfficialBranchMinimum(repairedIndicator, inputs, meta);
-  if (branchMinimum) return branchMinimum;
+  if (meta.calculationKey === 'claim_event_facts') {
+    return {
+      resolved: false,
+      partial: true,
+      amount: 0,
+      meta,
+      calculationText: `${displayText(repairedIndicator.liability || repairedIndicator.coverageType)}需根据出险原因和出险日期选择条款给付分支，当前未提供，暂不计算`,
+    };
+  }
   const normalizedFormulaResult = resolveNormalizedFormula(repairedIndicator, inputs);
   if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
   if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
