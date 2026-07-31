@@ -146,7 +146,7 @@ test('standardizeResponsibilityIndicator supersedes legacy display-only metadata
   }, { policy: basePolicy });
 
   assert.equal(result.calculationEligible, true);
-  assert.equal(result.calculationKey, 'multiple_of_basic_amount');
+  assert.equal(result.calculationKey, 'formula_projection');
   assert.equal(result.calculationReason, '');
   assert.equal(result.cashflowTreatment, 'claim_contingent');
 });

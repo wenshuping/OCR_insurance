@@ -279,6 +279,11 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey = 'percent_of_basic_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '倍') {
     calculationKey = 'multiple_of_basic_amount';
+  } else if (basisKey === 'effective_insured_amount' && value !== null && /^(?:%|倍)$/u.test(normalizedUnit)) {
+    // The effective insured amount is a contract-defined value, not the
+    // policy's basic amount. A direct factor can still be projected safely
+    // from the formula (including a minimum when its definition is supplied).
+    calculationKey = 'formula_projection';
   } else if (basisKey === 'basic_amount' && /公式|^$/u.test(normalizedUnit || '') && /基本保险金额|基本保险金|基本保额|保险金额/u.test(text)) {
     calculationKey = 'basic_amount';
   } else if ((basisKey === 'first_premium' || basisKey === 'first_basic_responsibility_premium' || basisKey === 'annual_premium') && value !== null && normalizedUnit === '%') {

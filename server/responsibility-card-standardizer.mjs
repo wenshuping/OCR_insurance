@@ -111,6 +111,7 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   if (withoutForPrefix && withoutForPrefix !== liability && /保险金/u.test(withoutForPrefix)) return withoutForPrefix;
   const cleanedLiability = cleanClauseTitle(liability);
   if (cleanedLiability && cleanedLiability !== liability) return cleanedLiability;
+  if (name === '疾病全残' && /^身故或身体全残保险金/u.test(excerpt)) return '身故或身体全残保险金';
   if (name === '满期返还' && excerpt.includes('满期保险金')) return '满期保险金';
   const concreteLiability = concreteScheduledLiabilityFromExcerptForAggregate(indicator, sourceExcerpt);
   if (concreteLiability) return concreteLiability;
