@@ -1157,17 +1157,17 @@ test('customer policy detail moves coverage amount into plan details', () => {
   assert.match(summarySource, /保额：\{formatCoverageAmount\(Number\(planAmount \|\| 0\)\)\}/);
 });
 
-test('customer policy plan cards show the matched rider responsibilities', () => {
+test('customer policy detail shows each rider inside responsibility cards', () => {
   const detailSource = componentSource('PolicyDetailSheet', null);
-  const entrySource = componentSource('AnalysisReportPage', null, normalizedPolicyEntrySource);
   const summarySource = componentSource('PolicyPlanSummary', 'SelectField');
 
-  assert.match(detailSource, /coverageIndicators=\{policy\.coverageIndicators\}/);
-  assert.match(entrySource, /coverageIndicators=\{\(analysis\.responsibilityCards \|\| \[\]\)\.flatMap\(\(card\) => card\.indicators \|\| \[\]\)\}/);
-  assert.match(summarySource, /planCoverageResponsibilityIndicators\(plan, coverageIndicators\)/);
-  assert.match(customerPolicyComponentsSource, /function planMatchesCoverageIndicator/);
-  assert.match(summarySource, /保险责任/);
-  assert.match(customerPolicyComponentsSource, /indicator\.coverageType \|\| ''\)\.trim\(\) === '规则参数'/);
+  assert.match(policyDetailSource, /function planResponsibilityCards/);
+  assert.match(detailSource, /riderResponsibilityGroups/);
+  assert.match(detailSource, /附加险保险责任/);
+  assert.match(detailSource, /<ResponsibilityCardList/);
+  assert.match(detailSource, /baseAmount=\{plan\.amount\}/);
+  assert.match(detailSource, /firstPremium=\{plan\.premium\}/);
+  assert.doesNotMatch(summarySource, /保险责任/);
 });
 
 test('customer policy cards derive validity status from coverage period', () => {
@@ -1233,7 +1233,7 @@ test('customer policy detail uses customer responsibility summary instead of leg
   assert.match(detailSource, /getProductCustomerResponsibilitySummary\(\{[\s\S]*company,[\s\S]*name,[\s\S]*policyId: policy\.id,[\s\S]*token,[\s\S]*guestId,[\s\S]*\}\)/);
   assert.match(detailSource, /本保单客户上传的保险责任/);
   assert.match(detailSource, /<CustomerResponsibilitySummaryCard[\s\S]*summary=\{customerSummary\}[\s\S]*cashflowEntries=\{cashflowEntries\}[\s\S]*scenarioEntries=\{policy\.scenarioEntries\}[\s\S]*responsibilityCalculations=\{policy\.responsibilityCalculations\}[\s\S]*\/>/);
-  assert.doesNotMatch(detailSource, /ResponsibilityCardList/);
+  assert.match(detailSource, /<ResponsibilityCardList/);
   assert.doesNotMatch(detailSource, /getPolicyResponsibilitySourceLinks\(policy\)/);
   assert.doesNotMatch(detailSource, /官网地址/);
   assert.match(customerSummaryCardSource, /enabled: block\?\.enabled !== false/);

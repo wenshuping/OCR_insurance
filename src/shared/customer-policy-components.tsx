@@ -156,61 +156,6 @@ function normalizeProductMatchText(value: unknown) {
     .trim();
 }
 
-function normalizePlanIndicatorProductText(value: unknown) {
-  return normalizeProductMatchText(value)
-    .toLowerCase()
-    .replace(/[（）()《》〈〉「」『』【】\[\]·・,，.。:：;；\-_/\\]/gu, '');
-}
-
-function planMatchesCoverageIndicator(
-  plan: NonNullable<PolicyFormData['plans']>[number],
-  indicator: Partial<CoverageIndicator>,
-) {
-  const planCanonicalProductId = String(plan.canonicalProductId || '').trim();
-  const indicatorCanonicalProductId = String(indicator.canonicalProductId || '').trim();
-  if (planCanonicalProductId && indicatorCanonicalProductId) {
-    return planCanonicalProductId === indicatorCanonicalProductId;
-  }
-  const indicatorProductName = normalizePlanIndicatorProductText(indicator.productName);
-  if (!indicatorProductName) return false;
-  return [plan.matchedProductName, plan.name]
-    .map(normalizePlanIndicatorProductText)
-    .filter(Boolean)
-    .some((planProductName) => (
-      planProductName === indicatorProductName
-      || planProductName.includes(indicatorProductName)
-      || indicatorProductName.includes(planProductName)
-    ));
-}
-
-function planCoverageResponsibilityIndicators(
-  plan: NonNullable<PolicyFormData['plans']>[number],
-  indicators: Array<Partial<CoverageIndicator>> = [],
-) {
-  const seen = new Set<string>();
-  return indicators.filter((indicator) => {
-    if (String(indicator.coverageType || '').trim() === '规则参数') return false;
-    if (!planMatchesCoverageIndicator(plan, indicator)) return false;
-    const key = [
-      String(indicator.liability || indicator.coverageType || '').trim(),
-      String(indicator.payoutSummary || indicator.formulaText || indicator.valueText || indicator.basis || '').trim(),
-    ].join('\u001f');
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function planCoverageResponsibilityText(indicator: Partial<CoverageIndicator>) {
-  return String(
-    indicator.payoutSummary
-      || indicator.formulaText
-      || indicator.valueText
-      || indicator.basis
-      || '',
-  ).trim();
-}
-
 function optionalResponsibilitySemanticKey(item: OptionalResponsibility) {
   return [
     normalizeProductMatchText(item.productName),
@@ -677,7 +622,6 @@ export function PolicyPlanEditor(props: {
 
 export function PolicyPlanSummary({
   plans,
-  coverageIndicators = [],
   effectiveDate,
   insuredBirthday,
   paymentPeriod = '',
@@ -686,7 +630,6 @@ export function PolicyPlanSummary({
   firstPremium = '',
 }: {
   plans: NonNullable<PolicyFormData['plans']>;
-  coverageIndicators?: Array<Partial<CoverageIndicator>>;
   effectiveDate?: string;
   insuredBirthday?: string;
   paymentPeriod?: string;
@@ -711,7 +654,6 @@ export function PolicyPlanSummary({
           const planCoveragePeriod = plan.coveragePeriod || fallbackCoveragePeriod;
           const planPaymentPeriod = plan.paymentPeriod || plan.paymentMode || fallbackPaymentPeriod;
           const planAmount = fallbackAmount || plan.amount;
-          const responsibilityIndicators = planCoverageResponsibilityIndicators(plan, coverageIndicators);
           const validityStatus = resolvePolicyValidityStatus(planCoveragePeriod, {
             effectiveDate,
             insuredBirthday,
@@ -745,23 +687,6 @@ export function PolicyPlanSummary({
                     {plan.benefitRows.map((row, rowIndex) => (
                       <li key={`${planProductDisplayName(plan)}-benefit-${rowIndex}`}>{planBenefitRowLabel(row) || '-'}</li>
                     ))}
-                  </ul>
-                </div>
-              ) : null}
-              {responsibilityIndicators.length ? (
-                <div className="mt-2 rounded-lg bg-white px-3 py-2 text-xs font-bold leading-5 text-slate-600 ring-1 ring-slate-100">
-                  <p className="mb-1 text-[11px] font-black text-slate-700">保险责任</p>
-                  <ul className="space-y-1.5">
-                    {responsibilityIndicators.map((indicator, indicatorIndex) => {
-                      const liability = String(indicator.liability || indicator.coverageType || '保险责任').trim();
-                      const detail = planCoverageResponsibilityText(indicator);
-                      return (
-                        <li key={`${planProductDisplayName(plan)}-responsibility-${indicator.id || indicatorIndex}`}>
-                          <span className="font-black text-slate-800">{liability}</span>
-                          {detail ? <span>：{detail}</span> : null}
-                        </li>
-                      );
-                    })}
                   </ul>
                 </div>
               ) : null}

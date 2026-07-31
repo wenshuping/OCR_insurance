@@ -1188,7 +1188,6 @@ export function AnalysisReportPage(props: {
 
         <PolicyPlanSummary
           plans={normalizePolicyPlanList(formData.plans, formData.company)}
-          coverageIndicators={(analysis.responsibilityCards || []).flatMap((card) => card.indicators || [])}
           effectiveDate={formData.date}
           insuredBirthday={formData.insuredBirthday}
           paymentPeriod={formData.paymentPeriod}

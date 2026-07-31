@@ -37,6 +37,7 @@ import {
 import {
   MetricBox,
   ReportText,
+  ResponsibilityCardList,
   buildPolicyReportTitle,
   getReportPlaceholder,
   isPolicyReportFailed,
@@ -64,6 +65,29 @@ import {
   normalizeSuggestionQuery,
   renderHighlightedSuggestion,
 } from '../../shared/customer-policy-components';
+
+function normalizeResponsibilityProductName(value: unknown) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s（）()《》〈〉「」『』【】\[\]·・,，.。:：;；\-_/\\]/gu, '');
+}
+
+function planResponsibilityCards(policy: Policy) {
+  const plans = normalizePolicyPlanList(policy.plans, policy.company)
+    .filter((plan) => String(plan.role || '') === 'rider');
+  const cards = Array.isArray(policy.responsibilityCards) ? policy.responsibilityCards : [];
+  return plans.map((plan) => {
+    const productNames = new Set([
+      normalizeResponsibilityProductName(plan.matchedProductName),
+      normalizeResponsibilityProductName(plan.name),
+    ].filter(Boolean));
+    return {
+      plan,
+      cards: cards.filter((card) => productNames.has(normalizeResponsibilityProductName(card.productName))),
+    };
+  }).filter((item) => item.cards.length);
+}
 
 function normalizeProductCode(value: unknown) {
   const text = String(value || '').normalize('NFKC').replace(/\s+/g, '').toUpperCase();
@@ -114,6 +138,7 @@ export function PolicyDetailSheet({
       policy.responsibilityCards?.length
   );
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
+  const riderResponsibilityGroups = useMemo(() => planResponsibilityCards(policy), [policy]);
   const exportControlTitle = getReportExportControlTitle();
   const cashValueSummary = summarizeCashValues(policy.cashValues);
   const cashflowEntries = useMemo(() => (
@@ -416,7 +441,6 @@ export function PolicyDetailSheet({
 
         <PolicyPlanSummary
           plans={normalizePolicyPlanList(policy.plans, policy.company)}
-          coverageIndicators={policy.coverageIndicators}
           effectiveDate={policy.date}
           insuredBirthday={policy.insuredBirthday}
           paymentPeriod={policy.paymentPeriod}
@@ -467,6 +491,25 @@ export function PolicyDetailSheet({
               {customerSummaryMessage || (reportGenerating ? '正在生成客户可读保险责任摘要，请稍后。' : '暂无客户版保险责任摘要。')}
             </article>
           )}
+          {riderResponsibilityGroups.length ? (
+            <div className="space-y-3">
+              <div>
+                <h4 className="text-sm font-black text-slate-950">附加险保险责任</h4>
+                <p className="mt-1 text-xs font-semibold text-slate-500">每张卡片仅展示对应附加险的责任与量化依据。</p>
+              </div>
+              {riderResponsibilityGroups.map(({ plan, cards }) => (
+                <section key={plan.canonicalProductId || plan.matchedProductName || plan.name} className="space-y-2">
+                  <p className="text-xs font-black text-slate-700">{plan.matchedProductName || plan.name}</p>
+                  <ResponsibilityCardList
+                    cards={cards}
+                    optionalResponsibilities={optionalResponsibilities}
+                    baseAmount={plan.amount}
+                    firstPremium={plan.premium}
+                  />
+                </section>
+              ))}
+            </div>
+          ) : null}
         </section>
 
         <details className="no-print mt-4 rounded-xl border border-slate-200 bg-white p-3">
