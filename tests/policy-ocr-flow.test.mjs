@@ -5512,51 +5512,78 @@ test('responsibility cards resolve a legal insurer name through a short insurer 
     category: '现金流',
     sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/terms.pdf',
     sourceExcerpt: '高等教育金按条款约定给付。',
+    sourceDigest: 'sha256:xinhua-sunshine-child',
   };
-  db.prepare(`
+  const otherCard = {
+    ...card,
+    id: 'card_xinhua_sunshine_other',
+    productKey: 'company_product:新华人寿保险股份有限公司:阳光少儿教育年金保险',
+    productName: '阳光少儿教育年金保险',
+    title: '教育年金',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/other.pdf',
+    sourceDigest: 'sha256:xinhua-sunshine-other',
+  };
+  const conflictingCard = {
+    ...card,
+    id: 'card_xinhua_sunshine_conflict_1',
+    productKey: 'company_product:新华人寿保险股份有限公司:阳光版本冲突保险',
+    productName: '阳光版本冲突保险',
+    title: '版本一责任',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/conflict-1.pdf',
+    sourceDigest: 'sha256:xinhua-sunshine-conflict-1',
+  };
+  const insertCard = db.prepare(`
     INSERT INTO product_responsibility_cards (
       id, product_key, company, product_name, title, category, source_url, payload
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    card.id,
-    card.productKey,
-    card.company,
-    card.productName,
-    card.title,
-    card.category,
-    card.sourceUrl,
-    JSON.stringify(card),
-  );
+  `);
+  for (const row of [card, otherCard, conflictingCard, {
+    ...conflictingCard,
+    id: 'card_xinhua_sunshine_conflict_2',
+    title: '版本二责任',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/conflict-2.pdf',
+    sourceDigest: 'sha256:xinhua-sunshine-conflict-2',
+  }]) {
+    insertCard.run(
+      row.id,
+      row.productKey,
+      row.company,
+      row.productName,
+      row.title,
+      row.category,
+      row.sourceUrl,
+      JSON.stringify(row),
+    );
+  }
   const app = createPolicyOcrApp({ db, state: { ...createInitialState() } });
   const server = await listen(app);
 
   try {
     const suggested = await jsonFetch(
       server.baseUrl,
-      '/api/policy-responsibilities/product-suggestions?company=新华保险&q=阳光灿烂少儿两全保险',
+      '/api/policy-responsibilities/product-suggestions?company=新华保险&q=阳光',
     );
     assert.equal(suggested.response.status, 200);
-    assert.deepEqual(suggested.payload.suggestions, [{
-      company: card.company,
-      productName: card.productName,
-      recordCount: 1,
-      matchType: 'responsibility_card',
-    }]);
+    assert.deepEqual(
+      new Set(suggested.payload.suggestions.map((item) => item.productName)),
+      new Set([card.productName, otherCard.productName]),
+    );
+    assert.ok(suggested.payload.suggestions.every((item) => item.matchType === 'responsibility_card'));
 
     const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
       body: JSON.stringify({
         company: '新华保险',
-        name: '阳光灿烂少儿两全保险',
+        name: card.productName,
         includeOnline: false,
       }),
     });
     assert.equal(matched.response.status, 200);
-    assert.equal(matched.payload.status, 'candidates');
+    assert.equal(matched.payload.status, 'exact');
     assert.equal(matched.payload.matches[0].company, card.company);
     assert.equal(matched.payload.matches[0].productName, card.productName);
     assert.equal(matched.payload.matches[0].matchReason, '已命中库内保险责任卡');
-    assert.equal(matched.payload.matches[0].needsConfirmation, true);
+    assert.equal(matched.payload.matches[0].needsConfirmation, false);
   } finally {
     await server.close();
     db.close();
