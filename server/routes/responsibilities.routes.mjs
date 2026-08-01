@@ -941,6 +941,8 @@ export function createResponsibilityRoutes(context) {
     const company = trim(req.query?.company);
     const q = trim(req.query?.q);
     const limit = Number(req.query?.limit);
+    const maxResults = Number.isFinite(limit) && limit > 0 ? limit : undefined;
+    const existingCardMatch = q ? existingResponsibilityCardProductMatch({ company, name: q }) : null;
     let knowledgeRecords = state.knowledgeRecords || [];
     if (q && typeof loadKnowledgeRecords === 'function') {
       try {
@@ -949,14 +951,30 @@ export function createResponsibilityRoutes(context) {
         // Keep the in-memory fallback for test stores and legacy runtimes.
       }
     }
-    res.json({
-      ok: true,
-      suggestions: buildResponsibilityProductSuggestions(state, {
+    const suggestions = buildResponsibilityProductSuggestions(state, {
         company,
         query: q,
-        maxResults: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        maxResults,
         knowledgeRecords,
-      }),
+      });
+    const cardSuggestion = existingCardMatch && {
+      company: existingCardMatch.company,
+      productName: existingCardMatch.productName,
+      canonicalProductId: existingCardMatch.canonicalProductId || undefined,
+      recordCount: existingCardMatch.sourceCount,
+      matchType: 'responsibility_card',
+    };
+    const mergedSuggestions = cardSuggestion
+      ? [
+        cardSuggestion,
+        ...suggestions.filter((item) => (
+          item.company !== cardSuggestion.company || item.productName !== cardSuggestion.productName
+        )),
+      ]
+      : suggestions;
+    res.json({
+      ok: true,
+      suggestions: maxResults ? mergedSuggestions.slice(0, maxResults) : mergedSuggestions,
     });
   });
 

@@ -5488,6 +5488,81 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
   }
 });
 
+test('responsibility cards resolve a legal insurer name through a short insurer alias', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  const card = {
+    id: 'card_xinhua_sunshine_child',
+    productKey: 'company_product:新华人寿保险股份有限公司:阳光灿烂少儿两全保险（分红型）',
+    company: '新华人寿保险股份有限公司',
+    productName: '阳光灿烂少儿两全保险（分红型）',
+    title: '高等教育金',
+    category: '现金流',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/terms.pdf',
+    sourceExcerpt: '高等教育金按条款约定给付。',
+  };
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id, product_key, company, product_name, title, category, source_url, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    card.id,
+    card.productKey,
+    card.company,
+    card.productName,
+    card.title,
+    card.category,
+    card.sourceUrl,
+    JSON.stringify(card),
+  );
+  const app = createPolicyOcrApp({ db, state: { ...createInitialState() } });
+  const server = await listen(app);
+
+  try {
+    const suggested = await jsonFetch(
+      server.baseUrl,
+      '/api/policy-responsibilities/product-suggestions?company=新华保险&q=阳光灿烂少儿两全保险',
+    );
+    assert.equal(suggested.response.status, 200);
+    assert.deepEqual(suggested.payload.suggestions, [{
+      company: card.company,
+      productName: card.productName,
+      recordCount: 1,
+      matchType: 'responsibility_card',
+    }]);
+
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '新华保险',
+        name: '阳光灿烂少儿两全保险',
+        includeOnline: false,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.status, 'candidates');
+    assert.equal(matched.payload.matches[0].company, card.company);
+    assert.equal(matched.payload.matches[0].productName, card.productName);
+    assert.equal(matched.payload.matches[0].matchReason, '已命中库内保险责任卡');
+    assert.equal(matched.payload.matches[0].needsConfirmation, true);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary generates once and then reads from database', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

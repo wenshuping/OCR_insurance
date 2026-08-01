@@ -79,7 +79,7 @@ const INSURER_OFFICIAL_PROFILES = [
   {
     id: 'new_china_life',
     aliases: ['新华', '新华人寿', '新华保险'],
-    companyAliases: ['新华人寿', '新华保险'],
+    companyAliases: ['新华人寿', '新华保险', '新华人寿保险股份有限公司'],
     siteDomains: ['newchinalife.com', 'static-cdn.newchinalife.com'],
     officialDomains: ['newchinalife.com', 'static-cdn.newchinalife.com'],
   },
