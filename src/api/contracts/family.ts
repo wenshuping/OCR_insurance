@@ -485,6 +485,27 @@ export function sendFamilySalesChatMessage(input: { token?: string; guestId?: st
   );
 }
 
+export function resendFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; messageId: number; message: string }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}/messages/${input.messageId}${authQuery(input)}`,
+    {
+      method: 'PATCH',
+      token: input.token,
+      body: { message: input.message },
+    },
+  );
+}
+
+export function deleteFamilySalesChatMessage(input: { token?: string; guestId?: string; familyId: number; threadId: number; messageId: number }) {
+  return request<{ ok: true; thread: FamilySalesChatThread; messages: FamilySalesChatMessage[] }>(
+    `/api/family-profiles/${input.familyId}/sales-chat/threads/${input.threadId}/messages/${input.messageId}${authQuery(input)}`,
+    {
+      method: 'DELETE',
+      token: input.token,
+    },
+  );
+}
+
 export function getFamilyReportShare(shareToken: string) {
   return request<FamilyReportSharePayload>(`/api/family-report-shares/${encodeURIComponent(shareToken)}`);
 }

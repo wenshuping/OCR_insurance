@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, BrainCircuit, CheckCircle2, ChevronDown, ChevronUp, Clock3, FileUp, Mic2, PackageSearch, RotateCcw, XCircle } from 'lucide-react';
 
 import {
@@ -33,6 +33,7 @@ const COMPANY_FOCUS_OPTIONS = ['产品优势', '适合客户', '保险责任', '
 const EXPERT_FOCUS_OPTIONS = ['需求分析', '产品推荐', '成交话术', '异议处理', '家庭保障规划', '保单检视', '客户跟进', '销售案例', '常见错误', '合规提醒'];
 const COMPANY_MATERIAL_TYPES = ['产品介绍', '保险条款', '产品培训课件', '销售支持资料', '费率表', '产品对比资料', '常见问题'];
 const EXPERT_MATERIAL_TYPES = ['专家课程', '销冠经验', '培训录音', '销售案例', '销售话术', '异议处理', '业务问答'];
+const REVIEW_PAGE_SIZE = 5;
 
 function extensionOf(fileName: string) {
   return fileName.split('.').pop()?.toLowerCase() || '';
@@ -186,10 +187,23 @@ const OPERATION_LABELS: Record<string, string> = {
   remove_relation: '删除错误关系',
 };
 
+function correctionOperationDetail(operation: AdminKnowledgeCorrectionPlan['operations'][number]) {
+  if (operation.content) return `修改后内容：${operation.content}`;
+  if (operation.splitAtText) return `拆分位置：${operation.splitAtText}`;
+  if (operation.elementIds?.length) return `来源元素：${operation.elementIds.join('、')}`;
+  if (operation.targetChunkIds?.length) return `目标切片：${operation.targetChunkIds.join('、')}`;
+  if (operation.relatedChunkId) return `关联切片：${operation.relatedChunkId}${operation.relationType ? `（${operation.relationType}）` : ''}`;
+  return '';
+}
+
 function issueSeverityClass(severity: string) {
   if (severity === 'high') return 'border-rose-200 bg-rose-50 text-rose-700';
   if (severity === 'medium') return 'border-amber-200 bg-amber-50 text-amber-700';
   return 'border-blue-100 bg-blue-50 text-blue-700';
+}
+
+function issueSourceElementCount(issue: AdminKnowledgeReviewIssue) {
+  return new Set(issue.sourceRegions.flatMap((region) => region.elementIds)).size;
 }
 
 function issueSeverityLabel(severity: string) {
@@ -216,6 +230,8 @@ function PageReviewWorkbench({
   const [pagePreviewUrls, setPagePreviewUrls] = useState<Record<number, string>>({});
   const [pagePreviewLoading, setPagePreviewLoading] = useState<Set<number>>(new Set());
   const [pagePreviewErrors, setPagePreviewErrors] = useState<Record<number, string>>({});
+  const [pagePreviewReloadVersion, setPagePreviewReloadVersion] = useState(0);
+  const [reviewPageNo, setReviewPageNo] = useState(1);
   const [expandedPreview, setExpandedPreview] = useState<{ pageNo: number; url: string } | null>(null);
   const [previewZoom, setPreviewZoom] = useState(100);
   const [activePageNo, setActivePageNo] = useState(0);
@@ -225,12 +241,19 @@ function PageReviewWorkbench({
   const [scope, setScope] = useState('current_chunk');
   const [note, setNote] = useState('');
   const [plan, setPlan] = useState<AdminKnowledgeCorrectionPlan | null>(null);
+  const [planError, setPlanError] = useState('');
+  const [correctionNotice, setCorrectionNotice] = useState('');
   const [busy, setBusy] = useState<'loading' | 'ai' | 'review' | 'plan' | 'confirm' | ''>('loading');
+  const confirmingRef = useRef(false);
 
   async function loadWorkspace() {
     setBusy('loading');
     try {
-      setWorkspace(await getAdminKnowledgeReviewWorkspace(token, document.id));
+      const nextWorkspace = await getAdminKnowledgeReviewWorkspace(token, document.id);
+      setWorkspace(nextWorkspace);
+      setReviewPageNo((current) => nextWorkspace.pages.some((page) => page.pageNo === current)
+        ? current
+        : nextWorkspace.pages[0]?.pageNo || 1);
     } catch (error) {
       onMessage(error instanceof Error ? error.message : '审核页面读取失败');
     } finally {
@@ -243,7 +266,10 @@ function PageReviewWorkbench({
   const pageSignature = (workspace?.pages || []).map((page) => page.pageNo).join(',');
 
   useEffect(() => {
-    const pageNos = pageSignature.split(',').map(Number).filter((pageNo) => pageNo > 0);
+    const allPageNos = pageSignature.split(',').map(Number).filter((pageNo) => pageNo > 0);
+    const selectedIndex = Math.max(0, allPageNos.indexOf(reviewPageNo));
+    const groupStart = Math.floor(selectedIndex / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE;
+    const pageNos = allPageNos.slice(groupStart, groupStart + REVIEW_PAGE_SIZE);
     if (!pageNos.length) return undefined;
     let active = true;
     const objectUrls: string[] = [];
@@ -252,7 +278,17 @@ function PageReviewWorkbench({
     setPagePreviewLoading(new Set(pageNos));
     void Promise.all(pageNos.map(async (pageNo) => {
       try {
-        const blob = await getAdminKnowledgePagePreview(token, document.id, pageNo);
+        let blob: Blob | null = null;
+        let lastError: unknown;
+        for (let attempt = 0; attempt < 3 && !blob; attempt += 1) {
+          try {
+            blob = await getAdminKnowledgePagePreview(token, document.id, pageNo);
+          } catch (error) {
+            lastError = error;
+            if (attempt < 2) await new Promise((resolve) => window.setTimeout(resolve, 800 * (attempt + 1)));
+          }
+        }
+        if (!blob) throw lastError;
         const url = URL.createObjectURL(blob);
         objectUrls.push(url);
         if (active) setPagePreviewUrls((current) => ({ ...current, [pageNo]: url }));
@@ -270,7 +306,7 @@ function PageReviewWorkbench({
       active = false;
       objectUrls.forEach((url) => URL.revokeObjectURL(url));
     };
-  }, [document.id, pageSignature, token]);
+  }, [document.id, pagePreviewReloadVersion, pageSignature, reviewPageNo, token]);
 
   useEffect(() => {
     if (document.mediaType !== 'application/pdf' && !document.mediaType.startsWith('image/')) return undefined;
@@ -285,6 +321,10 @@ function PageReviewWorkbench({
   }, [document.id, document.mediaType, token]);
 
   const pages = [...(workspace?.pages || [])].sort((left, right) => left.pageNo - right.pageNo);
+  const reviewPageIndex = Math.max(0, pages.findIndex((page) => page.pageNo === reviewPageNo));
+  const reviewGroupStart = Math.floor(reviewPageIndex / REVIEW_PAGE_SIZE) * REVIEW_PAGE_SIZE;
+  const visiblePages = pages.slice(reviewGroupStart, reviewGroupStart + REVIEW_PAGE_SIZE);
+  const reviewGroupPageNo = pages[reviewGroupStart]?.pageNo || reviewPageNo;
   const selectedIssue = workspace?.issues.find((issue) => issue.id === selectedIssueId) || null;
   const selectedChunk = chunks.find((chunk) => chunk.id === selectedChunkId) || null;
   const issuesForPage = (pageNo: number) => (workspace?.issues || []).filter((issue) => issue.pageNos.includes(pageNo)
@@ -296,30 +336,76 @@ function PageReviewWorkbench({
 
   function openCorrection(pageNo: number, issue: AdminKnowledgeReviewIssue | null, chunkId = '') {
     const pageChunks = chunksForPage(pageNo);
+    const savedReview = workspace?.pageReviews.find((item) => item.pageNo === pageNo);
     setActivePageNo(pageNo);
     setSelectedIssueId(issue?.id || '');
     setSelectedChunkId(chunkId || issue?.affectedChunkIds[0] || pageChunks[0]?.id || '');
     setReasonCode(issue?.type === 'content_extra' ? 'content_extra' : issue?.type === 'missing_content' ? 'missing_content' : 'semantic_incomplete');
-    setNote(issue?.reason || '');
+    setNote(savedReview?.note || issue?.reason || '');
     setPlan(null);
+    setPlanError('');
+    setCorrectionNotice('');
   }
 
-  async function savePageReview(pageNo: number, status: 'passed' | 'needs_correction', issue: AdminKnowledgeReviewIssue | null = null) {
+  async function persistCorrectionNote(announce = false) {
+    if (!activePageNo || !note.trim()) return null;
+    const result = await reviewAdminKnowledgePage(token, document.id, activePageNo, {
+      status: 'needs_correction',
+      note: note.trim(),
+      indexVersion: workspace?.indexReview?.candidateIndexVersion,
+    });
+    setWorkspace((current) => current ? {
+      ...current,
+      pageReviews: [...current.pageReviews.filter((item) => item.pageNo !== activePageNo), result.review]
+        .sort((left, right) => left.pageNo - right.pageNo),
+    } : current);
+    if (announce) onMessage(`第 ${activePageNo} 页不通过原因已保存`);
+    return result;
+  }
+
+  async function saveCorrectionNote() {
     setBusy('review');
     try {
-      await reviewAdminKnowledgePage(token, document.id, pageNo, {
+      await persistCorrectionNote(true);
+    } catch (error) {
+      onMessage(error instanceof Error ? error.message : '不通过原因保存失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function savePageReview(pageNo: number, status: 'passed' | 'needs_correction' | 'excluded', issue: AdminKnowledgeReviewIssue | null = null, exclusionReason = '') {
+    setBusy('review');
+    try {
+      const result = await reviewAdminKnowledgePage(token, document.id, pageNo, {
         status,
-        note: status === 'passed' && issuesForPage(pageNo).length ? '人工复核后确认本页通过，AI提示无需修正。' : '',
+        note: status === 'excluded'
+          ? exclusionReason
+          : status === 'passed' && issuesForPage(pageNo).length
+            ? '人工复核后确认本页通过，AI提示无需修正。'
+            : '',
         indexVersion: workspace?.indexReview?.candidateIndexVersion,
       });
       if (status === 'needs_correction') openCorrection(pageNo, issue);
-      onMessage(status === 'passed' ? `第 ${pageNo} 页已人工确认通过` : `第 ${pageNo} 页已标记不通过，请填写修正说明`);
+      onMessage(status === 'passed'
+        ? result.publishedChunkCount
+          ? `第 ${pageNo} 页已人工确认通过，${result.publishedChunkCount} 个合格切片已直接入库`
+          : `第 ${pageNo} 页已人工确认通过；跨页或未绑定切片将在满足条件后入库`
+        : status === 'excluded'
+          ? `第 ${pageNo} 页已设为不入库，原图和 OCR 仍保留`
+          : `第 ${pageNo} 页已标记不通过，请填写修正说明`);
       await loadWorkspace();
     } catch (error) {
       onMessage(error instanceof Error ? error.message : '页面审核保存失败');
     } finally {
       setBusy('');
     }
+  }
+
+  function excludePage(pageNo: number) {
+    const reason = window.prompt('请输入本页不入库原因，例如：封面、目录、版权页、空白页', '封面或目录等非检索内容');
+    if (reason === null) return;
+    void savePageReview(pageNo, 'excluded', null, reason.trim() || '人工确认本页不参与知识库检索');
   }
 
   async function runPreReview() {
@@ -338,8 +424,11 @@ function PageReviewWorkbench({
   async function createPlan() {
     if (!note.trim()) { onMessage('请填写问题和期望修正结果'); return; }
     setBusy('plan');
+    setPlanError('');
     try {
+      await persistCorrectionNote();
       const result = await planAdminKnowledgeCorrections(token, document.id, {
+        pageNo: activePageNo,
         sourceIssueId: selectedIssue?.id,
         reasonCode,
         note: note.trim(),
@@ -349,59 +438,85 @@ function PageReviewWorkbench({
         operations: selectedIssue?.proposedOperations || [],
       });
       setPlan(result.plan);
+      if (result.plan.operations.length) {
+        onMessage(`AI 已生成 ${result.plan.operations.length} 个修正操作，请核对预览后确认`);
+        window.setTimeout(() => window.document.getElementById(`correction-preview-${document.id}-${activePageNo}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 0);
+      }
+      else onMessage('AI 未能根据现有证据生成安全修正方案，请补充更具体的修正要求');
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : '修正计划生成失败');
+      const message = error instanceof Error ? error.message : '修正计划生成失败';
+      setPlan(null);
+      setPlanError(message);
+      onMessage(message);
     } finally {
       setBusy('');
     }
   }
 
   async function confirmPlan() {
-    if (!plan) return;
+    if (!plan || confirmingRef.current) return;
+    confirmingRef.current = true;
     setBusy('confirm');
+    setPlanError('');
     try {
       await confirmAdminKnowledgeCorrections(token, document.id, {
         plan,
+        pageNo: activePageNo,
         sourceIssueId: selectedIssue?.id,
         indexVersion: workspace?.indexReview?.candidateIndexVersion,
       });
       setPlan(null);
-      setActivePageNo(0);
-      onMessage('修正已生成新候选版本，正式 RAG 未被直接修改');
-      await Promise.all([loadWorkspace(), onChanged()]);
+      setSelectedChunkId('');
+      setCorrectionNotice('AI 修正已保存为新候选版本。请核对上方更新后的 RAG 切片，确认无误后点击“人工确认通过”入库。');
+      onMessage('AI 修正已生成新候选版本，请再次核对该页并点击人工确认通过');
+      await onChanged();
+      await loadWorkspace();
+      window.setTimeout(() => window.document.getElementById(`page-review-${document.id}-${activePageNo}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
     } catch (error) {
-      onMessage(error instanceof Error ? error.message : '确认修正失败');
+      const message = error instanceof Error ? error.message : '确认修正失败';
+      setPlanError(message);
+      onMessage(message);
     } finally {
+      confirmingRef.current = false;
       setBusy('');
     }
   }
 
-  return <div className="rounded-2xl border border-violet-200 bg-white p-3 shadow-sm">
+  return <div id={`page-image-review-${document.id}`} className="rounded-2xl border border-violet-200 bg-white p-3 shadow-sm">
     <div className="flex flex-wrap items-center justify-between gap-2">
-      <div><p className="flex items-center gap-1.5 text-sm font-black text-slate-900"><BrainCircuit size={16} className="text-violet-600" />逐页 AI 复核与人工审核</p><p className="mt-1 text-[11px] font-semibold text-slate-500">全部页面连续展示，每页直接核对来源、切片、AI 结论并给出人工结论。</p></div>
+      <div><p className="flex items-center gap-1.5 text-sm font-black text-slate-900"><BrainCircuit size={16} className="text-violet-600" />逐页原图、OCR、RAG切片三栏对比审核</p><p className="mt-1 text-[11px] font-semibold text-slate-500">每个分页展示5个审核卡片，同时核对原图、OCR文字、RAG切片与AI结论。</p></div>
       <button type="button" disabled={Boolean(busy)} onClick={() => void runPreReview()} className="rounded-lg bg-violet-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy === 'ai' ? '预审中…' : workspace?.reviewRuns.length ? '重新 AI 预审整份资料' : '开始 AI 预审整份资料'}</button>
     </div>
     {busy === 'loading' && !workspace ? <p className="py-8 text-center text-xs font-semibold text-slate-400">正在读取全部页面…</p> : null}
     {workspace ? <div className="mt-3 space-y-4">
-      <div className="flex flex-wrap gap-3 rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-600"><span>共 {pages.length} 页</span><span>AI 风险 {workspace.issues.length} 项</span><span>人工已审 {workspace.pageReviews.length} 页</span></div>
-      {pages.map((page) => {
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 text-[11px] font-black text-slate-600"><div className="flex flex-wrap gap-3"><span>共 {pages.length} 页</span><span>每页 5 条</span><span>AI 风险 {workspace.issues.length} 项</span><span>人工已审 {workspace.pageReviews.length} 页</span></div><div className="flex items-center gap-2"><button type="button" disabled={reviewGroupStart <= 0} onClick={() => setReviewPageNo(pages[Math.max(0, reviewGroupStart - REVIEW_PAGE_SIZE)]?.pageNo || reviewPageNo)} className="rounded-lg bg-white px-2.5 py-1.5 text-blue-700 shadow-sm disabled:opacity-40">上一页</button><select aria-label="选择审核分页" value={reviewGroupPageNo} onChange={(event) => setReviewPageNo(Number(event.target.value))} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-blue-700"><option disabled value={0}>选择分页</option>{pages.filter((_, index) => index % REVIEW_PAGE_SIZE === 0).map((page, groupIndex) => <option key={page.pageNo} value={page.pageNo}>第 {page.pageNo}-{pages[Math.min(groupIndex * REVIEW_PAGE_SIZE + REVIEW_PAGE_SIZE - 1, pages.length - 1)]?.pageNo} 页 / 共 {pages.length} 页</option>)}</select><button type="button" disabled={reviewGroupStart + REVIEW_PAGE_SIZE >= pages.length} onClick={() => setReviewPageNo(pages[reviewGroupStart + REVIEW_PAGE_SIZE]?.pageNo || reviewPageNo)} className="rounded-lg bg-white px-2.5 py-1.5 text-blue-700 shadow-sm disabled:opacity-40">下一页</button></div></div>
+      {visiblePages.map((page) => {
         const pageIssues = issuesForPage(page.pageNo);
         const pageChunks = chunksForPage(page.pageNo);
         const review = workspace.pageReviews.find((item) => item.pageNo === page.pageNo);
         const highlighted = new Set(pageIssues.flatMap((issue) => issue.sourceRegions.flatMap((region) => region.pageNo === page.pageNo ? region.elementIds : [])));
         const editorOpen = activePageNo === page.pageNo;
         const previewUrl = pagePreviewUrls[page.pageNo] || page.previewUrl || page.imageUrl || (document.mediaType.startsWith('image/') ? sourceUrl : '');
-        return <section key={page.id || page.pageNo} className={`rounded-2xl border p-3 ${pageIssues.length ? 'border-amber-200 bg-amber-50/30' : 'border-blue-100 bg-blue-50/20'}`}>
+        return <section id={`page-review-${document.id}-${page.pageNo}`} key={page.id || page.pageNo} className={`rounded-2xl border p-3 ${pageIssues.length ? 'border-amber-200 bg-amber-50/30' : 'border-blue-100 bg-blue-50/20'}`}>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-black text-blue-700">第 {page.pageNo} 页</p><span className={`rounded-full px-2 py-1 text-[10px] font-black ${pageIssues.length ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{pageIssues.length ? `AI 发现 ${pageIssues.length} 项` : 'AI 未发现风险'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-black ${review?.status === 'passed' ? 'bg-emerald-600 text-white' : review?.status === 'needs_correction' ? 'bg-rose-600 text-white' : 'bg-slate-200 text-slate-600'}`}>{review?.status === 'passed' ? '人工已通过' : review?.status === 'needs_correction' ? '人工不通过' : '人工待审核'}</span></div>
-            <div className="flex flex-wrap gap-2">{sourceUrl && document.mediaType === 'application/pdf' ? <a href={`${sourceUrl}#page=${page.pageNo}`} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-blue-700">打开原始页</a> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void savePageReview(page.pageNo, 'passed')} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-black text-white disabled:opacity-50">人工确认通过</button><button type="button" disabled={Boolean(busy)} onClick={() => void savePageReview(page.pageNo, 'needs_correction', pageIssues[0] || null)} className="rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-black text-white disabled:opacity-50">不通过并修正</button></div>
+            <div className="flex flex-wrap items-center gap-2"><p className="text-sm font-black text-blue-700">第 {page.pageNo} 页</p><span className={`rounded-full px-2 py-1 text-[10px] font-black ${pageIssues.length ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`}>{pageIssues.length ? `AI 发现 ${pageIssues.length} 项` : 'AI 未发现风险'}</span><span className={`rounded-full px-2 py-1 text-[10px] font-black ${review?.status === 'passed' ? 'bg-emerald-600 text-white' : review?.status === 'needs_correction' ? 'bg-rose-600 text-white' : review?.status === 'excluded' ? 'bg-amber-500 text-white' : review?.status === 'pending_confirmation' ? 'bg-violet-600 text-white' : 'bg-slate-200 text-slate-600'}`}>{review?.status === 'passed' ? (pageChunks.some((chunk) => chunk.reviewStatus === 'published') ? '人工审核通过·已入库' : '人工已通过·待跨页切片') : review?.status === 'needs_correction' ? '人工不通过' : review?.status === 'excluded' ? '本页不入库' : review?.status === 'pending_confirmation' ? 'AI 已修正，待确认' : '人工待审核'}</span></div>
+            <div className="flex flex-wrap gap-2">{sourceUrl && document.mediaType === 'application/pdf' ? <a href={`${sourceUrl}#page=${page.pageNo}`} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-3 py-1.5 text-[11px] font-black text-blue-700">打开原始页</a> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void savePageReview(page.pageNo, 'passed')} className="rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-black text-white disabled:opacity-50">{review?.status === 'excluded' ? '恢复入库' : '人工确认通过'}</button>{review?.status !== 'excluded' ? <button type="button" disabled={Boolean(busy)} onClick={() => excludePage(page.pageNo)} className="rounded-lg bg-amber-500 px-3 py-1.5 text-[11px] font-black text-white disabled:opacity-50">本页不入库</button> : null}<button type="button" disabled={Boolean(busy)} onClick={() => void savePageReview(page.pageNo, 'needs_correction', pageIssues[0] || null)} className="rounded-lg bg-rose-600 px-3 py-1.5 text-[11px] font-black text-white disabled:opacity-50">不通过并修正</button></div>
           </div>
           <div className="mt-3 grid gap-3 xl:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs font-black text-slate-800">原页图片 / OCR 文字</p>{previewUrl ? <button type="button" onClick={() => { setExpandedPreview({ pageNo: page.pageNo, url: previewUrl }); setPreviewZoom(100); }} className="group relative mt-2 block w-full overflow-hidden rounded-lg border border-slate-100 bg-slate-50"><img src={previewUrl} alt={`原始资料第${page.pageNo}页`} onError={() => setPagePreviewErrors((current) => ({ ...current, [page.pageNo]: '图片已生成，但浏览器加载失败' }))} className="max-h-80 w-full object-contain" /><span className="absolute bottom-2 right-2 rounded-lg bg-slate-950/75 px-2.5 py-1.5 text-[10px] font-black text-white shadow-sm transition group-hover:bg-blue-600">点击放大查看</span></button> : pagePreviewLoading.has(page.pageNo) ? <div className="mt-2 flex h-40 items-center justify-center rounded-lg bg-slate-50 text-xs font-black text-slate-400">正在生成第 {page.pageNo} 页原图…</div> : <div className="mt-2 flex h-28 items-center justify-center rounded-lg border border-dashed border-rose-200 bg-rose-50 px-3 text-center text-xs font-black text-rose-600">{pagePreviewErrors[page.pageNo] || '本页没有可用的原图预览'}</div>}<p className="mt-3 text-[10px] font-black text-slate-400">OCR 识别文字</p><p className="mt-1 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs font-medium leading-5 text-slate-700">{page.rawText || '本页没有可显示的 OCR 文字'}</p>{page.layout?.elements?.length ? <div className="mt-2 space-y-1">{page.layout.elements.map((element) => <div key={element.id} className={`rounded-lg border px-2 py-1.5 text-[11px] ${highlighted.has(element.id) ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-slate-100 bg-slate-50 text-slate-600'}`}><span className="mr-1 font-black uppercase text-slate-400">{element.kind}</span>{element.text || element.caption || element.assetRef || element.id}</div>)}</div> : null}</div>
+            <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs font-black text-slate-800">原页图片 / OCR 文字</p>{previewUrl ? <button type="button" onClick={() => { setExpandedPreview({ pageNo: page.pageNo, url: previewUrl }); setPreviewZoom(100); }} className="group relative mt-2 block w-full overflow-hidden rounded-lg border border-slate-100 bg-slate-50"><img src={previewUrl} alt={`原始资料第${page.pageNo}页`} onError={() => setPagePreviewErrors((current) => ({ ...current, [page.pageNo]: '图片已生成，但浏览器加载失败' }))} className="max-h-80 w-full object-contain" /><span className="absolute bottom-2 right-2 rounded-lg bg-slate-950/75 px-2.5 py-1.5 text-[10px] font-black text-white shadow-sm transition group-hover:bg-blue-600">点击放大查看</span></button> : pagePreviewLoading.has(page.pageNo) ? <div className="mt-2 flex h-40 items-center justify-center rounded-lg bg-slate-50 text-xs font-black text-slate-400">正在生成第 {page.pageNo} 页原图…</div> : <div className="mt-2 flex h-28 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-rose-200 bg-rose-50 px-3 text-center text-xs font-black text-rose-600"><span>{pagePreviewErrors[page.pageNo] || '本页没有可用的原图预览'}</span><button type="button" onClick={() => setPagePreviewReloadVersion((current) => current + 1)} className="rounded-lg bg-white px-3 py-1.5 text-[11px] text-blue-700 shadow-sm">重新加载原图</button></div>}<p className="mt-3 text-[10px] font-black text-slate-400">OCR 识别文字</p><p className="mt-1 max-h-72 overflow-y-auto whitespace-pre-wrap text-xs font-medium leading-5 text-slate-700">{page.rawText || '本页没有可显示的 OCR 文字'}</p>{page.layout?.elements?.length ? <div className="mt-2 space-y-1">{page.layout.elements.map((element) => <div key={element.id} className={`rounded-lg border px-2 py-1.5 text-[11px] ${highlighted.has(element.id) ? 'border-rose-300 bg-rose-50 text-rose-800' : 'border-slate-100 bg-slate-50 text-slate-600'}`}><span className="mr-1 font-black uppercase text-slate-400">{element.kind}</span>{element.text || element.caption || element.assetRef || element.id}</div>)}</div> : null}</div>
             <div className="rounded-xl border border-slate-200 bg-white p-3"><div className="flex items-center justify-between"><p className="text-xs font-black text-slate-800">本页 RAG 切片</p><span className="text-[10px] font-black text-slate-400">{pageChunks.length} 个</span></div><div className="mt-2 max-h-[520px] space-y-2 overflow-y-auto">{pageChunks.map((chunk) => <button key={chunk.id} type="button" onClick={() => openCorrection(page.pageNo, null, chunk.id)} className={`block w-full rounded-xl border p-2.5 text-left ${editorOpen && selectedChunkId === chunk.id ? 'border-violet-400 bg-violet-50' : 'border-blue-100 bg-blue-50/40'}`}><div className="flex flex-wrap gap-1.5 text-[10px] font-black"><span className="text-blue-700">{chunk.headingPath?.join(' / ') || '未识别章节'} · 第 {chunk.pageStart}-{chunk.pageEnd} 页</span><span className={chunk.canonicalProductId ? 'text-emerald-700' : 'text-rose-700'}>产品：{productNameForChunk(chunk) || '未绑定'}</span><span className="text-slate-500">{chunk.chunkType === 'table' ? '表格切片' : '正文切片'}</span><span className="text-fuchsia-700">关键词：{chunkKeywords(chunk).join('、') || '待生成'}</span></div><RagChunkContent chunk={chunk} /></button>)}</div>{!pageChunks.length ? <p className="mt-2 rounded-lg bg-rose-50 p-3 text-xs font-semibold text-rose-600">本页没有关联到可检索切片。</p> : null}</div>
-            <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs font-black text-slate-800">AI 复核与人工结论</p><div className="mt-2 space-y-2">{pageIssues.map((issue) => <button key={issue.id} type="button" onClick={() => openCorrection(page.pageNo, issue)} className={`block w-full rounded-xl border p-2.5 text-left ${editorOpen && selectedIssueId === issue.id ? 'border-violet-400 bg-violet-50' : 'border-amber-100 bg-amber-50/60'}`}><div className="flex flex-wrap items-center gap-1.5"><span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-black ${issueSeverityClass(issue.severity)}`}>{issueSeverityLabel(issue.severity)}</span><span className="text-[10px] font-black text-slate-500">{ISSUE_TYPE_LABELS[issue.type] || issue.type}</span></div><p className="mt-1.5 text-xs font-semibold leading-5 text-slate-700">{issue.reason}</p></button>)}</div>{!pageIssues.length ? <p className="mt-2 rounded-xl bg-emerald-50 p-3 text-xs font-semibold leading-5 text-emerald-700">AI 未发现明显缺失、多余或语义切断，仍需人工确认。</p> : null}{review?.note ? <p className="mt-2 rounded-lg bg-slate-50 p-2 text-[11px] font-semibold text-slate-600">人工说明：{review.note}</p> : null}</div>
+            <div className="rounded-xl border border-slate-200 bg-white p-3"><p className="text-xs font-black text-slate-800">AI 复核与人工结论</p><div className="mt-2 space-y-2">{pageIssues.map((issue) => <button key={issue.id} type="button" onClick={() => openCorrection(page.pageNo, issue)} className={`block w-full rounded-xl border p-2.5 text-left ${editorOpen && selectedIssueId === issue.id ? 'border-violet-400 bg-violet-50' : 'border-amber-100 bg-amber-50/60'}`}><div className="flex flex-wrap items-center gap-1.5"><span className={`rounded-full border px-1.5 py-0.5 text-[10px] font-black ${issueSeverityClass(issue.severity)}`}>{issueSeverityLabel(issue.severity)}</span><span className="text-[10px] font-black text-slate-500">{ISSUE_TYPE_LABELS[issue.type] || issue.type}</span>{issueSourceElementCount(issue) > 1 ? <span className="text-[10px] font-black text-amber-700">涉及 {issueSourceElementCount(issue)} 个原始元素</span> : null}</div><p className="mt-1.5 text-xs font-semibold leading-5 text-slate-700">{issue.reason}</p></button>)}</div>{!pageIssues.length ? <p className="mt-2 rounded-xl bg-emerald-50 p-3 text-xs font-semibold leading-5 text-emerald-700">AI 未发现明显缺失、多余或语义切断，仍需人工确认。</p> : null}{review?.note ? <p className="mt-2 rounded-lg bg-slate-50 p-2 text-[11px] font-semibold text-slate-600">人工说明：{review.note}</p> : null}</div>
           </div>
-          {editorOpen ? <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3"><div className="flex items-center justify-between"><p className="text-xs font-black text-violet-900">第 {page.pageNo} 页人工修正</p><button type="button" onClick={() => { setActivePageNo(0); setPlan(null); }} className="text-[11px] font-black text-slate-500">收起</button></div><select value={selectedChunkId} onChange={(event) => { setSelectedChunkId(event.target.value); setPlan(null); }} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold"><option value="">选择本页切片</option>{pageChunks.map((chunk) => <option key={chunk.id} value={chunk.id}>{chunk.headingPath?.join(' / ') || chunk.chunkType} · 第{chunk.pageStart}-{chunk.pageEnd}页</option>)}</select><div className="mt-2 grid gap-2 md:grid-cols-2"><label className="text-[11px] font-black text-slate-600">不通过原因<select value={reasonCode} onChange={(event) => { setReasonCode(event.target.value); setPlan(null); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold">{REVIEW_REASON_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-[11px] font-black text-slate-600">作用范围<select value={scope} onChange={(event) => { setScope(event.target.value); setPlan(null); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold"><option value="current_chunk">仅当前切片</option><option value="document_repeated_regions">整份资料重复区域</option><option value="product_page_range">产品页面范围</option></select></label></div><textarea value={note} onChange={(event) => { setNote(event.target.value); setPlan(null); }} placeholder="说明本页哪里缺失、多余或切错，以及期望如何修正" className="mt-2 min-h-24 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs font-medium leading-5" /><button type="button" disabled={Boolean(busy) || !note.trim()} onClick={() => void createPlan()} className="mt-2 w-full rounded-lg bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy === 'plan' ? '正在生成…' : '生成修正计划预览'}</button>{plan ? <div className="mt-2 rounded-xl bg-white p-3"><p className="text-xs font-black text-violet-900">执行前预览 · {plan.operations.length} 个操作</p>{plan.operations.map((operation, index) => <p key={`${operation.type}-${index}`} className="mt-1 text-[11px] font-semibold text-slate-700">{index + 1}. {OPERATION_LABELS[operation.type] || operation.type}</p>)}<button type="button" disabled={Boolean(busy) || !plan.operations.length} onClick={() => void confirmPlan()} className="mt-2 w-full rounded-lg bg-violet-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy === 'confirm' ? '正在生成候选版本…' : '确认修正并生成新候选版本'}</button></div> : null}</div> : null}
+          {editorOpen ? <div className="mt-3 rounded-xl border border-violet-200 bg-violet-50 p-3">
+            <div className="flex items-center justify-between"><p className="text-xs font-black text-violet-900">第 {page.pageNo} 页 AI 修正与人工确认</p><button type="button" onClick={() => { setActivePageNo(0); setPlan(null); setPlanError(''); }} className="text-[11px] font-black text-slate-500">收起</button></div>
+            <select value={selectedChunkId} onChange={(event) => { setSelectedChunkId(event.target.value); setPlan(null); setPlanError(''); }} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold"><option value="">选择本页切片</option>{pageChunks.map((chunk) => <option key={chunk.id} value={chunk.id}>{chunk.headingPath?.join(' / ') || chunk.chunkType} · 第{chunk.pageStart}-{chunk.pageEnd}页</option>)}</select>
+            <div className="mt-2 grid gap-2 md:grid-cols-2"><label className="text-[11px] font-black text-slate-600">不通过原因<select value={reasonCode} onChange={(event) => { setReasonCode(event.target.value); setPlan(null); setPlanError(''); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold">{REVIEW_REASON_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label><label className="text-[11px] font-black text-slate-600">作用范围<select value={scope} onChange={(event) => { setScope(event.target.value); setPlan(null); setPlanError(''); }} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs font-semibold"><option value="current_chunk">仅当前切片</option><option value="document_repeated_regions">整份资料重复区域</option><option value="product_page_range">产品页面范围</option></select></label></div>
+            <textarea value={note} onChange={(event) => { setNote(event.target.value); setPlan(null); setPlanError(''); setCorrectionNotice(''); }} onBlur={() => { if (note.trim() && !plan) void persistCorrectionNote(); }} placeholder="说明本页哪里缺失、多余或切错，以及期望如何修正；失焦自动保存，AI 只生成方案，不会直接写入知识库" className="mt-2 min-h-24 w-full rounded-xl border border-slate-200 bg-white p-2.5 text-xs font-medium leading-5" />
+            <div className="mt-2 grid gap-2 sm:grid-cols-[auto_1fr]"><button type="button" disabled={Boolean(busy) || !note.trim()} onClick={() => void saveCorrectionNote()} className="rounded-lg bg-white px-4 py-2 text-xs font-black text-blue-700 shadow-sm disabled:opacity-50">{busy === 'review' ? '保存中…' : '保存不通过原因'}</button><button type="button" disabled={Boolean(busy) || !note.trim()} onClick={() => void createPlan()} className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy === 'plan' ? 'AI 正在生成修正预览…' : '保存原因并生成 AI 修正预览'}</button></div>
+            {planError ? <div role="alert" className="mt-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs font-semibold text-rose-700"><p className="font-black">AI 修正预览生成失败</p><p className="mt-1 break-all">{planError}</p></div> : null}
+            {correctionNotice ? <div role="status" className="mt-2 rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold leading-5 text-emerald-800">{correctionNotice}</div> : null}
+            {plan ? <div id={`correction-preview-${document.id}-${page.pageNo}`} className="mt-2 rounded-xl border border-violet-200 bg-white p-3 shadow-sm"><p className="text-xs font-black text-violet-900">AI 修正执行前预览 · {plan.operations.length} 个操作</p><p className="mt-1 text-[11px] font-semibold text-slate-500">请核对目标切片和修改后内容，确认后才会生成新候选版本。</p>{plan.operations.map((operation, index) => <div key={`${operation.type}-${index}`} className="mt-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5"><p className="text-[11px] font-black text-slate-800">{index + 1}. {OPERATION_LABELS[operation.type] || operation.type}</p>{operation.targetChunkId ? <p className="mt-1 break-all text-[10px] font-semibold text-slate-500">目标切片：{operation.targetChunkId}</p> : null}{correctionOperationDetail(operation) ? <p className="mt-1 whitespace-pre-wrap text-[11px] font-semibold leading-5 text-blue-800">{correctionOperationDetail(operation)}</p> : null}</div>)}<button type="button" disabled={Boolean(busy) || !plan.operations.length} onClick={() => void confirmPlan()} className="mt-3 w-full rounded-lg bg-violet-600 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{busy === 'confirm' ? '正在生成候选版本…' : '确认修正并生成新候选版本'}</button></div> : null}
+          </div> : null}
         </section>;
       })}
     </div> : null}
@@ -879,11 +994,11 @@ export function AdminKnowledgeUploadPage({
                 </div> : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {['uploaded', 'parse_failed', 'reprocess_required', 'indexed_pending_review'].includes(document.parseStatus) ? <button type="button" disabled={pending} onClick={() => void processDocument(document.id)} className="inline-flex items-center gap-1 rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-black text-blue-700"><RotateCcw size={13} />{pending ? '处理中' : '重新处理'}</button> : null}
-                  {quality || canReview || published ? <button type="button" onClick={() => toggleReviewDetail(document.id)} className="inline-flex items-center gap-1 rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-black text-slate-700">{expandedId === document.id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}查看 AI 预审工作台</button> : null}
+                  {quality || canReview || published ? <button type="button" onClick={() => toggleReviewDetail(document.id)} className="inline-flex items-center gap-1 rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-black text-slate-700">{expandedId === document.id ? <ChevronUp size={13} /> : <ChevronDown size={13} />}查看原图三栏对比审核</button> : null}
                   {canReview ? <button type="button" disabled={pending || Boolean(publishBlocker)} onClick={() => void publishDocument(document.id)} className="rounded-lg bg-emerald-50 px-3 py-1.5 text-xs font-black text-emerald-700 disabled:cursor-not-allowed disabled:opacity-50">{pending ? '处理中' : publishBlocker ? '暂不能发布' : '发布可用切片'}</button> : null}
                   {canReview ? <button type="button" disabled={pending} onClick={() => void rejectDocument(document.id)} className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-700"><XCircle size={13} />拒绝资料</button> : null}
                   {published ? <button type="button" disabled={pending} onClick={() => void changePublishedVersion(document.id, 'unpublish')} className="inline-flex items-center gap-1 rounded-lg bg-rose-50 px-3 py-1.5 text-xs font-black text-rose-700"><XCircle size={13} />下架RAG资料</button> : null}
-                  {indexReview?.previousActiveIndexVersion ? <button type="button" disabled={pending} onClick={() => void changePublishedVersion(document.id, 'rollback')} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-black text-amber-700"><RotateCcw size={13} />回滚上一版本</button> : null}
+                  {indexReview?.previousActiveIndexVersion ? <button type="button" disabled={pending} onClick={() => void changePublishedVersion(document.id, 'rollback')} className="inline-flex items-center gap-1 rounded-lg bg-amber-50 px-3 py-1.5 text-xs font-black text-amber-700"><RotateCcw size={13} />随时回滚上一版本</button> : null}
                 </div>
                 {expandedId === document.id ? <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
                   <PageReviewWorkbench document={document} chunks={chunks} token={token} onMessage={onMessage} onChanged={loadDocuments} />
@@ -893,8 +1008,8 @@ export function AdminKnowledgeUploadPage({
                     <span className="text-slate-600">{check.message || check.code}</span>
                   </div>)}
                   <div className="pt-3">
-                    <p className="text-xs font-black text-slate-700">切片标注与发布状态（可检索 {readyChunks.length} / 全部 {candidateChunks.length}）</p>
-                    <p className="mt-1 text-[11px] font-semibold text-slate-400">逐片核对产品、章节、页码、类型和正文；未绑定切片必须选择产品或排除后才能发布。</p>
+                    <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs font-black text-slate-700">切片产品标注与发布状态（可检索 {readyChunks.length} / 全部 {candidateChunks.length}）</p><button type="button" onClick={() => window.document.getElementById(`page-image-review-${document.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })} className="rounded-lg bg-violet-100 px-3 py-1.5 text-[11px] font-black text-violet-700">返回上方原图三栏对比</button></div>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-400">本区域仅用于产品绑定；审核内容请在上方原图、OCR、RAG切片三栏分页对比中完成。</p>
                   </div>
                   {candidateChunks.slice(0, 50).map((chunk) => {
                     const product = document.bindingProducts?.find((item) => item.canonicalProductId === chunk.canonicalProductId);

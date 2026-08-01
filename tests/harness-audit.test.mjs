@@ -9,9 +9,11 @@ import {
   auditDurableDataPersistence,
   auditExecutionPoints,
   auditFeatureTestGate,
+  auditAgentSkillOrchestrationHarness,
   auditHighRiskScriptDefaults,
   auditOptionalResponsibilityDatabase,
   auditRouteSqlPersistence,
+  auditSemanticAgentFlowHarness,
   auditSensitivePathChanges,
   parseGitStatus,
   patternMatches,
@@ -43,7 +45,10 @@ async function makeHarnessRoot({ checkInvokesAudit = true } = {}) {
   await writeFile(root, 'scripts/test.sh', '#!/bin/sh\nnpm test\n');
   await writeFile(root, 'scripts/dev.sh', '#!/bin/sh\nnpm run local:dev\n');
   await writeFile(root, 'scripts/harness-audit.mjs', '');
+  await writeFile(root, 'scripts/integration-harness-audit.mjs', '');
+  await writeFile(root, 'scripts/create-integration-manifest.mjs', '');
   await writeFile(root, 'docs/harness-test-map.json', '[]\n');
+  await writeFile(root, 'docs/integration-harness.json', '{}\n');
   await writeFile(root, 'tests/policy-ocr-mapping.test.mjs', '');
   await writeFile(root, 'tests/policy-optional-responsibility.test.mjs', '');
   await writeFile(root, 'tests/optional-responsibility-governance.test.mjs', '');
@@ -119,6 +124,156 @@ test('feature test gate maps changed files, de-duplicates commands, and fails un
   assert.equal(unmapped.failed.length, 1);
   assert.match(unmapped.failed[0].detail, /server\/unmapped-domain\.mjs/);
   assert.equal(unmapped.skipped.some((item) => item.message.includes('docs-only change')), true);
+});
+
+test('feature test gate maps Skill files instead of treating them as generated output', () => {
+  const mapped = auditFeatureTestGate({
+    changedFiles: ['.agents/skills/ocr-insurance-universal-account-responsibility/SKILL.md'],
+    testMap: [{
+      name: 'skill-integrity',
+      patterns: ['.agents/skills/**'],
+      commands: ['node --test tests/integration-harness-audit.test.mjs'],
+    }],
+    runCommands: false,
+  });
+  assert.equal(mapped.failed.length, 0);
+  assert.deepEqual(mapped.skipped.map((item) => item.message), [
+    'focused test execution skipped',
+  ]);
+});
+
+test('semantic Agent flow harness fails when the DingTalk conversation path is not fully mapped', () => {
+  const report = auditSemanticAgentFlowHarness({
+    testMap: [{
+      name: 'hermes-question-routing',
+      patterns: ['server/agent-question-router.service.mjs'],
+      commands: ['node --test tests/agent-question-router.test.mjs'],
+    }],
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /server\/agent-conversation-runtime\.service\.mjs/);
+  assert.match(report.failed[0].detail, /tests\/dingtalk-agent-gateway\.test\.mjs/);
+});
+
+test('semantic Agent flow harness passes when the current DingTalk conversation path is mapped', () => {
+  const report = auditSemanticAgentFlowHarness({
+    testMap: [{
+      name: 'hermes-question-routing',
+      patterns: [
+        'server/hermes-conversation-client.service.mjs',
+        'server/agent-question-interpreter.service.mjs',
+        'server/agent-conversation-runtime.service.mjs',
+        'server/agent-conversation-context.service.mjs',
+        'server/dingtalk-agent-gateway.mjs',
+        'server/dingtalk-agent-gateway.service.mjs',
+        'server/agent-question-router.service.mjs',
+        'server/agent-question-handlers.service.mjs',
+        'server/agent-product-knowledge.service.mjs',
+        'server/routes/agent.routes.mjs',
+        'tests/agent-question-interpreter.test.mjs',
+        'tests/agent-conversation-runtime.test.mjs',
+        'tests/agent-conversation-context.test.mjs',
+        'tests/dingtalk-agent-gateway.test.mjs',
+        'tests/agent-question-router.test.mjs',
+        'tests/agent-question-handlers.test.mjs',
+        'tests/agent-product-knowledge.test.mjs',
+        'tests/agent-question-routes.test.mjs',
+      ],
+      commands: [
+        'node --test tests/agent-question-interpreter.test.mjs',
+        'node --test tests/agent-conversation-runtime.test.mjs',
+        'node --test tests/agent-conversation-context.test.mjs',
+        'node --test tests/dingtalk-agent-gateway.test.mjs',
+        'node --test tests/agent-question-router.test.mjs',
+        'node --test tests/agent-question-handlers.test.mjs',
+        'node --test tests/agent-product-knowledge.test.mjs',
+        'node --test tests/agent-question-routes.test.mjs',
+      ],
+    }],
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 1);
+});
+
+test('Agent skill orchestration harness fails unless insurance expert and sales champion mappings are complete', () => {
+  const report = auditAgentSkillOrchestrationHarness({
+    testMap: [{
+      name: 'insurance-expert-skill-orchestration',
+      patterns: ['server/agent-product-knowledge.service.mjs'],
+      commands: ['node --test tests/agent-product-knowledge.test.mjs'],
+    }],
+  });
+  assert.equal(report.failed.length, 2);
+  assert.match(report.failed[0].detail, /server\/responsibility-planner\.service\.mjs/);
+  assert.match(report.failed[1].message, /sales-champion-skill-orchestration/);
+});
+
+test('Agent skill orchestration harness passes when both skill-based agent paths are mapped', () => {
+  const report = auditAgentSkillOrchestrationHarness({
+    testMap: [
+      {
+        name: 'insurance-expert-skill-orchestration',
+        patterns: [
+          'server/insurance-expert-skill-registry.service.mjs',
+          'server/insurance-expert-skill-router.service.mjs',
+          'server/agent-product-knowledge.service.mjs',
+          'server/product-customer-responsibility-summary.service.mjs',
+          'server/responsibility-planner.service.mjs',
+          'server/responsibility-summary-templates.mjs',
+          'server/responsibility-source-resolver.mjs',
+          'server/responsibility-summary-quality-gate.mjs',
+          'server/responsibility-card-standardizer.mjs',
+          'tests/insurance-expert-skill-router.test.mjs',
+          'tests/agent-product-knowledge.test.mjs',
+          'tests/product-customer-responsibility-summary.test.mjs',
+          'tests/responsibility-planner-service.test.mjs',
+          'tests/responsibility-summary-templates.test.mjs',
+          'tests/responsibility-source-resolver.test.mjs',
+          'tests/responsibility-summary-quality-gate.test.mjs',
+          'tests/responsibility-card-standardizer.test.mjs',
+        ],
+        commands: [
+          'node --test tests/insurance-expert-skill-router.test.mjs',
+          'node --test tests/agent-product-knowledge.test.mjs',
+          'node --test tests/product-customer-responsibility-summary.test.mjs',
+          'node --test tests/responsibility-planner-service.test.mjs',
+          'node --test tests/responsibility-summary-templates.test.mjs',
+          'node --test tests/responsibility-source-resolver.test.mjs',
+          'node --test tests/responsibility-summary-quality-gate.test.mjs',
+          'node --test tests/responsibility-card-standardizer.test.mjs',
+        ],
+      },
+      {
+        name: 'sales-champion-skill-orchestration',
+        patterns: [
+          'server/agent-skill-router.service.mjs',
+          'server/family-sales-chat.service.mjs',
+          'server/family-sales-review.service.mjs',
+          'server/family-sales-memory.service.mjs',
+          'server/sales-champion-turn.contract.mjs',
+          'server/sales-champion-readiness.service.mjs',
+          'server/sales-champion-skill-registry.mjs',
+          'server/sales-champion-training-catalog.mjs',
+          'server/sales-champion-router.service.mjs',
+          'server/sales-champion-turn-interpreter.service.mjs',
+          'tests/agent-skill-router.test.mjs',
+          'tests/family-sales-review.test.mjs',
+          'tests/family-sales-review-markdown.test.mjs',
+          'tests/sales-champion-atomic-orchestration.test.mjs',
+          'tests/sales-champion-turn-interpreter.test.mjs',
+        ],
+        commands: [
+          'node --test tests/agent-skill-router.test.mjs',
+          'node --test tests/family-sales-review.test.mjs',
+          'node --test tests/family-sales-review-markdown.test.mjs',
+          'node --test tests/sales-champion-atomic-orchestration.test.mjs',
+          'node --test tests/sales-champion-turn-interpreter.test.mjs',
+        ],
+      },
+    ],
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 2);
 });
 
 test('durable data audit fails crawler scripts without SQLite persistence', async () => {

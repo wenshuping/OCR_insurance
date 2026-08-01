@@ -46,6 +46,34 @@ test('standardizeResponsibilityIndicator keeps first basic responsibility premiu
   assert.equal(result.calculationReason, '');
 });
 
+test('standardizeResponsibilityIndicator blocks policy-anniversary amounts from using the initial basic amount', () => {
+  const result = standardizeResponsibilityIndicator({
+    id: 'ind_survival_anniversary_amount',
+    company: '新华保险',
+    productName: '尊享人生年金保险（分红型）',
+    coverageType: '现金流',
+    liability: '生存保险金',
+    value: 9,
+    unit: '%',
+    basis: '基本责任保险金额',
+    formulaText: '生存保险金 = 基本责任保险金额 × 9%',
+    payoutSummary: '基本责任保险金额 × 9%',
+    calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
+    basisKey: 'basic_amount',
+    calculationKey: 'percent_of_basic_amount',
+    calculationEligible: true,
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/20230616/b3825f71-b5b8-4656-bb17-82c14e429d1f.pdf',
+    sourceExcerpt: '被保险人于该保单生效对应日生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+  }, { policy: basePolicy });
+
+  assert.equal(result.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(result.calculationKey, 'schedule_or_policy_table');
+  assert.equal(result.calculationEligible, false);
+  assert.equal(result.calculationStatus, 'needs_table');
+  assert.equal(result.formulaText, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.equal(result.payoutSummary, '保单生效对应日基本责任保险金额 × 9%');
+});
+
 test('standardizeResponsibilityIndicator blocks indicators without official source excerpt', () => {
   const result = standardizeResponsibilityIndicator({
     company: '新华保险',
@@ -61,6 +89,36 @@ test('standardizeResponsibilityIndicator blocks indicators without official sour
   assert.equal(result.calculationEligible, false);
   assert.equal(result.cashflowTreatment, 'not_cashflow');
   assert.match(result.calculationReason, /缺少官方来源片段/u);
+});
+
+test('standardizeResponsibilityIndicator preserves repair provenance and unresolved inputs', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '新华保险',
+    productName: '修复测试保险',
+    coverageType: '人寿保障',
+    liability: '身故保险金',
+    basis: '基本保险金额和事故时累计已交保费',
+    formulaText: '取基本保险金额和事故时累计已交保费较大者',
+    calculationEligible: false,
+    calculationReason: '事故时累计已交保费无法从当前保单字段精确计算',
+    requiredInputs: ['policy.amount'],
+    unresolvedRequiredInputs: [{
+      value: 'actual_paid_premium',
+      location: 'responsibilities[0].indicators[0].requiredInputs',
+      reason: 'no_lossless_canonical_mapping',
+    }],
+    responsibilityArtifactId: 'responsibility_repair_artifact_example',
+    responsibilityRepairVersion: '2026-07-26-deepseek-repair-v3',
+    responsibilitySourceDigest: 'sha256:source',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/repaired.pdf',
+    sourceExcerpt: '被保险人身故，按基本保险金额和事故时累计已交保费的较大者给付。',
+  });
+
+  assert.deepEqual(result.requiredInputs, ['policy.amount']);
+  assert.equal(result.unresolvedRequiredInputs[0].value, 'actual_paid_premium');
+  assert.equal(result.responsibilityArtifactId, 'responsibility_repair_artifact_example');
+  assert.equal(result.responsibilityRepairVersion, '2026-07-26-deepseek-repair-v3');
+  assert.equal(result.responsibilitySourceDigest, 'sha256:source');
 });
 
 test('standardizeResponsibilityIndicator classifies claim-trigger benefits as claim_contingent even when amount is calculable', () => {
@@ -1470,6 +1528,29 @@ test('buildResponsibilityCardsForPolicy filters exclusion and waiting-period fra
   });
 
   assert.deepEqual(cards.map((card) => card.title), ['轻度疾病保险金']);
+});
+
+test('buildResponsibilityCardsForPolicy keeps source-grounded unified waiting-period benefit branches', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '吉祥人寿保险股份有限公司',
+      name: '吉祥人寿附加小额贷款借款人定期寿险',
+    },
+    coverageIndicators: [{
+      company: '吉祥人寿保险股份有限公司',
+      productName: '吉祥人寿附加小额贷款借款人定期寿险',
+      coverageType: '疾病保障',
+      liability: '等待期后身故或全残保险金',
+      triggerCondition: '等待期后因疾病身故或全残。',
+      payoutSummary: '按基本保险金额给付身故或全残保险金。',
+      calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
+      indicatorCheckStatus: 'accepted_unified_pipeline',
+      sourceUrl: 'https://official.example-life.test/loan-life.pdf',
+      sourceExcerpt: '被保险人在等待期后因疾病身故或全残，我们按基本保险金额给付身故或全残保险金。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['等待期后身故或全残保险金']);
 });
 
 test('buildResponsibilityCardsForPolicy keeps waiting-period premium refund obligations', () => {

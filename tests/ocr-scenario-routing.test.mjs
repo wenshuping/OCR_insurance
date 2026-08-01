@@ -30,6 +30,20 @@ test('OCR scenario routing keeps independent model choices per business scene', 
   assert.deepEqual(getOcrScenarioRoutingConfig(state).routes, state.ocrScenarioRouting.routes);
 });
 
+test('insurance material defaults to PaddleOCR-VL-1.6 while other scenarios keep system defaults', () => {
+  const config = getOcrScenarioRoutingConfig({});
+  assert.deepEqual(config.routes, {
+    policy_entry: 'default',
+    insurance_material: 'paddleocr_vl16_autodl',
+    cash_value: 'default',
+  });
+  assert.equal(resolveOcrProviderForScenario({}, 'insurance_material'), 'paddleocr_vl16_autodl');
+  assert.equal(
+    normalizeOcrScenarioRoutingConfig({ routes: { insurance_material: 'default' } }).routes.insurance_material,
+    'paddleocr_vl16_autodl',
+  );
+});
+
 test('Unlimited-OCR request uses the required vLLM decoding recipe', async () => {
   let requestUrl = '';
   let requestBody = null;

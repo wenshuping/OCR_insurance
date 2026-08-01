@@ -8,6 +8,10 @@ const execFileAsync = promisify(execFile);
 const OFFICE_EXTENSIONS = new Set(['pptx', 'docx', 'xlsx']);
 const MACOS_CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
+function renderDpi(options = {}) {
+  return String(Math.min(300, Math.max(72, Math.trunc(Number(options.dpi || 120)))));
+}
+
 function previewError(code, message, status = 422) {
   const error = new Error(message);
   error.code = code;
@@ -67,7 +71,7 @@ async function renderPptxWithMacosPreview(inputPath, temporaryDirectory, options
   ]);
   const outputPrefix = path.join(temporaryDirectory, 'native-page');
   await run(options.pdftoppmBin || process.env.PRODUCT_DOCUMENT_PDFTOPPM_BIN || 'pdftoppm', [
-    '-png', '-r', '120', pdfPath, outputPrefix,
+    '-png', '-r', renderDpi(options), pdfPath, outputPrefix,
   ]);
   return readRenderedPages(temporaryDirectory, 'native-page');
 }
@@ -104,7 +108,7 @@ export async function renderProductDocumentPages(document, options = {}) {
     }
     const outputPrefix = path.join(temporaryDirectory, 'page');
     await run(options.pdftoppmBin || process.env.PRODUCT_DOCUMENT_PDFTOPPM_BIN || 'pdftoppm', [
-      '-png', '-r', '120', pdfPath, outputPrefix,
+      '-png', '-r', renderDpi(options), pdfPath, outputPrefix,
     ]);
     return readRenderedPages(temporaryDirectory);
   } finally {
@@ -139,4 +143,3 @@ export function createProductDocumentPreviewService(options = {}) {
 
   return { getPagePreview };
 }
-

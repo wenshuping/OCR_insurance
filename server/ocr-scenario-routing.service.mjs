@@ -18,6 +18,7 @@ export const OCR_MODEL_OPTIONS = [
 
 const MODEL_VALUES = new Set(OCR_MODEL_OPTIONS.map((item) => item.value));
 const SCENARIO_KEYS = new Set(OCR_SCENARIOS.map((item) => item.key));
+const DEFAULT_ROUTES = { insurance_material: 'paddleocr_vl16_autodl' };
 
 function normalizeProvider(value, fallback = 'default') {
   const provider = String(value || '').trim().toLowerCase();
@@ -30,10 +31,10 @@ export function normalizeOcrScenarioRoutingConfig(config = {}, { now = '' } = {}
     ? source.routes
     : {};
   return {
-    routes: Object.fromEntries(OCR_SCENARIOS.map(({ key }) => [
-      key,
-      normalizeProvider(routes[key]),
-    ])),
+    routes: Object.fromEntries(OCR_SCENARIOS.map(({ key }) => {
+      const provider = normalizeProvider(routes[key], DEFAULT_ROUTES[key] || 'default');
+      return [key, provider === 'default' && DEFAULT_ROUTES[key] ? DEFAULT_ROUTES[key] : provider];
+    })),
     updatedAt: String(source.updatedAt || now || '').trim(),
   };
 }

@@ -13,6 +13,7 @@ import { assessProductPublishReadiness } from '../product-document-quality.servi
 import { buildProductDocumentCorrectionPlan } from '../product-document-correction.service.mjs';
 import { createProductDocumentPreviewService } from '../product-document-preview.service.mjs';
 import { createProductDocumentReviewService } from '../product-document-review.service.mjs';
+import { createProductDocumentReviewModel } from '../product-document-review-model.service.mjs';
 import { createProductRagService } from '../product-rag.service.mjs';
 
 const DEFAULT_TENANT_ID = 'default';
@@ -130,12 +131,21 @@ function bindingProductsForDocument(store, document = {}) {
   return store.listProducts({ tenantId: DEFAULT_TENANT_ID })
     .filter((product) => (!company || cleanText(product.company) === company)
       && selectedNames.has(comparableProductName(product.officialName)))
-    .map((product) => ({
-      canonicalProductId: product.canonicalProductId,
-      productVersionId: '',
-      company: product.company,
-      officialName: product.officialName,
-    }));
+    .map((product) => {
+      const versionLabel = cleanText(document.payload?.versionLabel);
+      const version = versionLabel && typeof store.listProductVersions === 'function'
+        ? store.listProductVersions({
+            tenantId: DEFAULT_TENANT_ID,
+            canonicalProductId: product.canonicalProductId,
+          }).find((entry) => cleanText(entry.versionLabel) === versionLabel)
+        : null;
+      return {
+        canonicalProductId: product.canonicalProductId,
+        productVersionId: cleanText(version?.id),
+        company: product.company,
+        officialName: product.officialName,
+      };
+    });
 }
 
 function comparableProductName(value) {
@@ -179,6 +189,8 @@ export function createProductKnowledgeRoutes(context = {}) {
     productDocumentReviewService,
     productRagService,
     recognizeDocumentText,
+    parseProductPageVisual,
+    reconstructProductSlide,
     productMaterialFetchImpl,
     upsertKnowledgeRecords,
     persistResponsibilityLookupArtifacts,
@@ -186,12 +198,14 @@ export function createProductKnowledgeRoutes(context = {}) {
     db,
   } = context;
   const ingestionService = productIngestionService || (productKnowledgeStore
-    ? createProductIngestionService({ store: productKnowledgeStore, recognizeDocumentText })
+    ? createProductIngestionService({ store: productKnowledgeStore, recognizeDocumentText, parseProductPageVisual, reconstructProductSlide })
     : null);
   const ragService = productRagService || (productKnowledgeStore
     ? createProductRagService({ store: productKnowledgeStore })
     : null);
-  const reviewService = productDocumentReviewService || createProductDocumentReviewService();
+  const reviewService = productDocumentReviewService || createProductDocumentReviewService({
+    reviewModel: createProductDocumentReviewModel(),
+  });
   const previewService = productDocumentPreviewService || createProductDocumentPreviewService();
   function authorize(req, res) {
     if (typeof requireAdmin !== 'function') {
@@ -400,6 +414,16 @@ export function createProductKnowledgeRoutes(context = {}) {
       const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
       const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId });
       const reviewRuns = store.listDocumentReviewRuns({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const cleaningRuns = typeof store.listDocumentCleaningRuns === 'function'
+        ? store.listDocumentCleaningRuns({ tenantId: DEFAULT_TENANT_ID, documentId })
+        : [];
+      const cleaningOperations = cleaningRuns[0] && typeof store.listDocumentCleaningOperations === 'function'
+        ? store.listDocumentCleaningOperations({
+            tenantId: DEFAULT_TENANT_ID,
+            documentId,
+            runId: cleaningRuns[0].id,
+          })
+        : [];
       const issues = reviewRuns[0]
         ? store.listDocumentReviewIssues({ tenantId: DEFAULT_TENANT_ID, documentId, runId: reviewRuns[0].id })
         : [];
@@ -409,7 +433,18 @@ export function createProductKnowledgeRoutes(context = {}) {
         documentId,
         indexVersion: indexReview?.candidateIndexVersion,
       });
-      return res.json({ ok: true, document, pages, indexReview, reviewRuns, issues, corrections, pageReviews });
+      return res.json({
+        ok: true,
+        document,
+        pages,
+        indexReview,
+        reviewRuns,
+        issues,
+        corrections,
+        pageReviews,
+        cleaningRuns,
+        cleaningOperations,
+      });
     } catch (error) {
       return sendError(res, error);
     }
@@ -436,7 +471,14 @@ export function createProductKnowledgeRoutes(context = {}) {
         reviewer: String(session.token || session.id || 'admin'),
       });
       if (!review) throw routeError('PRODUCT_DOCUMENT_PAGE_REVIEW_INVALID', '页面审核状态无效', 400);
-      return res.json({ ok: true, review });
+      const candidateChunks = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId })?.candidateChunks || [];
+      const publishedChunkCount = candidateChunks.filter((chunk) => (
+        chunk.chunkType !== 'parent'
+        && chunk.reviewStatus === 'published'
+        && pageNo >= chunk.pageStart
+        && pageNo <= chunk.pageEnd
+      )).length;
+      return res.json({ ok: true, review, publishedChunkCount });
     } catch (error) {
       return sendError(res, error);
     }
@@ -496,16 +538,47 @@ export function createProductKnowledgeRoutes(context = {}) {
     }
   });
 
-  router.post('/documents/:documentId/corrections/plan', (req, res) => {
+  router.post('/documents/:documentId/corrections/plan', async (req, res) => {
     const session = authorize(req, res);
     if (!session) return;
     try {
       const store = storeOrThrow();
       const documentId = String(req.params.documentId || '').trim();
-      if (!store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId })) {
+      const document = store.getDocument({ tenantId: DEFAULT_TENANT_ID, documentId });
+      if (!document) {
         throw routeError('PRODUCT_DOCUMENT_NOT_FOUND', '产品资料不存在', 404);
       }
-      return res.json({ ok: true, plan: buildProductDocumentCorrectionPlan(req.body) });
+      const deterministicPlan = buildProductDocumentCorrectionPlan(req.body);
+      if (deterministicPlan.operations.length || !cleanText(deterministicPlan.note)) {
+        return res.json({ ok: true, plan: deterministicPlan });
+      }
+      if (typeof reviewService.planCorrection !== 'function') {
+        throw routeError('PRODUCT_DOCUMENT_AI_CORRECTION_UNAVAILABLE', '产品资料 AI 修正服务暂不可用', 503);
+      }
+      const pages = store.listDocumentPages({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const indexReview = store.getDocumentIndexReview({ tenantId: DEFAULT_TENANT_ID, documentId });
+      const aiPlan = await reviewService.planCorrection({
+        document,
+        pages,
+        chunks: indexReview?.candidateChunks || [],
+        request: {
+          pageNo: Number(req.body?.pageNo || 0),
+          reasonCode: deterministicPlan.reasonCode,
+          note: deterministicPlan.note,
+          scope: deterministicPlan.scope,
+          targetChunkIds: req.body?.targetChunkIds,
+          sourceElementIds: req.body?.sourceElementIds,
+        },
+      });
+      return res.json({
+        ok: true,
+        plan: {
+          ...buildProductDocumentCorrectionPlan({ ...req.body, operations: aiPlan.operations }),
+          model: aiPlan.model,
+          aiIssues: aiPlan.issues,
+          correctionVersion: aiPlan.correctionVersion,
+        },
+      });
     } catch (error) {
       return sendError(res, error);
     }
@@ -539,6 +612,18 @@ export function createProductKnowledgeRoutes(context = {}) {
           catalogProducts: catalogProductsFromState(state),
           correctionIds: [correction.id],
           correctionOperations: correction.operations,
+        });
+      }
+      const pageNo = Math.trunc(Number(req.body?.pageNo || 0));
+      if (reprocessed?.indexVersion && pageNo > 0) {
+        store.saveDocumentPageReview({
+          tenantId: DEFAULT_TENANT_ID,
+          documentId,
+          pageNo,
+          indexVersion: reprocessed.indexVersion,
+          status: 'pending_confirmation',
+          note: 'AI 修正已生成新候选版本，等待人工再次确认',
+          reviewer: String(session.token || session.id || 'admin'),
         });
       }
       return res.json({ ok: true, correction, reprocessed });
@@ -730,6 +815,8 @@ export function createProductKnowledgeRoutes(context = {}) {
         tenantId: DEFAULT_TENANT_ID,
         query: req.body?.query,
         canonicalProductId: req.body?.canonicalProductId,
+        productVersionId: req.body?.productVersionId,
+        asOfDate: req.body?.asOfDate,
         products: req.body?.products,
         tokenBudget: req.body?.tokenBudget,
         includeQuarantined,

@@ -478,8 +478,10 @@ test('open sales coaching uses the sales champion without loading family data', 
     }],
   });
 
-  assert.match(result.presentation.message, /现在属于需求发现阶段/u);
-  assert.match(result.presentation.message, /客户希望解决的核心问题/u);
+  assert.match(result.presentation.message, /下一步只做一件事/u);
+  assert.match(result.presentation.message, /可以直接这样发/u);
+  assert.doesNotMatch(result.presentation.message, /现在属于需求发现阶段|客户理解|优先确认/u);
+  assert.match(result.presentation.message, /客户自己最想解决的是什么/u);
   assert.equal(result.provenance.skill, 'needs_discovery');
   assert.equal(generateInput, undefined);
 });

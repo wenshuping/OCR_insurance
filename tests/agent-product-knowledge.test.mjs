@@ -439,6 +439,44 @@ test('Agent product knowledge falls back to exact-product official terms when a 
   db.close();
 });
 
+test('Agent product knowledge prefers a persisted ready summary over a shared responsibility fallback', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE product_customer_responsibility_summaries (
+      company TEXT, product_name TEXT, status TEXT, updated_at TEXT, summary_json TEXT, source_urls_json TEXT
+    );
+  `);
+  db.prepare('INSERT INTO product_customer_responsibility_summaries VALUES (?, ?, ?, ?, ?, ?)').run(
+    '测试保险', '测试两全保险', 'ready', '2026-08-01T00:00:00.000Z',
+    JSON.stringify({
+      headline: '已核验的两全保障摘要',
+      mainResponsibilities: [{ title: '满期保险金', plainText: '保险期间届满时按合同约定给付。' }],
+    }),
+    JSON.stringify(['https://official.test/terms.pdf']),
+  );
+  let responsibilityCalls = 0;
+  const knowledge = createAgentProductKnowledgeSearch({
+    db,
+    responsibilityQuery: async () => {
+      responsibilityCalls += 1;
+      return { analysis: {
+        report: '不应覆盖已核验摘要的动态回退。',
+        coverageTable: [{ coverageType: '动态回退责任', scenario: '回退场景', payout: '回退给付' }],
+        sources: [{ title: '官方条款', url: 'https://official.test/terms.pdf', evidenceLevel: 'insurer_official', official: true }],
+      } };
+    },
+  });
+
+  const result = await knowledge.search({ question: '主要保啥的', productName: '测试两全保险' });
+
+  assert.equal(responsibilityCalls, 0);
+  assert.match(result.answer, /已核验的两全保障摘要/u);
+  assert.match(result.answer, /满期保险金/u);
+  assert.doesNotMatch(result.answer, /动态回退责任/u);
+  assert.equal(result.sources[0].verified, true);
+  db.close();
+});
+
 test('Agent product knowledge gives the expert model the complete enriched C-end responsibility evidence', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

@@ -284,12 +284,15 @@ export type AdminKnowledgeCorrectionPlan = {
   operations: AdminKnowledgeCorrectionOperation[];
   status?: string;
   requiresConfirmation?: boolean;
+  model?: string;
+  aiIssues?: AdminKnowledgeReviewIssue[];
+  correctionVersion?: string;
 };
 
 export type AdminKnowledgePageReview = {
   pageNo: number;
   indexVersion: string;
-  status: 'passed' | 'needs_correction';
+  status: 'passed' | 'needs_correction' | 'excluded' | 'pending_confirmation';
   note?: string;
   reviewer?: string;
   reviewedAt: string;
@@ -749,17 +752,18 @@ export function startAdminKnowledgePreReview(token: string, documentId: string) 
 }
 
 export function reviewAdminKnowledgePage(token: string, documentId: string, pageNo: number, input: {
-  status: 'passed' | 'needs_correction';
+  status: 'passed' | 'needs_correction' | 'excluded';
   note?: string;
   indexVersion?: string;
 }) {
-  return request<{ ok: true; review: AdminKnowledgePageReview }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/pages/${pageNo}/review`, {
+  return request<{ ok: true; review: AdminKnowledgePageReview; publishedChunkCount: number }>(`/api/admin/product-knowledge/documents/${encodeURIComponent(documentId)}/pages/${pageNo}/review`, {
     token,
     body: input,
   });
 }
 
 export function planAdminKnowledgeCorrections(token: string, documentId: string, input: {
+  pageNo?: number;
   sourceIssueId?: string;
   reasonCode: string;
   note: string;
@@ -776,6 +780,7 @@ export function planAdminKnowledgeCorrections(token: string, documentId: string,
 
 export function confirmAdminKnowledgeCorrections(token: string, documentId: string, input: {
   plan: AdminKnowledgeCorrectionPlan;
+  pageNo?: number;
   sourceIssueId?: string;
   indexVersion?: string;
 }) {

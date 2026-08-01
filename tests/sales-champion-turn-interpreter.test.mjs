@@ -20,6 +20,7 @@ function proposal(question, overrides = {}) {
     missingInformation: ['customer_goal', 'existing_coverage'],
     proposedCapabilities: ['needs_discovery'],
     insuranceNeeds: [],
+    situations: [],
     ...overrides,
   };
 }
@@ -43,6 +44,69 @@ test('sales champion interpreter keeps degree language out of product comparison
   assert.deepEqual(requestBody.response_format, { type: 'json_object' });
   assert.deepEqual(requestBody.thinking, { type: 'disabled' });
   assert.equal(requestBody.max_tokens, 2_000);
+  assert.match(JSON.stringify(requestBody), /situations 按业务事实语义判断/u);
+  assert.match(JSON.stringify(requestBody), /原业务员离职、公司转交保单、刚接手别人的老保单客户/u);
+  assert.match(JSON.stringify(requestBody), /只有年龄、职业、收入或资产背景不算/u);
+  assert.match(JSON.stringify(requestBody), /缴费期限太长、坚持不住或退休前交不完/u);
+  assert.match(JSON.stringify(requestBody), /工作、家庭、收入、居住、房产和已有保单要进入 KYC/u);
+  assert.match(JSON.stringify(requestBody), /advisor_estimate 和 advisor_inference 只能 candidate/u);
+});
+
+test('sales champion interpreter preserves grounded KYC facts and evidence-based labels', async () => {
+  const question = '客户是公务员，客户说十年交费太长，我感觉他意向还可以。';
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => response(proposal(question, {
+      kycFacts: [
+        { key: 'occupation', value: '公务员', source: 'advisor_fact', evidence: '客户是公务员' },
+        { key: 'insurance_attitude', value: '意向还可以', source: 'advisor_inference', evidence: '我感觉他意向还可以' },
+      ],
+      customerLabels: [
+        { dimension: 'current_concern', value: '缴费持续性顾虑', status: 'confirmed', source: 'customer_statement', evidence: '客户说十年交费太长', confidence: 0.96 },
+        { dimension: 'purchase_intent', value: 'I2', status: 'candidate', source: 'advisor_inference', evidence: '我感觉他意向还可以', confidence: 0.58 },
+      ],
+    })),
+  });
+
+  assert.equal(interpreted.kycFacts.length, 2);
+  assert.equal(interpreted.customerLabels[0].value, '缴费持续性顾虑');
+  assert.equal(interpreted.customerLabels[1].status, 'candidate');
+});
+
+test('sales champion interpreter accepts boundary confirmation slots without forcing a situation', async () => {
+  const question = '这是一个老保单客户，我第一次接触，不清楚之前是谁服务的。';
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => response(proposal(question, {
+      stage: { value: 'post_sale', confidence: 0.93 },
+      concerns: [{ type: 'unknown', priority: 'primary', confidence: 0.9 }],
+      proposedCapabilities: ['needs_discovery'],
+      missingInformation: ['customer_relationship_origin'],
+      situations: [],
+    })),
+  });
+
+  assert.deepEqual(interpreted.situations, []);
+  assert.deepEqual(interpreted.missingInformation, ['customer_relationship_origin']);
+});
+
+test('sales champion interpreter preserves an explicit controlled situation', async () => {
+  const question = '客户已有百万医疗，问还有没有必要了解重疾险。';
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => response(proposal(question, {
+      stage: { value: 'objection', confidence: 0.92 },
+      concerns: [{ type: 'claims', priority: 'primary', confidence: 0.91 }],
+      proposedCapabilities: ['plain_language_explanation', 'fact_sensitive_routing'],
+      insuranceNeeds: [{ type: 'product_facts', queryAspects: ['main_responsibilities'] }],
+      situations: ['medical_critical_illness_overlap'],
+    })),
+  });
+
+  assert.deepEqual(interpreted.situations, ['medical_critical_illness_overlap']);
 });
 
 test('sales champion interpreter can request insurance expert coverage-gap evidence', async () => {

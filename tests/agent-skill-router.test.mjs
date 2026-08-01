@@ -35,3 +35,18 @@ test('agent skill prompt keeps router-selected product comparison rules', () => 
   assert.match(prompt.systemRules.join('\n'), /官网证据/);
   assert.match(prompt.systemRules.join('\n'), /顾问话术/);
 });
+
+test('agent skill router requires useful follow-up advice before optional information requests', () => {
+  const prompt = selectAgentSkillPrompt({
+    scene: 'family_sales_chat',
+    question: '这个客户怎么继续跟进？',
+  });
+
+  assert.equal(prompt.intent, 'sales_script');
+  const rules = prompt.systemRules.join('\n');
+  assert.match(rules, /信息不完整.*至少一个可执行的跟进方法或话术/u);
+  assert.match(rules, /不得把补充信息作为开始分析的前置条件/u);
+  assert.match(rules, /低成本短事实可以合并/u);
+  assert.match(rules, /隐私程度高的问题一次只问一项/u);
+  assert.match(rules, /先给出下一步动作/u);
+});

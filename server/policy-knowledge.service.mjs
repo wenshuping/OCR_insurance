@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { extractInsurancePlanMatrixEvidence } from './insurance-plan-matrix-evidence.service.mjs';
 import {
   CUSTOMER_POLICY_PHOTO_PENDING_EVIDENCE_LEVEL,
@@ -1161,7 +1161,7 @@ export async function callDeepSeekForOpenWebSearchPlan({
   try {
     const baseUrl = trimString(env.DEEPSEEK_BASE_URL) || DEFAULT_DEEPSEEK_BASE_URL;
     const model = trimString(env.DEEPSEEK_OPEN_WEB_SEARCH_MODEL || env.DEEPSEEK_MODEL) || DEFAULT_OPEN_WEB_SEARCH_MODEL;
-    const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+    const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
       method: 'POST',
       signal: controller.signal,
       headers: {

@@ -13,7 +13,7 @@ import {
   selectAgentSkillPromptWithDeepSeek,
 } from './agent-skill-router.service.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { resolvePolicyValidityStatus } from '../src/policy-validity.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -1144,7 +1144,7 @@ export async function generateFamilySalesReview({
         privacyOptions: familySalesReviewDirectIdentifiers(input),
       })
       : null;
-    const url = new URL('/chat/completions', config.baseUrl);
+    const url = buildDeepSeekChatCompletionsUrl(config.baseUrl);
     const body = {
       model: config.model,
       max_tokens: config.maxTokens,

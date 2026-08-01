@@ -154,7 +154,13 @@ function loadProductCounts(db, tableName) {
   `).all().map((row) => [productMapKey(row.company, row.product_name), Number(row.count || 0)]));
 }
 
-function loadProductListFilter(productListPath = '') {
+function loadProductListFilter(productListPath = '', productList = []) {
+  if (Array.isArray(productList) && productList.length) {
+    return new Set(productList.map((row) => productMapKey(
+      row.company,
+      row.productName || row.product_name,
+    )).filter((key) => key !== '\u001f'));
+  }
   const resolvedPath = text(productListPath);
   if (!resolvedPath) return null;
   const rows = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8'));
@@ -221,6 +227,7 @@ function materializedCardRow({ card, product, productKey, index, now }) {
     payload: {
       ...card,
       productKey,
+      sourceDigest: text(product.sourceDigest),
       generatedAt: now,
       sourceCardId: text(card.id),
       sourceGate: card.sourceUrl ? 'source_url_present' : 'missing_source_url',
@@ -233,11 +240,23 @@ function materializedCardRow({ card, product, productKey, index, now }) {
   };
 }
 
-function insertRowsForProduct(db, { productKey, rows }) {
+function insertRowsForProduct(db, {
+  productKey,
+  company,
+  productName,
+  rows,
+}) {
   const existingCount = tableExists(db, 'product_responsibility_cards')
-    ? Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards WHERE product_key = ?').get(productKey)?.count || 0)
+    ? Number(db.prepare(`
+        SELECT COUNT(*) AS count
+          FROM product_responsibility_cards
+         WHERE product_key = ? OR (company = ? AND product_name = ?)
+      `).get(productKey, company, productName)?.count || 0)
     : 0;
-  db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+  db.prepare(`
+    DELETE FROM product_responsibility_cards
+     WHERE product_key = ? OR (company = ? AND product_name = ?)
+  `).run(productKey, company, productName);
   const insert = db.prepare(`
     INSERT INTO product_responsibility_cards (
       id,
@@ -292,6 +311,7 @@ export function materializeProductResponsibilityCards({
   onlyMissingCards = false,
   requireIndicators = false,
   productListPath = '',
+  productList = [],
   now = new Date().toISOString(),
 } = {}) {
   const resolvedDbPath = path.resolve(dbPath);
@@ -302,7 +322,7 @@ export function materializeProductResponsibilityCards({
     const indicatorsByProduct = groupByProduct(sourceRows.indicatorRows);
     const optionalByProduct = groupByProduct(sourceRows.optionalRows);
     const cardCountsByProduct = onlyMissingCards ? loadProductCounts(db, 'product_responsibility_cards') : new Map();
-    const productListFilter = loadProductListFilter(productListPath);
+    const productListFilter = loadProductListFilter(productListPath, productList);
     const products = selectProducts(sourceRows, { company, productName, limit })
       .filter((product) => !productListFilter || productListFilter.has(productMapKey(product.company, product.productName)))
       .filter((product) => !onlyMissingCards || !cardCountsByProduct.get(productMapKey(product.company, product.productName)))
@@ -364,7 +384,13 @@ export function materializeProductResponsibilityCards({
           })),
         });
       }
-      return { productKey, rows };
+      return {
+        productKey,
+        company: product.company,
+        productName: product.productName,
+        sourceDigest: text(product.sourceDigest),
+        rows,
+      };
     });
 
     if (write) {

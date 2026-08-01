@@ -618,6 +618,29 @@ export function createFamilyRoutes(context) {
     return message;
   }
 
+  function truncateSalesChatMessages({ thread, messageId, owner, now = nowIso() }) {
+    const messages = salesChatMessagesForThread(thread.id);
+    const targetIndex = messages.findIndex((message) => Number(message.id || 0) === Number(messageId || 0));
+    if (targetIndex < 0) return null;
+    const removedIds = new Set(messages.slice(targetIndex).map((message) => Number(message.id || 0)));
+    state.familySalesChatMessages = (Array.isArray(state.familySalesChatMessages) ? state.familySalesChatMessages : [])
+      .filter((message) => !removedIds.has(Number(message?.id || 0)));
+    for (const memory of Array.isArray(state.familySalesMemories) ? state.familySalesMemories : []) {
+      if (Number(memory?.familyId || 0) !== Number(thread.familyId || 0) || !salesMemoryMatchesOwner(memory, owner)) continue;
+      const evidenceIds = Array.isArray(memory.evidenceMessageIds) ? memory.evidenceMessageIds : [];
+      if (!evidenceIds.some((id) => removedIds.has(Number(id || 0)))) continue;
+      memory.evidenceMessageIds = evidenceIds.filter((id) => !removedIds.has(Number(id || 0)));
+      memory.updatedAt = now;
+      if (!memory.evidenceMessageIds.length) {
+        memory.status = 'superseded';
+        memory.invalidatedAt = now;
+      }
+    }
+    const remaining = salesChatMessagesForThread(thread.id);
+    thread.updatedAt = remaining.at(-1)?.createdAt || thread.createdAt || now;
+    return { target: messages[targetIndex], removedIds };
+  }
+
   function buildSalesChatRuntimeContext({ family, owner, policyImportTask = null }) {
     const members = listFamilyMembers(state, family.id);
     const policies = policiesForFamilyReport(family, owner);
@@ -1480,6 +1503,66 @@ export function createFamilyRoutes(context) {
       await saveFamilyState();
       return sendError(res, error, error?.status || 500);
     }
+  });
+
+  router.patch('/family-profiles/:id/sales-chat/threads/:threadId/messages/:messageId', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const thread = findSalesChatThread({ familyId: family.id, threadId: req.params.threadId, owner });
+    if (!thread) return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_THREAD_NOT_FOUND', message: '续聊会话不存在' });
+    const question = String(req.body?.message || req.body?.content || '').trim();
+    if (!question) return res.status(400).json({ ok: false, code: 'FAMILY_SALES_CHAT_EMPTY_MESSAGE', message: '请输入要追问的内容' });
+    const target = salesChatMessagesForThread(thread.id)
+      .find((message) => Number(message.id || 0) === Number(req.params.messageId || 0));
+    if (!target) return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_MESSAGE_NOT_FOUND', message: '续聊消息不存在' });
+    if (String(target.role || '') !== 'user') {
+      return res.status(409).json({ ok: false, code: 'FAMILY_SALES_CHAT_MESSAGE_NOT_EDITABLE', message: '只能编辑并重新发送顾问消息' });
+    }
+    await repairFamilyMembersBeforeReview(family);
+    const history = salesChatMessagesForThread(thread.id)
+      .filter((message) => (
+        String(message.createdAt || '').localeCompare(String(target.createdAt || '')) < 0 ||
+        (String(message.createdAt || '') === String(target.createdAt || '') && Number(message.id || 0) < Number(target.id || 0))
+      ));
+    const now = nowIso();
+    truncateSalesChatMessages({ thread, messageId: target.id, owner, now });
+    if (!history.some((message) => String(message.role || '') === 'user')) {
+      thread.title = salesChatTitleFromQuestion(question);
+    }
+    const userMessage = appendSalesChatMessage({ thread, role: 'user', content: question, createdAt: now });
+    try {
+      await generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage });
+      await saveFamilyState();
+      return res.json({
+        ok: true,
+        thread: clientSalesChatThread(thread, state.familySalesChatMessages),
+        messages: salesChatMessagesForThread(thread.id).map(clientSalesChatMessage),
+      });
+    } catch (error) {
+      userMessage.status = 'failed';
+      userMessage.error = error instanceof Error ? error.message : '续聊生成失败';
+      await saveFamilyState();
+      return sendError(res, error, error?.status || 500);
+    }
+  });
+
+  router.delete('/family-profiles/:id/sales-chat/threads/:threadId/messages/:messageId', async (req, res) => {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return undefined;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+    const thread = findSalesChatThread({ familyId: family.id, threadId: req.params.threadId, owner });
+    if (!thread) return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_THREAD_NOT_FOUND', message: '续聊会话不存在' });
+    const truncated = truncateSalesChatMessages({ thread, messageId: req.params.messageId, owner });
+    if (!truncated) return res.status(404).json({ ok: false, code: 'FAMILY_SALES_CHAT_MESSAGE_NOT_FOUND', message: '续聊消息不存在' });
+    await saveFamilyState();
+    return res.json({
+      ok: true,
+      thread: clientSalesChatThread(thread, state.familySalesChatMessages),
+      messages: salesChatMessagesForThread(thread.id).map(clientSalesChatMessage),
+    });
   });
 
   router.post('/family-profiles/:id/policy-analysis-report', async (req, res) => {

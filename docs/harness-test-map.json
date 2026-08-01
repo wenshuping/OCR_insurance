@@ -229,6 +229,7 @@
       "server/product-chunker.service.mjs",
       "server/product-ingestion.service.mjs",
       "server/product-knowledge-store.mjs",
+      "server/product-version-resolution.service.mjs",
       "server/product-rag.service.mjs",
       "server/routes/product-knowledge.routes.mjs",
       "server/app.mjs",
@@ -238,10 +239,14 @@
       "src/apps/admin/adminPages.ts",
       "src/apps/admin/pages/AdminKnowledgeUploadPage.tsx",
       "package.json",
-      "tests/admin-knowledge-upload.test.mjs"
+      "tests/admin-knowledge-upload.test.mjs",
+      "tests/product-knowledge-version-filter.test.mjs",
+      "tests/product-version-resolution.test.mjs"
     ],
     "commands": [
-      "node --test tests/admin-knowledge-upload.test.mjs"
+      "node --test tests/admin-knowledge-upload.test.mjs",
+      "node --test tests/product-knowledge-version-filter.test.mjs",
+      "node --test tests/product-version-resolution.test.mjs"
     ]
   },
   {
@@ -287,6 +292,13 @@
       "server/sales-champion-shadow-router.service.mjs",
       "server/sales-champion-shadow-interpreter.service.mjs",
       "server/sales-champion-skill-registry.mjs",
+      "server/sales-champion-external-skill-mappings.mjs",
+      "server/sales-champion-customer-labels.mjs",
+      "server/sales-champion-customer-label-mappings.mjs",
+      "server/sales-champion-skill-boundary.mjs",
+      "server/sales-champion-kyc-label-engine.mjs",
+      "server/sales-champion-question-planner.service.mjs",
+      "server/sales-champion-process-navigator.service.mjs",
       "server/sales-champion-readiness.service.mjs",
       "server/agent-domain-tool-gateway.service.mjs",
       "server/agent-tool-capability.service.mjs",
@@ -325,6 +337,11 @@
       "tests/sales-champion-turn-interpreter.test.mjs",
       "tests/sales-champion-skill-executor.test.mjs",
       "tests/sales-champion-atomic-orchestration.test.mjs",
+      "tests/sales-champion-skill-boundary.test.mjs",
+      "tests/sales-champion-customer-label-mappings.test.mjs",
+      "tests/sales-champion-kyc-label-engine.test.mjs",
+      "tests/sales-champion-question-planner.test.mjs",
+      "tests/sales-champion-process-navigator.test.mjs",
       "tests/sales-champion-shadow-integration.test.mjs",
       "tests/agent-domain-tool-gateway.test.mjs",
       "tests/agent-tool-capability.test.mjs",
@@ -365,6 +382,11 @@
       "node --test tests/sales-champion-turn-interpreter.test.mjs",
       "node --test tests/sales-champion-skill-executor.test.mjs",
       "node --test tests/sales-champion-atomic-orchestration.test.mjs",
+      "node --test tests/sales-champion-skill-boundary.test.mjs",
+      "node --test tests/sales-champion-customer-label-mappings.test.mjs",
+      "node --test tests/sales-champion-kyc-label-engine.test.mjs",
+      "node --test tests/sales-champion-question-planner.test.mjs",
+      "node --test tests/sales-champion-process-navigator.test.mjs",
       "node --test tests/agent-domain-tool-gateway.test.mjs",
       "node --test tests/agent-tool-capability.test.mjs",
       "node --test tests/agent-final-response-guard.test.mjs",
@@ -404,8 +426,15 @@
     "name": "hermes-question-routing",
     "patterns": [
       "server/agent-question-policy.service.mjs",
+      "server/hermes-conversation-client.service.mjs",
+      "server/agent-question-interpreter.service.mjs",
+      "server/agent-conversation-runtime.service.mjs",
+      "server/agent-conversation-context.service.mjs",
+      "server/dingtalk-agent-gateway.mjs",
+      "server/dingtalk-agent-gateway.service.mjs",
       "server/agent-question-router.service.mjs",
       "server/agent-question-handlers.service.mjs",
+      "server/agent-product-knowledge.service.mjs",
       "server/domain-agent-tool-contract.service.mjs",
       "server/insurance-expert-tool.service.mjs",
       "server/sales-champion-tool.service.mjs",
@@ -420,8 +449,13 @@
       "src/apps/admin/adminPages.ts",
       "src/apps/admin/pages/AdminAgentPoliciesPage.tsx",
       "tests/agent-question-policy.test.mjs",
+      "tests/agent-question-interpreter.test.mjs",
+      "tests/agent-conversation-runtime.test.mjs",
+      "tests/agent-conversation-context.test.mjs",
+      "tests/dingtalk-agent-gateway.test.mjs",
       "tests/agent-question-router.test.mjs",
       "tests/agent-question-handlers.test.mjs",
+      "tests/agent-product-knowledge.test.mjs",
       "tests/domain-agent-tool-contract.test.mjs",
       "tests/insurance-expert-tool.test.mjs",
       "tests/sales-champion-tool.test.mjs",
@@ -432,8 +466,13 @@
     ],
     "commands": [
       "node --test tests/agent-question-policy.test.mjs",
+      "node --test tests/agent-question-interpreter.test.mjs",
+      "node --test tests/agent-conversation-runtime.test.mjs",
+      "node --test tests/agent-conversation-context.test.mjs",
+      "node --test tests/dingtalk-agent-gateway.test.mjs",
       "node --test tests/agent-question-router.test.mjs",
       "node --test tests/agent-question-handlers.test.mjs",
+      "node --test tests/agent-product-knowledge.test.mjs",
       "node --test tests/domain-agent-tool-contract.test.mjs",
       "node --test tests/insurance-expert-tool.test.mjs",
       "node --test tests/sales-champion-tool.test.mjs",
@@ -441,6 +480,74 @@
       "node --test tests/agent-confirmation.test.mjs",
       "node --test tests/admin-agent-question-policy.test.mjs",
       "node --test tests/admin-agent-policies-ui.test.mjs"
+    ]
+  },
+  {
+    "name": "insurance-expert-skill-orchestration",
+    "patterns": [
+      "server/insurance-expert-skill-registry.service.mjs",
+      "server/insurance-expert-skill-router.service.mjs",
+      "server/agent-product-knowledge.service.mjs",
+      "server/product-customer-responsibility-summary.service.mjs",
+      "server/responsibility-planner.service.mjs",
+      "server/responsibility-summary-templates.mjs",
+      "server/responsibility-source-resolver.mjs",
+      "server/responsibility-summary-quality-gate.mjs",
+      "server/responsibility-card-standardizer.mjs",
+      "tests/insurance-expert-skill-router.test.mjs",
+      "tests/agent-product-knowledge.test.mjs",
+      "tests/product-customer-responsibility-summary.test.mjs",
+      "tests/responsibility-planner-service.test.mjs",
+      "tests/responsibility-summary-templates.test.mjs",
+      "tests/responsibility-source-resolver.test.mjs",
+      "tests/responsibility-summary-quality-gate.test.mjs",
+      "tests/responsibility-card-standardizer.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/insurance-expert-skill-router.test.mjs",
+      "node --test tests/agent-product-knowledge.test.mjs",
+      "node --test tests/product-customer-responsibility-summary.test.mjs",
+      "node --test tests/responsibility-planner-service.test.mjs",
+      "node --test tests/responsibility-summary-templates.test.mjs",
+      "node --test tests/responsibility-source-resolver.test.mjs",
+      "node --test tests/responsibility-summary-quality-gate.test.mjs",
+      "node --test tests/responsibility-card-standardizer.test.mjs"
+    ]
+  },
+  {
+    "name": "sales-champion-skill-orchestration",
+    "patterns": [
+      "server/agent-skill-router.service.mjs",
+      "server/family-sales-chat.service.mjs",
+      "server/family-sales-review.service.mjs",
+      "server/family-sales-memory.service.mjs",
+      "server/sales-champion-turn.contract.mjs",
+      "server/sales-champion-readiness.service.mjs",
+      "server/sales-champion-skill-registry.mjs",
+      "server/sales-champion-training-catalog.mjs",
+      "server/sales-champion-router.service.mjs",
+      "server/sales-champion-turn-interpreter.service.mjs",
+      "tests/agent-skill-router.test.mjs",
+      "tests/family-sales-review.test.mjs",
+      "tests/family-sales-review-markdown.test.mjs",
+      "tests/sales-champion-atomic-orchestration.test.mjs",
+      "tests/sales-champion-turn-interpreter.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/agent-skill-router.test.mjs",
+      "node --test tests/family-sales-review.test.mjs",
+      "node --test tests/family-sales-review-markdown.test.mjs",
+      "node --test tests/sales-champion-atomic-orchestration.test.mjs",
+      "node --test tests/sales-champion-turn-interpreter.test.mjs"
+    ]
+  },
+  {
+    "name": "skill-integrity",
+    "patterns": [
+      ".agents/skills/**"
+    ],
+    "commands": [
+      "node --test tests/integration-harness-audit.test.mjs"
     ]
   }
 ]

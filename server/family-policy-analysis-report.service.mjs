@@ -9,7 +9,7 @@ import {
   resolveRecordProductName,
 } from './canonical-product-id.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -394,7 +394,7 @@ export async function generateFamilyPolicyAnalysisReport({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
     try {
-    const url = new URL('/chat/completions', config.baseUrl);
+    const url = buildDeepSeekChatCompletionsUrl(config.baseUrl);
     const messages = buildFamilyPolicyAnalysisMessages(input);
     if (retryReason) {
       messages.push({

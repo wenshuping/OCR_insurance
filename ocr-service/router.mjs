@@ -1,6 +1,6 @@
 import express from 'express';
 import { respondInsurancePolicyScanError } from './insurance-scan-error.mjs';
-import { recognizeDocumentText, scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
+import { recognizeDocumentText, recognizePaddleOcrVl16Upload, scanCashValueTable, scanInsurancePolicyLocal } from './insurance-ocr.service.mjs';
 import { scanPolicyBodySchema } from './insurance.schemas.mjs';
 import { validateBody } from './middleware.mjs';
 import { resolvePolicyOcrRuntimePayload } from './ocr-config.service.mjs';
@@ -64,6 +64,36 @@ export function createOcrServiceRouter() {
       return res.json({ ok: true, ocrText });
     } catch (err) {
       return respondInsurancePolicyScanError(res, err);
+    }
+  });
+
+  router.post('/internal/ocr/product-pages/parse', requireOcrServiceToken, async (req, res) => {
+    try {
+      const uploadItem = req.body?.uploadItem;
+      const pageNo = Math.trunc(Number(req.body?.pageNo || 0));
+      if (!uploadItem || pageNo < 1) {
+        return res.status(400).json({ ok: false, code: 'INVALID_PRODUCT_PAGE', message: '缺少有效的产品资料页面' });
+      }
+      const promptVersion = String(req.body?.promptVersion || 'product-ppt-paddle-vl16-v1').trim();
+      const result = await recognizePaddleOcrVl16Upload(uploadItem);
+      return res.json({
+        ok: true,
+        provider: 'paddleocr_vl16_autodl',
+        model: String(process.env.POLICY_OCR_PADDLEOCR_VL16_MODEL || 'PaddleOCR-VL-1.6').trim(),
+        promptVersion,
+        pageNo,
+        ocrText: result.ocrText,
+        markdown: result.markdown,
+        boxes: result.boxes,
+        tables: result.tables,
+      });
+    } catch (err) {
+      const timeout = String(err?.message || '').includes('POLICY_OCR_UPSTREAM_TIMEOUT');
+      return res.status(timeout ? 504 : 503).json({
+        ok: false,
+        code: timeout ? 'PRODUCT_PPT_PADDLE_VL16_TIMEOUT' : 'PRODUCT_PPT_PADDLE_VL16_UNAVAILABLE',
+        message: timeout ? 'PaddleOCR-VL 1.6 产品页面解析超时' : 'PaddleOCR-VL 1.6 产品页面解析服务当前不可用',
+      });
     }
   });
 

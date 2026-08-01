@@ -1,4 +1,4 @@
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { DEFAULT_AGENT_RUNTIME_SETTINGS } from './agent-question-policy.service.mjs';
 import {
   normalizeSemanticProposal,
@@ -103,7 +103,7 @@ export function createDeepSeekAgentQuestionInterpreter({ env = process.env, fetc
         response_format: { type: 'json_object' },
         messages: messages(question, history, recentMessageLimit),
       });
-      const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+      const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },

@@ -1,5 +1,6 @@
 import {
   redactDeepSeekDirectIdentifiers,
+  buildDeepSeekChatCompletionsUrl,
   sanitizeDeepSeekRequestBody,
 } from './deepseek-privacy-gateway.mjs';
 import {
@@ -135,7 +136,7 @@ export function createInsuranceExpertAgentPlanner({
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), Math.max(1_000, timeoutMs));
       try {
-        const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+        const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
           method: 'POST',
           signal: controller.signal,
           headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },

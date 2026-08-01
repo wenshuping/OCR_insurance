@@ -2,6 +2,13 @@ function text(value) {
   return String(value ?? '');
 }
 
+export function buildDeepSeekChatCompletionsUrl(baseUrl = 'https://api.deepseek.com') {
+  const normalized = text(baseUrl).trim().replace(/\/+$/u, '');
+  if (!normalized) throw new Error('DEEPSEEK_BASE_URL is empty');
+  if (normalized.endsWith('/chat/completions')) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
 function escapeRegExp(value) {
   return text(value).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }

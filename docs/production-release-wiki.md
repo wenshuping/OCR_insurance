@@ -116,10 +116,10 @@ curl -fsS -H "x-ocr-service-token: $POLICY_OCR_SERVICE_TOKEN" \
   "$POLICY_OCR_SERVICE_URL/internal/ocr-service/config"
 ```
 
-For DeepSeek-OCR production releases, the response must include:
+For PaddleOCR-VL-1.6 production releases, the response must include:
 
 ```json
-"provider":"deepseek_ocr_vllm"
+"provider":"paddleocr_vl16_autodl"
 ```
 
 Verify admin and annual membership payment configuration without printing secrets:
@@ -283,18 +283,18 @@ The script fetches the selected ref, installs production Node dependencies,
 restarts `ocr-service/index.mjs` with `nohup`, tails the log, and waits for the
 local OCR health endpoint. It does not touch ECS or SQLite data.
 
-For DeepSeek-OCR, verify vLLM first:
+Verify PaddleOCR-VL-1.6 first:
 
 ```bash
-curl -fsS http://127.0.0.1:6008/v1/models
+curl -fsS http://127.0.0.1:6011/v1/models
 ```
 
 `deploy/autodl-ocr.env` must contain:
 
 ```bash
-POLICY_OCR_PROVIDER=deepseek_ocr_vllm
-POLICY_OCR_DEEPSEEK_OCR_BASE_URL=http://127.0.0.1:6008
-POLICY_OCR_DEEPSEEK_OCR_MODEL=deepseek-ai/DeepSeek-OCR
+POLICY_OCR_PROVIDER=paddleocr_vl16_autodl
+POLICY_OCR_PADDLEOCR_VL16_BASE_URL=http://127.0.0.1:6011
+POLICY_OCR_PADDLEOCR_VL16_MODEL=PaddleOCR-VL-1.6
 ```
 
 Manual equivalent:
@@ -360,7 +360,7 @@ may fail with `Connection refused` and is not the health port for that instance.
 The config response must include:
 
 ```json
-"provider":"deepseek_ocr_vllm"
+"provider":"paddleocr_vl16_autodl"
 ```
 
 Verify through the AutoDL public service URL from ECS:

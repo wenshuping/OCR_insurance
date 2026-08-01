@@ -15,7 +15,10 @@ const REQUIRED_FILES = [
   'scripts/test.sh',
   'scripts/dev.sh',
   'scripts/harness-audit.mjs',
+  'scripts/integration-harness-audit.mjs',
+  'scripts/create-integration-manifest.mjs',
   DEFAULT_TEST_MAP_PATH,
+  'docs/integration-harness.json',
   'tests/policy-ocr-mapping.test.mjs',
   'tests/policy-optional-responsibility.test.mjs',
   'tests/optional-responsibility-governance.test.mjs',
@@ -25,9 +28,9 @@ const REQUIRED_FILES = [
 
 const REQUIRED_NPM_SCRIPTS = ['check', 'typecheck', 'test', 'build'];
 
-const FEATURE_PATH_PREFIXES = ['server/', 'ocr-service/', 'src/', 'scripts/', 'tests/'];
+const FEATURE_PATH_PREFIXES = ['server/', 'ocr-service/', 'src/', 'scripts/', 'tests/', '.agents/skills/'];
 const DOCUMENTATION_PREFIXES = ['docs/'];
-const GENERATED_PREFIXES = ['node_modules/', 'dist/', 'build/', 'coverage/', 'graphify-out/', '.agents/'];
+const GENERATED_PREFIXES = ['node_modules/', 'dist/', 'build/', 'coverage/', 'graphify-out/'];
 const GENERATED_EXACT_PATHS = new Set(['package-lock.json', 'skills-lock.json']);
 const DURABLE_DATA_SCRIPT_RE = /^(?:crawl|backfill|repair|refill|recover|quantify|refresh)-/u;
 const DURABLE_DATA_KEYWORD_RE = /(?:policy|polic|ocr|scan|knowledge|responsibil|indicator|cashflow|family|insurance|保险|保单|责任|指标|知识库)/iu;
@@ -39,6 +42,93 @@ const TEMP_WRITE_RE = /\b(?:writeFile|writeFileSync|appendFile|appendFileSync|cr
 const ALLOWED_TEMP_ARTIFACT_RE = /(?:reportPath|backupPath|manifestPath|configPath|logPath|pidPath|cachePath|uploadPath|scratchPath|reportDir|backupDir|bundlePath|snapshotPath|tmpPath|临时|report|backup|manifest|config|log|pid|cache|upload|scratch|bundle|snapshot)/iu;
 const ROUTE_MODULE_RE = /^server\/routes\/[^/]+\.routes\.mjs$/u;
 const FULL_STATE_PERSIST_RE = /\bpersist\s*\(\s*state(?:\s*,[^)]*)?\)/u;
+
+const SEMANTIC_AGENT_FLOW_ENTRY = 'hermes-question-routing';
+const INSURANCE_EXPERT_SKILL_ENTRY = 'insurance-expert-skill-orchestration';
+const SALES_CHAMPION_SKILL_ENTRY = 'sales-champion-skill-orchestration';
+const REQUIRED_SEMANTIC_AGENT_PATTERNS = [
+  'server/hermes-conversation-client.service.mjs',
+  'server/agent-question-interpreter.service.mjs',
+  'server/agent-conversation-runtime.service.mjs',
+  'server/agent-conversation-context.service.mjs',
+  'server/dingtalk-agent-gateway.mjs',
+  'server/dingtalk-agent-gateway.service.mjs',
+  'server/agent-question-router.service.mjs',
+  'server/agent-question-handlers.service.mjs',
+  'server/agent-product-knowledge.service.mjs',
+  'server/routes/agent.routes.mjs',
+  'tests/agent-question-interpreter.test.mjs',
+  'tests/agent-conversation-runtime.test.mjs',
+  'tests/agent-conversation-context.test.mjs',
+  'tests/dingtalk-agent-gateway.test.mjs',
+  'tests/agent-question-router.test.mjs',
+  'tests/agent-question-handlers.test.mjs',
+  'tests/agent-product-knowledge.test.mjs',
+  'tests/agent-question-routes.test.mjs',
+];
+const REQUIRED_SEMANTIC_AGENT_COMMANDS = [
+  'node --test tests/agent-question-interpreter.test.mjs',
+  'node --test tests/agent-conversation-runtime.test.mjs',
+  'node --test tests/agent-conversation-context.test.mjs',
+  'node --test tests/dingtalk-agent-gateway.test.mjs',
+  'node --test tests/agent-question-router.test.mjs',
+  'node --test tests/agent-question-handlers.test.mjs',
+  'node --test tests/agent-product-knowledge.test.mjs',
+  'node --test tests/agent-question-routes.test.mjs',
+];
+const REQUIRED_INSURANCE_EXPERT_SKILL_PATTERNS = [
+  'server/insurance-expert-skill-registry.service.mjs',
+  'server/insurance-expert-skill-router.service.mjs',
+  'server/agent-product-knowledge.service.mjs',
+  'server/product-customer-responsibility-summary.service.mjs',
+  'server/responsibility-planner.service.mjs',
+  'server/responsibility-summary-templates.mjs',
+  'server/responsibility-source-resolver.mjs',
+  'server/responsibility-summary-quality-gate.mjs',
+  'server/responsibility-card-standardizer.mjs',
+  'tests/insurance-expert-skill-router.test.mjs',
+  'tests/agent-product-knowledge.test.mjs',
+  'tests/product-customer-responsibility-summary.test.mjs',
+  'tests/responsibility-planner-service.test.mjs',
+  'tests/responsibility-summary-templates.test.mjs',
+  'tests/responsibility-source-resolver.test.mjs',
+  'tests/responsibility-summary-quality-gate.test.mjs',
+  'tests/responsibility-card-standardizer.test.mjs',
+];
+const REQUIRED_INSURANCE_EXPERT_SKILL_COMMANDS = [
+  'node --test tests/insurance-expert-skill-router.test.mjs',
+  'node --test tests/agent-product-knowledge.test.mjs',
+  'node --test tests/product-customer-responsibility-summary.test.mjs',
+  'node --test tests/responsibility-planner-service.test.mjs',
+  'node --test tests/responsibility-summary-templates.test.mjs',
+  'node --test tests/responsibility-source-resolver.test.mjs',
+  'node --test tests/responsibility-summary-quality-gate.test.mjs',
+  'node --test tests/responsibility-card-standardizer.test.mjs',
+];
+const REQUIRED_SALES_CHAMPION_SKILL_PATTERNS = [
+  'server/agent-skill-router.service.mjs',
+  'server/family-sales-chat.service.mjs',
+  'server/family-sales-review.service.mjs',
+  'server/family-sales-memory.service.mjs',
+  'server/sales-champion-turn.contract.mjs',
+  'server/sales-champion-readiness.service.mjs',
+  'server/sales-champion-skill-registry.mjs',
+  'server/sales-champion-training-catalog.mjs',
+  'server/sales-champion-router.service.mjs',
+  'server/sales-champion-turn-interpreter.service.mjs',
+  'tests/agent-skill-router.test.mjs',
+  'tests/family-sales-review.test.mjs',
+  'tests/family-sales-review-markdown.test.mjs',
+  'tests/sales-champion-atomic-orchestration.test.mjs',
+  'tests/sales-champion-turn-interpreter.test.mjs',
+];
+const REQUIRED_SALES_CHAMPION_SKILL_COMMANDS = [
+  'node --test tests/agent-skill-router.test.mjs',
+  'node --test tests/family-sales-review.test.mjs',
+  'node --test tests/family-sales-review-markdown.test.mjs',
+  'node --test tests/sales-champion-atomic-orchestration.test.mjs',
+  'node --test tests/sales-champion-turn-interpreter.test.mjs',
+];
 
 function makeReport() {
   return {
@@ -99,17 +189,21 @@ function gitStatus(projectRoot) {
   const result = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], {
     cwd: projectRoot,
     encoding: 'utf8',
+    timeout: 10000,
+    maxBuffer: 1024 * 1024 * 4,
   });
   if (result.error || result.status !== 0) {
     return {
       entries: [],
       skipped: true,
+      blocking: Boolean(result.error?.code === 'ETIMEDOUT' || result.error?.signal === 'SIGTERM'),
       reason: result.error?.message || result.stderr?.trim() || 'git status failed',
     };
   }
   return {
     entries: parseGitStatus(result.stdout),
     skipped: false,
+    blocking: false,
     reason: '',
   };
 }
@@ -417,6 +511,104 @@ export function auditFeatureTestGate({
   return report;
 }
 
+export function auditSemanticAgentFlowHarness({ testMap = [] } = {}) {
+  const report = makeReport();
+  const entry = testMap.find((item) => item?.name === SEMANTIC_AGENT_FLOW_ENTRY);
+  if (!entry) {
+    add(
+      report,
+      'failed',
+      'semantic-agent-flow-harness',
+      `${SEMANTIC_AGENT_FLOW_ENTRY} focused test mapping is missing`,
+    );
+    return report;
+  }
+
+  const patterns = new Set(Array.isArray(entry.patterns) ? entry.patterns : []);
+  const commands = new Set(Array.isArray(entry.commands) ? entry.commands : []);
+  const missingPatterns = REQUIRED_SEMANTIC_AGENT_PATTERNS.filter((pattern) => !patterns.has(pattern));
+  const missingCommands = REQUIRED_SEMANTIC_AGENT_COMMANDS.filter((command) => !commands.has(command));
+
+  if (missingPatterns.length || missingCommands.length) {
+    add(
+      report,
+      'failed',
+      'semantic-agent-flow-harness',
+      'semantic Agent flow mapping must cover the current DingTalk/Hermes conversation path',
+      [
+        ...missingPatterns.map((pattern) => `missing pattern: ${pattern}`),
+        ...missingCommands.map((command) => `missing command: ${command}`),
+      ].join('\n'),
+    );
+  } else {
+    add(
+      report,
+      'passed',
+      'semantic-agent-flow-harness',
+      'semantic Agent flow mapping covers the current DingTalk/Hermes conversation path',
+    );
+  }
+  return report;
+}
+
+function auditRequiredFocusedMapping({
+  testMap = [],
+  entryName,
+  requiredPatterns,
+  requiredCommands,
+  check,
+  message,
+}) {
+  const report = makeReport();
+  const entry = testMap.find((item) => item?.name === entryName);
+  if (!entry) {
+    add(report, 'failed', check, `${entryName} focused test mapping is missing`);
+    return report;
+  }
+
+  const patterns = new Set(Array.isArray(entry.patterns) ? entry.patterns : []);
+  const commands = new Set(Array.isArray(entry.commands) ? entry.commands : []);
+  const missingPatterns = requiredPatterns.filter((pattern) => !patterns.has(pattern));
+  const missingCommands = requiredCommands.filter((command) => !commands.has(command));
+
+  if (missingPatterns.length || missingCommands.length) {
+    add(
+      report,
+      'failed',
+      check,
+      message,
+      [
+        ...missingPatterns.map((pattern) => `missing pattern: ${pattern}`),
+        ...missingCommands.map((command) => `missing command: ${command}`),
+      ].join('\n'),
+    );
+  } else {
+    add(report, 'passed', check, message);
+  }
+  return report;
+}
+
+export function auditAgentSkillOrchestrationHarness({ testMap = [] } = {}) {
+  const report = makeReport();
+  mergeReport(report, auditRequiredFocusedMapping({
+    testMap,
+    entryName: INSURANCE_EXPERT_SKILL_ENTRY,
+    requiredPatterns: REQUIRED_INSURANCE_EXPERT_SKILL_PATTERNS,
+    requiredCommands: REQUIRED_INSURANCE_EXPERT_SKILL_COMMANDS,
+    check: 'agent-skill-orchestration-harness',
+    message: 'insurance expert skill orchestration mapping must cover product knowledge, responsibility evidence, planner, templates, source resolution, and quality gates',
+  }));
+  mergeReport(report, auditRequiredFocusedMapping({
+    testMap,
+    entryName: SALES_CHAMPION_SKILL_ENTRY,
+    requiredPatterns: REQUIRED_SALES_CHAMPION_SKILL_PATTERNS,
+    requiredCommands: REQUIRED_SALES_CHAMPION_SKILL_COMMANDS,
+    check: 'agent-skill-orchestration-harness',
+    message: 'sales champion skill orchestration mapping must cover readiness, registry, shadow interpreter/router, sales memory, and turn contract',
+  }));
+  return report;
+}
+
 export function auditDurableDataPersistence({
   changedFiles = [],
   projectRoot = DEFAULT_PROJECT_ROOT,
@@ -647,7 +839,7 @@ export function runHarnessAudit({
   const report = makeReport();
   const status = gitStatus(projectRoot);
   if (status.skipped) {
-    add(report, 'skipped', 'git-status', status.reason);
+    add(report, status.blocking ? 'failed' : 'skipped', 'git-status', status.blocking ? 'git status timed out; audit cannot safely continue' : status.reason);
   } else {
     mergeReport(report, auditSensitivePathChanges(status.entries));
   }
@@ -657,15 +849,19 @@ export function runHarnessAudit({
   const loadedMap = loadTestMap(projectRoot);
   if (!loadedMap.ok) {
     add(report, 'failed', 'feature-test-gate', loadedMap.error);
-  } else if (status.skipped) {
-    add(report, 'skipped', 'feature-test-gate', 'git status unavailable');
   } else {
-    mergeReport(report, auditFeatureTestGate({
-      changedFiles: status.entries.map((entry) => entry.path),
-      testMap: loadedMap.testMap,
-      projectRoot,
-      runCommands: runFeatureTests,
-    }));
+    mergeReport(report, auditSemanticAgentFlowHarness({ testMap: loadedMap.testMap }));
+    mergeReport(report, auditAgentSkillOrchestrationHarness({ testMap: loadedMap.testMap }));
+    if (status.skipped) {
+      add(report, 'skipped', 'feature-test-gate', 'git status unavailable');
+    } else {
+      mergeReport(report, auditFeatureTestGate({
+        changedFiles: status.entries.map((entry) => entry.path),
+        testMap: loadedMap.testMap,
+        projectRoot,
+        runCommands: runFeatureTests,
+      }));
+    }
   }
 
   if (status.skipped) {

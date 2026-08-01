@@ -15,11 +15,13 @@ import {
   FileText,
   MessageSquareText,
   Paperclip,
+  Pencil,
   SendHorizontal,
   Shield,
   ShieldCheck,
   Sparkles,
   Target,
+  Trash2,
   TrendingUp,
   X,
 } from 'lucide-react';
@@ -57,6 +59,7 @@ import {
   createFamilySalesReview,
   deleteFamilyMember,
   deleteFamilyProfile,
+  deleteFamilySalesChatMessage,
   deletePolicy,
   getFamilyPolicyAnalysisReport,
   getFamilyReportRecord,
@@ -77,6 +80,7 @@ import {
   queryPolicyResponsibilities,
   register,
   regenerateFamilyReportRecord,
+  resendFamilySalesChatMessage,
   regeneratePolicyReport,
   recognizePolicy,
   scanCashValue,
@@ -103,6 +107,9 @@ import type {
 import {
   policyValidityClassName,
 } from '../../policy-validity.mjs';
+import {
+  normalizeIndicatorCalculation,
+} from '../../indicator-calculation.mjs';
 import {
   areSameParticipantName,
   formatCoverageAmount,
@@ -482,6 +489,11 @@ function planOrPolicyTotalPremium(policy: Policy, indicator: CoverageIndicator) 
 function normalizeIndicatorFormulaText(indicator: CoverageIndicator) {
   const coreText = normalizeOverviewText(indicatorCoreText(indicator));
   const text = normalizeOverviewText(indicatorOverviewText(indicator));
+  const calculation = normalizeIndicatorCalculation(indicator);
+  if (calculation.basisKey === 'policy_anniversary_basic_amount') {
+    const formulaText = String(indicator.formulaText || '').trim();
+    return formulaText.replace(/基本责任保险金额/u, '保单生效对应日基本责任保险金额');
+  }
   if (/满期生存保险金|满期保险金|满期金|满期/u.test(text) && /实际交纳的保险费|已交保险费|所交保险费/u.test(text)) {
     return '满期生存保险金 = 实际交纳保险费';
   }
@@ -494,6 +506,8 @@ function normalizeIndicatorFormulaText(indicator: CoverageIndicator) {
 
 function resolveIndicatorAmount(indicator: CoverageIndicator, policy: Policy) {
   if (isNonPayoutCashflowIndicator(indicator)) return 0;
+  const calculation = normalizeIndicatorCalculation(indicator);
+  if (calculation.calculationKey !== 'unknown' && calculation.calculationEligible === false) return 0;
   const text = normalizeOverviewText(indicatorCoreText(indicator));
   const overviewText = normalizeOverviewText(indicatorOverviewText(indicator));
   if (/实际交纳的保险费|已交保险费|所交保险费/u.test(text)) return planOrPolicyTotalPremium(policy, indicator);
@@ -724,6 +738,8 @@ export function CustomerApp() {
   const [familySalesChatReviewMessageIds, setFamilySalesChatReviewMessageIds] = useState<number[]>([]);
   const [familySalesChatAttachments, setFamilySalesChatAttachments] = useState<UploadItem[]>([]);
   const [familySalesChatAttachmentLoading, setFamilySalesChatAttachmentLoading] = useState(false);
+  const [familySalesChatEditingId, setFamilySalesChatEditingId] = useState<number | null>(null);
+  const [familySalesChatEditingContent, setFamilySalesChatEditingContent] = useState('');
   const [familyPlanningProfile, setFamilyPlanningProfile] = useState<FamilyPlanningProfile>(readFamilyPlanningProfile);
 
   // Cash value upload dialog state
@@ -2005,6 +2021,66 @@ export function CustomerApp() {
       setFamilySalesChatMessage('已复制续聊内容');
     } catch {
       setFamilySalesChatMessage('复制失败，请手动选择文本复制');
+    }
+  }
+
+  function replaceFamilySalesChatConversation(thread: FamilySalesChatThread, messages: FamilySalesChatMessage[]) {
+    setFamilySalesChatThread(thread);
+    setFamilySalesChatMessages(messages);
+    const messageIds = new Set(messages.map((message) => Number(message.id)));
+    setFamilySalesChatReviewMessageIds((current) => current.filter((id) => messageIds.has(id)));
+    setFamilySalesChatThreads((current) => [
+      thread,
+      ...current.filter((item) => Number(item.id) !== Number(thread.id)),
+    ].sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''))));
+  }
+
+  async function deleteFamilySalesChatRecord(messageId: number) {
+    if (!familySalesReviewFamilyId || !familySalesChatThread?.id || familySalesChatLoading) return;
+    if (!window.confirm('将删除这条消息及其后的对话，确定继续吗？')) return;
+    setFamilySalesChatLoading(true);
+    setFamilySalesChatMessage('正在删除对话记录');
+    try {
+      const payload = await deleteFamilySalesChatMessage({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+        threadId: familySalesChatThread.id,
+        messageId,
+      });
+      replaceFamilySalesChatConversation(payload.thread, payload.messages || []);
+      setFamilySalesChatEditingId(null);
+      setFamilySalesChatEditingContent('');
+      setFamilySalesChatMessage('对话记录已删除');
+    } catch (error) {
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '删除对话记录失败');
+    } finally {
+      setFamilySalesChatLoading(false);
+    }
+  }
+
+  async function resendEditedFamilySalesChatMessage(messageId: number) {
+    const content = familySalesChatEditingContent.trim();
+    if (!content || !familySalesReviewFamilyId || !familySalesChatThread?.id || familySalesChatLoading) return;
+    setFamilySalesChatLoading(true);
+    setFamilySalesChatMessage('正在按编辑后的内容重新生成');
+    try {
+      const payload = await resendFamilySalesChatMessage({
+        token: token || undefined,
+        guestId: token ? undefined : guestId,
+        familyId: familySalesReviewFamilyId,
+        threadId: familySalesChatThread.id,
+        messageId,
+        message: content,
+      });
+      replaceFamilySalesChatConversation(payload.thread, payload.messages || []);
+      setFamilySalesChatEditingId(null);
+      setFamilySalesChatEditingContent('');
+      setFamilySalesChatMessage('已编辑并重新生成回复');
+    } catch (error) {
+      setFamilySalesChatMessage(error instanceof Error ? error.message : '编辑后重新发送失败');
+    } finally {
+      setFamilySalesChatLoading(false);
     }
   }
 
@@ -3989,19 +4065,79 @@ export function CustomerApp() {
                               用于重算
                             </label>
                           </div>
-                          {!fromUser ? (
+                          <div className="flex items-center gap-1.5">
+                            {!fromUser ? (
+                              <button
+                                type="button"
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
+                                aria-label="复制续聊回复"
+                                title="复制续聊回复"
+                                onClick={() => void copyFamilySalesChatMessage(chatMessage.content)}
+                              >
+                                <Copy size={14} />
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={familySalesChatLoading}
+                                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-blue-50 ring-1 ring-white/20 transition hover:bg-white/20 disabled:opacity-50"
+                                aria-label="编辑并重新发送"
+                                title="编辑并重新发送"
+                                onClick={() => {
+                                  setFamilySalesChatEditingId(Number(chatMessage.id));
+                                  setFamilySalesChatEditingContent(chatMessage.content);
+                                }}
+                              >
+                                <Pencil size={13} />
+                              </button>
+                            )}
                             <button
                               type="button"
-                              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-50 text-slate-500 ring-1 ring-slate-200 transition hover:bg-slate-100"
-                              aria-label="复制续聊回复"
-                              title="复制续聊回复"
-                              onClick={() => void copyFamilySalesChatMessage(chatMessage.content)}
+                              disabled={familySalesChatLoading}
+                              className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ring-1 transition disabled:opacity-50 ${
+                                fromUser
+                                  ? 'bg-white/10 text-blue-50 ring-white/20 hover:bg-white/20'
+                                  : 'bg-rose-50 text-rose-600 ring-rose-100 hover:bg-rose-100'
+                              }`}
+                              aria-label="删除这条及之后的对话"
+                              title="删除这条及之后的对话"
+                              onClick={() => void deleteFamilySalesChatRecord(Number(chatMessage.id))}
                             >
-                              <Copy size={14} />
+                              <Trash2 size={13} />
                             </button>
-                          ) : null}
+                          </div>
                         </div>
-                        {fromUser ? (
+                        {fromUser && familySalesChatEditingId === Number(chatMessage.id) ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={familySalesChatEditingContent}
+                              disabled={familySalesChatLoading}
+                              className="min-h-24 w-full resize-y rounded-xl border border-white/30 bg-white px-3 py-2 font-semibold text-slate-800 outline-none focus:border-white"
+                              onChange={(event) => setFamilySalesChatEditingContent(event.target.value)}
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                disabled={familySalesChatLoading}
+                                className="rounded-full bg-white/10 px-3 py-1.5 text-xs font-black text-white ring-1 ring-white/20 hover:bg-white/20"
+                                onClick={() => {
+                                  setFamilySalesChatEditingId(null);
+                                  setFamilySalesChatEditingContent('');
+                                }}
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!familySalesChatEditingContent.trim() || familySalesChatLoading}
+                                className="rounded-full bg-white px-3 py-1.5 text-xs font-black text-blue-700 disabled:opacity-50"
+                                onClick={() => void resendEditedFamilySalesChatMessage(Number(chatMessage.id))}
+                              >
+                                重新发送
+                              </button>
+                            </div>
+                          </div>
+                        ) : fromUser ? (
                           <p className="whitespace-pre-wrap break-words font-semibold">{chatMessage.content}</p>
                         ) : (
                           <FamilySalesReviewMarkdown content={chatMessage.content} />

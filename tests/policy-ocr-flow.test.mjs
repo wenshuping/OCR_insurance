@@ -13133,6 +13133,44 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(listed.payload.threads[0].messages[0].content, '帮我改成微信话术');
     assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 客户说预算不够怎么回应');
 
+    const assistantEditRejected = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/25?guestId=guest-sales-chat', {
+      method: 'PATCH',
+      body: JSON.stringify({ message: '不能编辑助手回复' }),
+    });
+    assert.equal(assistantEditRejected.response.status, 409);
+    assert.equal(assistantEditRejected.payload.code, 'FAMILY_SALES_CHAT_MESSAGE_NOT_EDITABLE');
+
+    const resent = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/21?guestId=guest-sales-chat', {
+      method: 'PATCH',
+      body: JSON.stringify({ message: '改成适合面谈的开场话术' }),
+    });
+    assert.equal(resent.response.status, 200);
+    assert.equal(resent.payload.messages.length, 2);
+    assert.equal(resent.payload.messages[0].content, '改成适合面谈的开场话术');
+    assert.equal(resent.payload.messages[1].content, '回复 3: 改成适合面谈的开场话术');
+    assert.equal(resent.payload.thread.title, '改成适合面谈的开场话术');
+    assert.equal(generationCalls[2].history.length, 0);
+    assert.equal(state.familySalesChatMessages.length, 2);
+    assert.equal(state.familySalesMemories.find((memory) => memory.id === 23)?.status, 'superseded');
+    const resentMemory = state.familySalesMemories.find((memory) => memory.evidenceMessageIds?.includes(26));
+    assert.equal(resentMemory?.status, 'confirmed');
+
+    const deletedAssistant = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/27?guestId=guest-sales-chat', {
+      method: 'DELETE',
+    });
+    assert.equal(deletedAssistant.response.status, 200);
+    assert.equal(deletedAssistant.payload.messages.length, 1);
+    assert.equal(deletedAssistant.payload.messages[0].role, 'user');
+    assert.equal(resentMemory?.status, 'confirmed');
+
+    const deletedUser = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/26?guestId=guest-sales-chat', {
+      method: 'DELETE',
+    });
+    assert.equal(deletedUser.response.status, 200);
+    assert.equal(deletedUser.payload.messages.length, 0);
+    assert.equal(deletedUser.payload.thread.messageCount, 0);
+    assert.equal(resentMemory?.status, 'superseded');
+
     const otherOwner = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-other');
     assert.equal(otherOwner.response.status, 404);
   } finally {

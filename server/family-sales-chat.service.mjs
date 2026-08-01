@@ -4,7 +4,7 @@ import {
   privacySafeFamilySalesReviewInputJson,
   restoreFamilySalesReviewDisplayText,
 } from './family-sales-review.service.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { salesChampionPromptRules } from './sales-champion-skill-registry.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
@@ -180,6 +180,10 @@ export function buildFamilySalesChatMessages({
   const openConsultation = context?.consultationScope === 'open';
   const hasStructuredSalesTurn = Boolean(context?.salesTurn?.proposal);
   const selectedSkillRules = salesChampionPromptRules(context?.salesTurn?.selection);
+  const selectedTrainingRules = (Array.isArray(context?.salesTurn?.trainingPacks)
+    ? context.salesTurn.trainingPacks : [])
+    .flatMap((pack) => Array.isArray(pack?.promptRules) ? pack.promptRules : [])
+    .filter((rule) => typeof rule === 'string' && rule.trim());
   return [
     {
       role: 'system',
@@ -191,7 +195,7 @@ export function buildFamilySalesChatMessages({
           ? '本轮销售阶段、客户关注点、缺失信息和受控 Skills 已由 Sales Champion 的结构化 turn contract 校验；必须按该结构化结果执行，不得重新按关键词判断意图或 Skill。'
           : '本轮没有结构化销售 turn，只能使用通用销售澄清能力，不得根据关键词自行选择更具体的 Skill。',
         openConsultation
-          ? '当前没有绑定家庭档案。你要基于本轮客户描述进行专业分析；信息不足时自然追问，不能假定存在未提供的家庭、保单或产品资料。'
+          ? '当前没有绑定家庭档案。你要基于本轮客户描述进行专业分析；信息不足时仍先给出不依赖未知事实的跟进方法，再自然追问，不能假定存在未提供的家庭、保单或产品资料。'
           : '你要基于当前家庭、保单、家庭保障报告、最近销售建议、官网责任证据和本轮对话继续回答顾问追问。',
         '必须遵守：',
         '1. 只使用输入上下文和对话历史中的事实；收入、负债、预算、责任条款、现金价值、分红、领取利益缺少证据时写“待核实”。',
@@ -208,17 +212,25 @@ export function buildFamilySalesChatMessages({
         '12. 不得向用户展示上下文 JSON 的字段名、内部变量名、数据结构或系统实现；只能用自然语言说明“现有资料”“已提供信息”或“待补充信息”。',
         '13. 用户提到的保险公司或产品名称只是客户背景线索，不得因此把客户跟进、需求分析、异议处理或沟通话术改成产品检索；本轮最终回答始终围绕顾问的销售问题。',
         '14. 产品名称线索本身不能证明保险责任。只有保险专家证据中标记为 verified 的内容可以作为官方产品事实；没有已核验证据时，把相关责任、续保、领取、现金价值或收益写成“待核实”，但仍要给出不依赖这些事实的跟进策略。',
-        '15. 开放式客户跟进要先根据顾问本轮原话形成客户画像，逐项覆盖已明确的年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标；严格区分客户事实、顾问估计和待核实项，不得因产品名称模糊而忽略其余客户信息。',
+        '15. 开放式客户跟进要使用 salesTurn.navigation 中已识别的KYC事实和客户标签；严格区分客户事实、顾问估计和待核实项。只讨论与当前流程和 Skill 有关的画像，不得为了完整而逐项盘问年龄、收入、家庭、房产、健康和全部保单。',
         '16. salesTurn.insuranceNeedResults 只表示 Insurance Expert 调用状态；只有对应 insuranceExpertEvidence 为 verified 时才能陈述保险事实或保障缺口。needs_family_or_policy_evidence、needs_resolved_product 或 unavailable 都必须转成待补资料/待核实，而不是自行补全。',
         '17. Sales Champion 始终拥有最终销售回答：Insurance Expert 证据用于理解保险内容和保障缺口，但最终仍要结合销售阶段与客户关注点给出沟通策略。',
         '18. 输出遵守结构化 Skill 的 executionContract：客户已表达事实、销售阶段或异议解读、可执行沟通建议或话术、需要核验的保险事实、以及不确定边界。',
         '19. 不得虚构客户姓名、性别、称谓、健康、社保、负债、预算、缴费能力、退休金额、心理状态、财产安排或家庭决策方式。婚姻、居住、房产、子女和产品名称只是背景，除非结构化 concern 或 verified evidence 明确支持，否则不能据此推出结论。',
-        '20. 只追问 salesTurn.proposal.missingInformation 中列出的缺失信息；不得自行扩展成保单体检、产品核验、法律咨询或保障缺口分析。',
-        '21. 开放式咨询控制在1200个中文字符以内，不使用复杂表格；优先给客户理解、当前销售目标、一段话术和下一步问题。',
+        '20. 如果存在 salesTurn.navigation.questionPlan，只能追问其中的自然问题；否则才可从 salesTurn.proposal.missingInformation 中选择。不得自行扩展成保单体检、产品核验、法律咨询或保障缺口分析。',
+        '21. 开放式咨询控制在1200个中文字符以内，不使用复杂表格；像一线业务员复盘客户一样，先直说这次怎么推进，再给一段能直接复制的话和下一步问题。',
+        '22. 即使客户信息不完整，也必须先根据已有信息直说下一步怎么跟，再给至少一个可立即执行的动作或话术；不得把补充信息作为开始分析的前置条件。',
+        '23. 补充信息只能放在已有建议之后并遵守 navigation.questionPlan 的回答负担；多个低成本短事实可以合并，高成本资料一次只问一项。不得只输出问题清单、资料清单或让用户补充完整信息后再回答。',
+        '24. 最终回答使用业务员日常说法和短句，少讲概念、少复述资料。不得使用“客户理解、当前阶段、优先确认、建议进一步、综合来看、需求发现阶段”等课件式小标题或套话。除非顾问明确要分析报告，否则至少给一段可直接发给客户的原话。',
         ...(selectedSkillRules.length ? [
           '',
           '本轮受控 Skill 执行规则：',
           ...selectedSkillRules.map((rule, index) => `${index + 1}. ${rule}`),
+        ] : []),
+        ...(selectedTrainingRules.length ? [
+          '',
+          '本轮已审核培训方法：',
+          ...selectedTrainingRules.map((rule, index) => `${index + 1}. ${rule}`),
         ] : []),
       ].join('\n'),
     },
@@ -286,7 +298,7 @@ export async function generateFamilySalesChatReply({
       body.temperature = 0.2;
     }
 
-    const response = await fetchImpl(new URL('/chat/completions', config.baseUrl), {
+    const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(config.baseUrl), {
       method: 'POST',
       signal: controller.signal,
       headers: {

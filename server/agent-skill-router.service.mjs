@@ -1,4 +1,4 @@
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 function trim(value) {
   return String(value || '').trim();
@@ -13,6 +13,8 @@ function withCode(error, code, status) {
 const COMMON_INSURANCE_RULES = [
   '只基于已提供的家庭、保单、家庭报告、销售建议、官网证据和对话内容输出。',
   '缺少收入、负债、预算、健康告知、现金价值、分红、领取利益或责任条款证据时写“待核实”。',
+  '客户信息不完整时，也必须先基于已有信息给出暂定判断、至少一个可执行的跟进方法或话术，不得把补充信息作为开始分析的前置条件。',
+  '如需追问，放在已有建议之后，只问会改变下一步方向的信息；多个低成本短事实可以合并，需查资料或隐私程度高的问题一次只问一项。',
   '不得承诺收益、分红、利率、理赔、核保、法律或税务结果。',
   '客户沟通必须温和、专业、可复制，避免恐吓式或压迫式销售。',
   '关键判断尽量写明依据来自“保单字段/家庭报告/销售建议/家庭责任信息/官网证据/续聊内容”。',
@@ -63,7 +65,7 @@ const SKILL_DEFINITIONS = {
       '话术要能直接复制给顾问使用，但不要代替顾问自动发送。',
       '面谈顺序为先核实数据，再展示保障缺口，再展开方案，再约补资料或二次面谈。',
       '避免夸大风险和制造焦虑，用问题引导客户确认责任和预算。',
-      '需要给出下一步动作和补资料清单。',
+      '需要先给出下一步动作；只在确实会影响后续判断时，再在末尾给出精简的补资料建议。',
     ],
   },
   sales_review_regeneration: {
@@ -207,7 +209,7 @@ export async function selectAgentSkillPromptWithDeepSeek({
       temperature: 0,
       messages: skillSelectionMessages({ scene, question, salesChatContext }),
     };
-    const response = await fetchImpl(new URL('/chat/completions', config.baseUrl || 'https://api.deepseek.com'), {
+    const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(config.baseUrl || 'https://api.deepseek.com'), {
       method: 'POST',
       signal: controller.signal,
       headers: {

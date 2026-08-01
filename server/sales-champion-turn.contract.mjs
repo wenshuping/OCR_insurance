@@ -1,4 +1,7 @@
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
+import { SALES_CHAMPION_BOUNDARY_SLOT_KEYS } from './sales-champion-skill-boundary.mjs';
+import { SALES_CHAMPION_EXTERNAL_SITUATION_KEYS } from './sales-champion-external-skill-mappings.mjs';
+import { SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY } from './sales-champion-customer-labels.mjs';
 
 const CONTRACT_VERSION = 1;
 
@@ -12,12 +15,38 @@ const CONCERN_TYPES = new Set([
 ]);
 const PRIORITIES = new Set(['primary', 'secondary']);
 const STATEMENT_SOURCES = new Set(['current_message', 'confirmed_history']);
-const MISSING_INFORMATION = new Set([
+export const SALES_CHAMPION_KYC_FACT_KEYS = Object.freeze([
+  'age_life_stage', 'occupation', 'employment_status', 'income', 'income_type',
+  'income_stability', 'marital_status', 'children', 'dependents', 'residence',
+  'housing', 'assets', 'liabilities', 'existing_insurance', 'customer_goal',
+  'insurance_attitude', 'purchase_behavior', 'decision_process', 'contact_preference',
+  'service_request', 'relationship_origin', 'conversation_outcome',
+]);
+const KYC_FACT_KEYS = new Set(SALES_CHAMPION_KYC_FACT_KEYS);
+export const SALES_CHAMPION_KYC_EVIDENCE_SOURCES = Object.freeze([
+  'customer_statement', 'advisor_fact', 'advisor_estimate', 'advisor_inference',
+]);
+const KYC_EVIDENCE_SOURCES = new Set(SALES_CHAMPION_KYC_EVIDENCE_SOURCES);
+const CUSTOMER_LABEL_STATUSES = new Set(['confirmed', 'candidate']);
+export const SALES_CHAMPION_MISSING_INFORMATION_KEYS = Object.freeze([...new Set([
   'customer_goal', 'future_fund_use', 'budget', 'existing_coverage', 'product_contract',
   'cash_value_schedule', 'family_decision_process', 'health_information', 'contact_preference',
-]);
+  ...SALES_CHAMPION_BOUNDARY_SLOT_KEYS,
+])]);
+const MISSING_INFORMATION = new Set(SALES_CHAMPION_MISSING_INFORMATION_KEYS);
 const INSURANCE_NEED_TYPES = new Set(['product_facts', 'coverage_gap']);
 const QUERY_ASPECTS = new Set(SEMANTIC_QUERY_ASPECTS);
+export const SALES_CHAMPION_SITUATION_KEYS = Object.freeze([
+  'first_insurance_conversation', 'orphan_policy', 'high_value_client',
+  'retirement_planning', 'investment_comparison', 'long_payment_commitment',
+  'premium_coverage_tradeoff', 'medical_critical_illness_overlap',
+  'social_commercial_overlap', 'dividend_uncertainty', 'solvency_concern',
+  'return_expectation', 'buying_signal', 'health_risk_conversation',
+  'verified_product_change', 'service_trust_recovery', 'existing_customer_add_on',
+  'event_follow_up', 'regional_pipeline',
+  ...SALES_CHAMPION_EXTERNAL_SITUATION_KEYS,
+]);
+const SITUATION_KEYS = new Set(SALES_CHAMPION_SITUATION_KEYS);
 export const SALES_CHAMPION_CAPABILITY_KEYS = Object.freeze([
   'appointment_scope',
   'tradeoff_disclosure',
@@ -62,9 +91,18 @@ function normalizeGroundingText(value) {
 
 export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
   assertObject(proposal, 'proposal');
+  proposal = {
+    ...proposal,
+    situations: Object.hasOwn(proposal, 'situations') ? proposal.situations : [],
+    kycFacts: Object.hasOwn(proposal, 'kycFacts') ? proposal.kycFacts : [],
+    customerLabels: Object.hasOwn(proposal, 'customerLabels') ? proposal.customerLabels : [],
+    unknownInformation: Object.hasOwn(proposal, 'unknownInformation')
+      ? proposal.unknownInformation : [],
+  };
   assertExactKeys(proposal, [
     'contractVersion', 'customerStatements', 'stage', 'concerns', 'signals',
-    'missingInformation', 'proposedCapabilities', 'insuranceNeeds',
+    'missingInformation', 'proposedCapabilities', 'insuranceNeeds', 'situations',
+    'kycFacts', 'customerLabels', 'unknownInformation',
   ], 'proposal');
   if (proposal.contractVersion !== CONTRACT_VERSION) {
     throw new TypeError(`contractVersion must be ${CONTRACT_VERSION}`);
@@ -86,6 +124,59 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
     }
     const grounded = groundingSources.some((source) => source.includes(normalizeGroundingText(statementText)));
     if (!grounded) throw new TypeError(`customerStatements[${index}].text must be grounded`);
+  });
+
+  if (!Array.isArray(proposal.kycFacts) || proposal.kycFacts.length > 16) {
+    throw new TypeError('kycFacts must be an array with at most 16 items');
+  }
+  proposal.kycFacts.forEach((fact, index) => {
+    assertObject(fact, `kycFacts[${index}]`);
+    assertExactKeys(fact, ['key', 'value', 'source', 'evidence'], `kycFacts[${index}]`);
+    if (!KYC_FACT_KEYS.has(fact.key)) throw new TypeError(`kycFacts[${index}].key is invalid`);
+    if (typeof fact.value !== 'string' || !fact.value.trim() || fact.value.length > 200) {
+      throw new TypeError(`kycFacts[${index}].value is invalid`);
+    }
+    if (!KYC_EVIDENCE_SOURCES.has(fact.source)) {
+      throw new TypeError(`kycFacts[${index}].source is invalid`);
+    }
+    if (typeof fact.evidence !== 'string' || !fact.evidence.trim() || fact.evidence.length > 500
+      || !groundingSources.some((source) => source.includes(normalizeGroundingText(fact.evidence)))) {
+      throw new TypeError(`kycFacts[${index}].evidence must be grounded`);
+    }
+  });
+
+  if (!Array.isArray(proposal.customerLabels) || proposal.customerLabels.length > 20) {
+    throw new TypeError('customerLabels must be an array with at most 20 items');
+  }
+  const customerLabelKeys = new Set();
+  proposal.customerLabels.forEach((label, index) => {
+    assertObject(label, `customerLabels[${index}]`);
+    assertExactKeys(
+      label,
+      ['dimension', 'value', 'status', 'source', 'evidence', 'confidence'],
+      `customerLabels[${index}]`,
+    );
+    const allowedValues = SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY[label.dimension];
+    if (!allowedValues) throw new TypeError(`customerLabels[${index}].dimension is invalid`);
+    if (!allowedValues.includes(label.value)) throw new TypeError(`customerLabels[${index}].value is invalid`);
+    if (!CUSTOMER_LABEL_STATUSES.has(label.status)) {
+      throw new TypeError(`customerLabels[${index}].status is invalid`);
+    }
+    if (!KYC_EVIDENCE_SOURCES.has(label.source)) {
+      throw new TypeError(`customerLabels[${index}].source is invalid`);
+    }
+    if (['advisor_estimate', 'advisor_inference'].includes(label.source)
+      && label.status !== 'candidate') {
+      throw new TypeError(`customerLabels[${index}] inferred labels must remain candidate`);
+    }
+    if (typeof label.evidence !== 'string' || !label.evidence.trim() || label.evidence.length > 500
+      || !groundingSources.some((source) => source.includes(normalizeGroundingText(label.evidence)))) {
+      throw new TypeError(`customerLabels[${index}].evidence must be grounded`);
+    }
+    assertConfidence(label.confidence, `customerLabels[${index}].confidence`);
+    const identity = `${label.dimension}\u0000${label.value}\u0000${label.status}`;
+    if (customerLabelKeys.has(identity)) throw new TypeError(`customerLabels[${index}] is duplicated`);
+    customerLabelKeys.add(identity);
   });
 
   assertObject(proposal.stage, 'stage');
@@ -114,14 +205,36 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
   }
 
   if (!Array.isArray(proposal.missingInformation)) throw new TypeError('missingInformation must be an array');
+  const missingInformation = new Set();
   for (const value of proposal.missingInformation) {
     if (!MISSING_INFORMATION.has(value)) throw new TypeError(`missingInformation contains invalid value: ${value}`);
+    if (missingInformation.has(value)) throw new TypeError(`missingInformation contains duplicated value: ${value}`);
+    missingInformation.add(value);
   }
-  if (!Array.isArray(proposal.proposedCapabilities) || proposal.proposedCapabilities.length > 5) {
-    throw new TypeError('proposedCapabilities must be an array with at most 5 items');
+  if (!Array.isArray(proposal.unknownInformation)) throw new TypeError('unknownInformation must be an array');
+  const unknownInformation = new Set();
+  for (const value of proposal.unknownInformation) {
+    if (!MISSING_INFORMATION.has(value)) throw new TypeError(`unknownInformation contains invalid value: ${value}`);
+    if (unknownInformation.has(value)) throw new TypeError(`unknownInformation contains duplicated value: ${value}`);
+    if (missingInformation.has(value)) {
+      throw new TypeError(`unknownInformation duplicates missingInformation: ${value}`);
+    }
+    unknownInformation.add(value);
+  }
+  if (!Array.isArray(proposal.proposedCapabilities) || proposal.proposedCapabilities.length > 7) {
+    throw new TypeError('proposedCapabilities must be an array with at most 7 items');
   }
   for (const value of proposal.proposedCapabilities) {
     if (!CAPABILITY_KEYS.has(value)) throw new TypeError(`proposedCapabilities contains invalid value: ${value}`);
+  }
+  if (!Array.isArray(proposal.situations) || proposal.situations.length > 4) {
+    throw new TypeError('situations must be an array with at most 4 items');
+  }
+  const situations = new Set();
+  for (const value of proposal.situations) {
+    if (!SITUATION_KEYS.has(value)) throw new TypeError(`situations contains invalid value: ${value}`);
+    if (situations.has(value)) throw new TypeError(`situations contains duplicated value: ${value}`);
+    situations.add(value);
   }
 
   if (!Array.isArray(proposal.insuranceNeeds) || proposal.insuranceNeeds.length > 2) {

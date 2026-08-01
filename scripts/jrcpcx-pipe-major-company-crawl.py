@@ -338,6 +338,7 @@ async def run_queries(args: argparse.Namespace, crawler: Any, queries: list[dict
             args.user_data_dir,
             headless=args.headless,
             viewport=None,
+            executable_path="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             args=BROWSER_ARGS,
         )
         try:

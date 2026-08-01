@@ -11,7 +11,7 @@ Browser
   -> ECS nginx/web/api
   -> AutoDL OCR service
        -> PaddleOCR boxes, or
-       -> DeepSeek-OCR vLLM markdown OCR, or
+       -> PaddleOCR-VL-1.6 document OCR, or
        -> local GPU vision model
 ```
 
@@ -82,12 +82,12 @@ python -m pip install paddlepaddle-gpu==3.2.0 -i https://www.paddlepaddle.org.cn
 python -m pip install paddleocr
 ```
 
-For DeepSeek-OCR vLLM, start the local vLLM service on AutoDL first and set:
+For the shared policy and product-material OCR route, start PaddleOCR-VL-1.6 on AutoDL and set:
 
 ```bash
-POLICY_OCR_PROVIDER=deepseek_ocr_vllm
-POLICY_OCR_DEEPSEEK_OCR_BASE_URL=http://127.0.0.1:6008
-POLICY_OCR_DEEPSEEK_OCR_MODEL=deepseek-ai/DeepSeek-OCR
+POLICY_OCR_PROVIDER=paddleocr_vl16_autodl
+POLICY_OCR_PADDLEOCR_VL16_BASE_URL=http://127.0.0.1:6011
+POLICY_OCR_PADDLEOCR_VL16_MODEL=PaddleOCR-VL-1.6
 ```
 
 Install Unlimited-OCR as a second local model service:
@@ -108,7 +108,7 @@ POLICY_OCR_UNLIMITED_OCR_MAX_TOKENS=8192
 
 The operations platform stores scenario routing in SQLite. `policy_entry`,
 `insurance_material`, and `cash_value` can independently select Unlimited-OCR,
-DeepSeek-OCR, PaddleOCR, or the remote vision model without restarting the OCR service.
+PaddleOCR-VL-1.6, PaddleOCR, or the remote vision model without restarting the OCR service.
 
 Start OCR service:
 

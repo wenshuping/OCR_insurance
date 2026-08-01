@@ -75,3 +75,41 @@ test('product knowledge index versions publish atomically and roll back without 
   assert.equal(store.listProductFacts({ tenantId, indexVersion: 'v3' })[0].status, 'expired');
   db.close();
 });
+
+test('page approval publishes only chunks whose complete page range passed review', () => {
+  const db = new DatabaseSync(':memory:');
+  const store = createProductKnowledgeStore(db);
+  const tenantId = 'default';
+  const upload = store.createDocumentUpload({
+    tenantId, contentHash: 'page-review-test', fileName: '逐页审核.txt', bytes: Buffer.from('source'),
+  });
+  const documentId = upload.document.id;
+  store.replaceParsedArtifacts({
+    tenantId, documentId, indexVersion: 'page-candidate', documentType: 'training', facts: [],
+    pages: [
+      { pageNo: 1, rawText: '第一页内容', tables: [], headings: [] },
+      { pageNo: 2, rawText: '第二页内容', tables: [], headings: [] },
+    ],
+    chunks: [
+      { id: 'page-one', canonicalProductId: 'product-1', chunkType: 'child', pageStart: 1, pageEnd: 1, content: '仅第一页知识', contentHash: 'page-one', indexStatus: 'ready' },
+      { id: 'cross-page', canonicalProductId: 'product-1', chunkType: 'child', pageStart: 1, pageEnd: 2, content: '跨两页知识', contentHash: 'cross-page', indexStatus: 'ready' },
+    ],
+  });
+
+  store.saveDocumentPageReview({ tenantId, documentId, indexVersion: 'page-candidate', pageNo: 1, status: 'passed' });
+  let chunks = store.listDocumentChunks({ tenantId, documentId, indexVersion: 'page-candidate' });
+  assert.equal(chunks.find((chunk) => chunk.payload.sourceChunkId === 'page-one').reviewStatus, 'published');
+  assert.equal(chunks.find((chunk) => chunk.payload.sourceChunkId === 'cross-page').reviewStatus, 'pending');
+  assert.equal(store.searchChunks({ tenantId, query: '第一页知识' }).length, 1);
+  assert.equal(store.searchChunks({ tenantId, query: '跨两页知识' }).length, 0);
+
+  store.saveDocumentPageReview({ tenantId, documentId, indexVersion: 'page-candidate', pageNo: 2, status: 'passed' });
+  chunks = store.listDocumentChunks({ tenantId, documentId, indexVersion: 'page-candidate' });
+  assert.equal(chunks.find((chunk) => chunk.payload.sourceChunkId === 'cross-page').reviewStatus, 'published');
+  assert.equal(store.searchChunks({ tenantId, query: '跨两页知识' }).length, 1);
+
+  store.saveDocumentPageReview({ tenantId, documentId, indexVersion: 'page-candidate', pageNo: 1, status: 'needs_correction' });
+  assert.equal(store.searchChunks({ tenantId, query: '第一页知识' }).length, 0);
+  assert.equal(store.searchChunks({ tenantId, query: '跨两页知识' }).length, 0);
+  db.close();
+});

@@ -29,6 +29,10 @@ function isExpenseReimbursementText(value = '') {
   return /医疗费用|实际合理医疗费用|实际合理[^。；;，,]{0,20}费用|实际[^。；;，,]{0,20}费用|免赔额|报销|补偿/u.test(value);
 }
 
+function isPolicyAnniversaryBasicAmount(value = '') {
+  return /保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(normalizeText(value));
+}
+
 export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculation-inputs';
 
 export function requiredCalculationInputsForMeta(meta = {}) {
@@ -70,6 +74,11 @@ function numericSpec(indicator = {}) {
     indicator.valueText,
     indicator.sourceExcerpt,
   ].filter(Boolean).join(' '));
+  const ratioValues = new Set(
+    [...text.matchAll(/(\d+(?:\.\d+)?)\s*(%|％|倍)/gu)]
+      .map((match) => `${Number(match[1])}:${match[2] === '％' ? '%' : match[2]}`),
+  );
+  if (ratioValues.size > 1) return { value: null, unit };
   const factor = text.match(/[×xX*]\s*(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
     || text.match(/(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u);
   if (factor) return { value: Number(factor[1]), unit: factor[2] === '％' ? '%' : factor[2] };
@@ -121,7 +130,9 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   }
 
   let basisKey = '';
-  if (/现金价值|现价/u.test(formulaSignalText)) {
+  if (isPolicyAnniversaryBasicAmount(text)) {
+    basisKey = 'policy_anniversary_basic_amount';
+  } else if (/现金价值|现价/u.test(formulaSignalText)) {
     basisKey = 'cash_value';
   } else if (/账户价值|账户余额|个人账户|公共账户|账户|帐户/u.test(formulaSignalText)) {
     basisKey = 'account_value';
@@ -133,6 +144,8 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(formulaSignalText)) {
     basisKey = 'daily_allowance';
+  } else if (isPolicyAnniversaryBasicAmount(formulaSignalText)) {
+    basisKey = 'policy_anniversary_basic_amount';
   } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(formulaSignalText || basis)) {
@@ -151,6 +164,8 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(basis || formulaText)) {
     basisKey = 'daily_allowance';
+  } else if (isPolicyAnniversaryBasicAmount(text)) {
+    basisKey = 'policy_anniversary_basic_amount';
   } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(text)) {
@@ -176,6 +191,10 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey = basisKey;
     calculationEligible = false;
     calculationReason = '依赖现金价值或账户价值，不能只靠指标和保单基础字段计算';
+  } else if (basisKey === 'policy_anniversary_basic_amount') {
+    calculationKey = 'schedule_or_policy_table';
+    calculationEligible = false;
+    calculationReason = '给付基数为对应保单生效日的基本责任保险金额；分红型增额红利会使各年度金额变化，需按该年度保额/红利记录核算';
   } else if (basisKey === 'schedule_or_policy_table') {
     calculationKey = 'schedule_or_policy_table';
     calculationEligible = false;

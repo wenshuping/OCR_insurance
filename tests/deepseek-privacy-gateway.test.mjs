@@ -2,9 +2,21 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildDeepSeekChatCompletionsUrl,
   redactDeepSeekDirectIdentifiers,
   sanitizeDeepSeekRequestBody,
 } from '../server/deepseek-privacy-gateway.mjs';
+
+test('DeepSeek chat URL preserves configurable base paths', () => {
+  assert.equal(
+    buildDeepSeekChatCompletionsUrl('https://ws.example/compatible-mode/v1'),
+    'https://ws.example/compatible-mode/v1/chat/completions',
+  );
+  assert.equal(
+    buildDeepSeekChatCompletionsUrl('https://api.deepseek.com/'),
+    'https://api.deepseek.com/chat/completions',
+  );
+});
 
 test('DeepSeek privacy gateway removes direct identifiers but preserves insurance facts', () => {
   const original = '王小明，手机号138 1234 5678，地址：浙江省杭州市西湖区文三路88号2幢501室，38岁，甲状腺结节3级，每年预算2万元，保额100万元。';

@@ -8,6 +8,9 @@ function result(code, status, message) {
 
 function assessChunk(chunk, duplicateHashes) {
   const content = text(chunk?.content);
+  const confidence = chunk?.payload?.confidence && typeof chunk.payload.confidence === 'object'
+    ? chunk.payload.confidence
+    : null;
   const checks = [];
   if (!content) checks.push(result('empty_content', 'blocked', '切片内容为空'));
   if (!Number(chunk?.pageStart) || !Number(chunk?.pageEnd)) {
@@ -21,6 +24,11 @@ function assessChunk(chunk, duplicateHashes) {
   }
   if (chunk?.ocrConfidence != null && Number(chunk.ocrConfidence) < 0.7) {
     checks.push(result('low_ocr_confidence', 'warning', '切片OCR置信度低于0.7'));
+  }
+  if (confidence?.decision === 'blocked') {
+    checks.push(result('low_critical_fact_confidence', 'blocked', '切片中的关键数字或保险事实识别置信度不足'));
+  } else if (confidence?.decision === 'review_required') {
+    checks.push(result('evidence_confidence_review_required', 'warning', '切片识别置信度需要人工复核'));
   }
   const hash = text(chunk?.contentHash);
   if (text(chunk?.chunkType) !== 'parent' && hash && duplicateHashes.has(hash)) {
@@ -44,12 +52,12 @@ export function assessProductChunksQuality(chunks = []) {
         quality: {
           decision: blocked ? 'blocked' : warning ? 'review_required' : 'pass',
           checks,
-          qualityRuleVersion: 'product-chunk-quality-v1',
+          qualityRuleVersion: 'product-chunk-quality-v2',
         },
       },
     };
   });
   const blockedChunkCount = assessedChunks.filter((chunk) => chunk.indexStatus === 'blocked').length;
   const reviewChunkCount = assessedChunks.filter((chunk) => chunk?.payload?.quality?.decision === 'review_required').length;
-  return { chunks: assessedChunks, blockedChunkCount, reviewChunkCount, qualityRuleVersion: 'product-chunk-quality-v1' };
+  return { chunks: assessedChunks, blockedChunkCount, reviewChunkCount, qualityRuleVersion: 'product-chunk-quality-v2' };
 }

@@ -4,13 +4,17 @@ import { assessProductChunksQuality } from './product-chunk-quality.service.mjs'
 import { annotateProductChunks } from './product-chunk-semantics.service.mjs';
 import { chunkProductDocument } from './product-chunker.service.mjs';
 import { applyChunkCorrectionOperations } from './product-document-correction.service.mjs';
+import { cleanProductDocumentPages } from './product-document-cleaning.service.mjs';
 import { parseProductDocument } from './product-document-parser.service.mjs';
+import { renderProductDocumentPages } from './product-document-preview.service.mjs';
 import { assessProductDocumentQuality } from './product-document-quality.service.mjs';
 import {
   annotatePagesWithSourceElements,
   attachChunkSourceRegions,
 } from './product-document-source-elements.service.mjs';
+import { aggregateProductEvidenceConfidence } from './product-evidence-confidence.service.mjs';
 import { extractProductFactCandidates } from './product-fact-extractor.service.mjs';
+import { enrichPptxWithPaddleVisual } from './product-slide-visual-ingestion.service.mjs';
 
 function text(value) {
   return String(value ?? '').trim();
@@ -105,6 +109,24 @@ function correctionOperationsForSourceChunks(corrections = [], storedChunks = []
   }));
 }
 
+function pagesForKnowledgeProcessing(cleaning = {}) {
+  return (Array.isArray(cleaning.pages) ? cleaning.pages : []).map((page) => ({
+    ...page,
+    originalRawText: page.rawText,
+    rawText: page.cleanedText,
+    layout: {
+      ...(page?.layout && typeof page.layout === 'object' && !Array.isArray(page.layout) ? page.layout : {}),
+      cleaning: {
+        version: text(cleaning.cleaningVersion),
+        decision: text(page.cleaningDecision),
+        cleanedText: text(page.cleanedText),
+        includedElementIds: Array.isArray(page.includedElementIds) ? page.includedElementIds : [],
+        excludedElementIds: Array.isArray(page.excludedElementIds) ? page.excludedElementIds : [],
+      },
+    },
+  }));
+}
+
 export function createProductIngestionService(options = {}) {
   const store = options.store;
   const parseDocument = options.parseDocument || parseProductDocument;
@@ -116,6 +138,10 @@ export function createProductIngestionService(options = {}) {
   const assessChunksQuality = options.assessChunksQuality || assessProductChunksQuality;
   const extractFacts = options.extractFacts || extractProductFactCandidates;
   const recognizeDocumentText = options.recognizeDocumentText;
+  const parseProductPageVisual = options.parseProductPageVisual;
+  const reconstructProductSlide = options.reconstructProductSlide;
+  const renderDocumentPages = options.renderDocumentPages
+    || ((document) => renderProductDocumentPages(document, { dpi: 180 }));
 
   async function ingestDocument(input = {}) {
     const tenantId = text(input.tenantId) || 'default';
@@ -161,16 +187,29 @@ export function createProductIngestionService(options = {}) {
           ocrText,
         });
       }
+      if (text(document.extension).toLowerCase() === 'pptx') {
+        store.updateIngestionJob({ tenantId, jobId: job.id, status: 'processing', currentStep: 'paddle_vl16_visual_extracting' });
+        parsedResult = await enrichPptxWithPaddleVisual({
+          document,
+          parsed: parsedResult,
+          renderPages: renderDocumentPages,
+          parsePage: parseProductPageVisual,
+          reconstructPage: reconstructProductSlide,
+        });
+      }
       const parsed = {
         ...parsedResult,
         pages: annotatePagesWithSourceElements(parsedResult.pages),
       };
-      const documentQuality = assessDocumentQuality({ document, parsed });
+      const cleaning = cleanProductDocumentPages(parsed.pages);
+      const processingPages = pagesForKnowledgeProcessing(cleaning);
+      const processed = { ...parsed, pages: processingPages };
+      const documentQuality = assessDocumentQuality({ document, parsed: processed });
       if (documentQuality.decision === 'reprocess_required') {
         throw ingestionError('PRODUCT_DOCUMENT_QUALITY_REPROCESS_REQUIRED', '产品资料质量不合格，需要重新解析', 422);
       }
       store.updateIngestionJob({ tenantId, jobId: job.id, status: 'processing', currentStep: 'detecting_products' });
-      const detection = detectBoundaries(parsed.pages);
+      const detection = detectBoundaries(processingPages);
       const annotations = document.payload && typeof document.payload === 'object' ? document.payload : {};
       const annotatedProductNames = (Array.isArray(annotations.productNames) ? annotations.productNames : [annotations.productName]).map(text).filter(Boolean);
       let ensuredProducts = [];
@@ -181,6 +220,28 @@ export function createProductIngestionService(options = {}) {
           productNames: annotatedProductNames,
         });
       }
+      const ensuredVersions = typeof store.ensureProductVersions === 'function'
+        ? store.ensureProductVersions({
+            tenantId,
+            products: ensuredProducts,
+            versionLabel: text(annotations.versionLabel),
+            filingCode: text(annotations.filingCode),
+            effectiveFrom: text(annotations.effectiveFrom),
+            effectiveTo: text(annotations.effectiveTo),
+            payload: { source: 'document_upload' },
+          })
+        : [];
+      const versionsByProductId = new Map();
+      for (const version of ensuredVersions) {
+        const productId = text(version.canonicalProductId);
+        versionsByProductId.set(productId, [...(versionsByProductId.get(productId) || []), version]);
+      }
+      ensuredProducts = ensuredProducts.map((product) => ({
+        ...product,
+        productVersionId: versionsByProductId.get(text(product.canonicalProductId))?.length === 1
+          ? text(versionsByProductId.get(text(product.canonicalProductId))[0]?.id)
+          : '',
+      }));
       const catalog = uniqueCatalog([
         ...store.listProducts({ tenantId }),
         ...(Array.isArray(input.catalogProducts) ? input.catalogProducts : []),
@@ -189,7 +250,7 @@ export function createProductIngestionService(options = {}) {
       const explicitlySelectedProduct = annotatedProductNames.length === 1
         ? ensuredProducts.find((entry) => text(entry.officialName) === annotatedProductNames[0])
         : null;
-      const pageNumbers = parsed.pages.map((page) => Number(page?.pageNo || 0)).filter((pageNo) => pageNo > 0);
+      const pageNumbers = processingPages.map((page) => Number(page?.pageNo || 0)).filter((pageNo) => pageNo > 0);
       const resolvedMatches = explicitlySelectedProduct && pageNumbers.length ? [{
         candidate: {
           company: text(explicitlySelectedProduct.company),
@@ -211,12 +272,15 @@ export function createProductIngestionService(options = {}) {
         productName: text(single?.candidate?.productName) || (annotatedProductNames.length === 1 ? annotatedProductNames[0] : ''),
         versionLabel: text(annotations.versionLabel),
         canonicalProductId: single?.autoLinkEligible ? text(topMatch?.canonicalProductId) : '',
+        productVersionId: single?.autoLinkEligible ? text(topMatch?.productVersionId) : '',
+        effectiveFrom: text(annotations.effectiveFrom),
+        effectiveTo: text(annotations.effectiveTo),
       };
       store.updateIngestionJob({ tenantId, jobId: job.id, status: 'processing', currentStep: 'chunking' });
       const rawChunks = chunkDocument({
         document: { ...document, documentType: parsed.documentType },
         product,
-        pages: parsed.pages,
+        pages: processingPages,
       });
       const corrections = typeof store.listDocumentCorrections === 'function'
         ? store.listDocumentCorrections({ tenantId, documentId, statuses: ['approved', 'applied'] })
@@ -227,19 +291,24 @@ export function createProductIngestionService(options = {}) {
       );
       const correctedChunks = applyChunkCorrectionOperations({
         chunks: rawChunks,
-        pages: parsed.pages,
+        pages: processingPages,
         operations: correctionOperations,
       });
-      const tracedChunks = attachChunkSourceRegions(correctedChunks, parsed.pages);
+      const tracedChunks = attachChunkSourceRegions(correctedChunks, processingPages);
       const semanticChunks = annotateChunks({
         document: { ...document, documentType: parsed.documentType },
         chunks: tracedChunks,
       });
-      const chunkQuality = assessChunksQuality(semanticChunks);
+      const evidenceConfidence = aggregateProductEvidenceConfidence({
+        pages: processingPages,
+        chunks: semanticChunks,
+      });
+      const chunkQuality = assessChunksQuality(evidenceConfidence.chunks);
       const links = resolvedMatches.map((entry) => {
         const match = entry.matches?.[0];
         return {
           canonicalProductId: entry.autoLinkEligible ? text(match?.canonicalProductId) : '',
+          productVersionId: entry.autoLinkEligible ? text(match?.productVersionId) : '',
           pageStart: entry.candidate.pageStart,
           pageEnd: entry.candidate.pageEnd,
           relationType: entry.candidate.relationType || 'candidate',
@@ -261,13 +330,30 @@ export function createProductIngestionService(options = {}) {
         tenantId,
         documentId,
         documentType: parsed.documentType,
-        pages: parsed.pages,
+        pages: evidenceConfidence.pages,
         chunks,
         facts,
+        cleaning: {
+          sourceParseVersion: text(parsed.parser),
+          cleaningVersion: cleaning.cleaningVersion,
+          operations: cleaning.operations,
+          summary: {
+            operationCount: cleaning.operations.length,
+            reviewPageCount: processingPages.filter((page) => page.cleaningDecision === 'review_required').length,
+          },
+        },
         payload: {
           parser: parsed.parser,
           parserWarnings: parsed.warnings,
           parserMetadata: parsed.metadata,
+          visualQuality: parsed.visualQuality,
+          cleaning: {
+            version: cleaning.cleaningVersion,
+            operationCount: cleaning.operations.length,
+            reviewPageCount: processingPages.filter((page) => page.cleaningDecision === 'review_required').length,
+          },
+          evidenceConfidenceVersion: evidenceConfidence.confidenceVersion,
+          productVersionId: text(product.productVersionId),
           documentQuality,
           chunkQuality: {
             blockedChunkCount: chunkQuality.blockedChunkCount,
@@ -304,13 +390,14 @@ export function createProductIngestionService(options = {}) {
         payload: {
           parser: parsed.parser,
           documentType: parsed.documentType,
-          pageCount: parsed.pages.length,
+          pageCount: processingPages.length,
           chunkCount: chunks.length,
           productCandidateCount: detection.candidates.length,
           sectionReviewCount,
           blockedChunkCount: chunkQuality.blockedChunkCount,
           qualityReviewChunkCount: chunkQuality.reviewChunkCount,
           documentQualityDecision: documentQuality.decision,
+          visualPageCount: Number(parsed.visualQuality?.visualPageCount || 0),
           requiresReview,
         },
       });

@@ -1,6 +1,6 @@
 ---
 name: ocr-insurance-responsibility-backfill
-description: Use when supplementing OCR_insurance insurance product responsibility data from official insurer or regulator sources into local SQLite and Feishu, or when running manual/subagent batches to create product responsibility cards and quantify insurance indicators. Applies to low-coverage insurer crawls, blank or weak responsibility repairs, product_responsibility_cards backfills, insurance_indicator_records review, policy-qa source checks, policy-liability-qa responsibility thresholds, subagent artifact imports, SQLite exact audits, Feishu parity verification, and stuck batch recovery.
+description: Use when supplementing or repairing OCR_insurance insurance product responsibility data from exact-version official insurer or regulator sources into local SQLite and Feishu, including legacy DeepSeek artifact repair, source-digest conflict protection, 403/browser/screenshot source acquisition, and low-cost model orchestration. Applies to daily-refresh handoffs, low-coverage insurer crawls, blank or weak responsibility repairs, responsibility-card backfills, indicator review, source checks, replaceable candidate-model proposal batches, capability-based conflict merges, exact audits, Feishu verification, and stuck batch recovery.
 ---
 
 # OCR Insurance Responsibility Backfill
@@ -56,6 +56,10 @@ A product-responsibility-card run is complete only when all of these are true:
 - Subagents may review official sources and write JSONL/source-cache artifacts
   only. The main thread must do all SQLite writes, Feishu writes, backups, and
   final audits serially.
+- Use `$ocr-insurance-official-source-acquisition` for every source that is not
+  already proven by an unchanged `source_ready` manifest.
+- Use `$ocr-insurance-fast-responsibility-pipeline` to route parsing and model
+  escalation. Do not send complete long documents to one model.
 - If code changes are required, follow this repo's AGENTS.md and the
   karpathy-guidelines coding standard first.
 
@@ -84,6 +88,23 @@ must include a covered event or condition and the insurer obligation, such as:
 Do not write cash-value-only text, eligibility-only text, exclusions, claim
 documents, renewal rules, underwriting questions, or isolated headings as
 responsibility text.
+
+## DeepSeek Repair Mode
+
+Use `deepseek-repair` when repairing already published legacy DeepSeek
+responsibility artifacts. This mode repairs the legacy cohort only; it is not a
+general regeneration or backfill of the current approved inventory.
+
+Read [references/deepseek-repair.md](references/deepseek-repair.md) completely
+before auditing, repairing, reviewing, or publishing this cohort.
+
+The current approved result always outranks the legacy artifact. A legacy result
+may affect a current approved product only when `sourceDigest` matches exactly
+and every gate passes; a missing or different digest is a version conflict and
+must never be overwritten. Preserve every unmappable original input in
+`unresolvedRequiredInputs` or equivalent immutable audit metadata and set
+`calculationEligible: false`; never erase its business meaning by replacing it
+only with `manualFormulaInputs`.
 
 ## Standard Workflow
 
@@ -216,8 +237,28 @@ export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
    for the current run. Split into 10-product TSV files named like
    `agent-batch-177.tsv`.
 
-3. Delegate only source review to subagents. Each subagent must:
+3. Acquire and deduplicate official sources before model work.
 
+- Reuse exact-version official materials by normalized URL and SHA-256.
+- Run the matching company crawler first.
+- Route 403/JavaScript pages through Browser/CDP/cloakbrowser and retain
+  screenshots plus official downloaded bytes.
+- Use screenshot OCR only for genuinely raster-only official sources.
+- Keep `source_blocked` and `ocr_needs_review` products out of automatic parsing.
+- Persist a source manifest per product so retries resume at the next lawful
+  route instead of repeating all methods.
+
+4. Delegate only bounded source review to low-cost model branches. Each branch
+   must:
+
+- optionally consume a cached local candidate packet keyed by source digest and
+  local model ID;
+- run only after the official responsibility inventory and section boundaries
+  are locked;
+- consume bounded responsibility packets identified by stable responsibility
+  ID, source digest, and exact offsets;
+- receive only the responsibility section, applicable shared clauses,
+  continuations, and directly referenced definitions/tables;
 - read the single-product responsibility skill plus `policy-qa` and
   `policy-liability-qa`;
 - use official insurer/regulator material only;
@@ -227,7 +268,27 @@ export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
 - write source caches only under the run directory;
 - not write SQLite, not write Feishu, and not change code.
 
-4. Require each JSONL row to include:
+5. Merge proposals economically.
+
+- Extract coverage facts and calculation structure independently, then generate
+  customer wording only from validated structured facts.
+- For high-throughput parsing, retain the old bounded batch architecture and
+  treat DeepSeek and Gemini as replaceable extraction providers. Do not change
+  the deterministic canonicalizer or validator when switching providers.
+- Write model `402`, `401/403`, `429`, and upstream failures to a model retry
+  cohort; write insurer PDF/browser/OCR failures to a source retry cohort.
+  Resume only the failed cohort and never rerun already approved products.
+- Programmatically auto-merge each responsibility when inventory, exact spans,
+  numbers, formula branches, table rows, and canonical fields pass.
+- Use the configured verifier model only for failed responsibility packets with
+  unresolved ownership, branch scope, or semantic interpretation.
+- Use the configured high-capability reviewer only after verification leaves an
+  unresolved semantic or package-boundary issue.
+- Route missing/truncated pages, unreadable OCR, version uncertainty, and broken
+  tables to source repair.
+- Never retry the same model repeatedly with unchanged evidence.
+
+6. Require each JSONL row to include:
 
 - `batchNo`, `inputRowIndex`, `company`, `productName`, `sourceRecords`;
 - `acceptedResponsibilities` with customer-facing `customerSummary`,
@@ -241,7 +302,7 @@ export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
   reason, metadata version, treatment, formula, source URL, source excerpt, and
   accepted manual review status.
 
-5. Before importing, run an artifact audit. Fail the batch if:
+7. Before importing, run an artifact audit. Fail the batch if:
 
 - any JSONL line is invalid or out of TSV order;
 - accepted count differs from recommended DB write count;
@@ -251,15 +312,20 @@ export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
 - an accepted item lacks liability, customer summary, trigger, obligation,
   official URL, or source excerpt;
 - an unselected optional responsibility is written as selected.
+- any `requiredInputs` value is outside the canonical project dictionary;
+- `basis` describes only a trigger rather than the formula basis;
+- a numeric limit, percentage, boundary, or important limit lacks exact official
+  evidence;
+- a final excerpt contains an extraction-only page marker.
 
-6. Back up SQLite before each import:
+8. Back up SQLite before each import:
 
 ```bash
 sqlite3 .runtime/local/policy-ocr.sqlite \
   "VACUUM INTO '$RUN_DIR/policy-ocr-before-agents-177-180.sqlite';"
 ```
 
-7. Import only after the artifact audit passes:
+9. Import only after the artifact audit passes:
 
 ```bash
 node scripts/import-reviewed-responsibility-artifacts.mjs \
@@ -268,7 +334,7 @@ node scripts/import-reviewed-responsibility-artifacts.mjs \
   --write --sample-limit=12
 ```
 
-8. Run the exact audit immediately after import. For every product in the
+10. Run the exact audit immediately after import. For every product in the
    artifacts, compare sorted accepted liability names to sorted DB card titles
    and sorted accepted manual indicator liabilities. The batch is not complete
    until:
@@ -278,26 +344,31 @@ rawAccepted == totalCards == totalAcceptedIndicators
 issueCount == 0
 ```
 
-9. If import counts disagree, stop and diagnose before continuing. Common causes
+11. If import counts disagree, stop and diagnose before continuing. Common causes
    are local standardization rules hiding valid cards, merging similar titles, or
    leaving stale display-only cards. Fix narrowly, add a focused regression test,
    rerun the affected import, then rerun exact audit. Example: a full liability
    title ending in `年金` must not be filtered only because it contains `增额`;
    `增额/利率` can be a parameter, but `保证给付十年增额终身年金` is a card.
 
-10. Verify after every imported group:
+12. Verify after every imported group:
 
 ```bash
 node --test tests/materialize-product-responsibility-cards.test.mjs
 npm run check
 ```
 
-11. Report separate statuses:
+13. Report separate statuses:
 
 - artifact review result: products, accepted responsibilities, blockers, and
   zero-accepted products;
 - SQLite result: cards, indicators, exact audit result, backup path;
 - Feishu result: synced or not synced, with readback evidence if synced;
+- acquisition result: cache hits, direct successes, browser successes,
+  screenshot OCR, blocked products, and next retry route;
+- model result: first-pass products, verifier escalations,
+  high-capability-review escalations, deterministic failures, and actual
+  provider/model IDs used for each role.
 - remaining uncovered products from the active development database.
 
 ## Stuck Batch Handling

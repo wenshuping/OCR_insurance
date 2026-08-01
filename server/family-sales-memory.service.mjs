@@ -1,5 +1,5 @@
 import { jsonrepair } from 'jsonrepair';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MEMORY_MODEL = 'deepseek-v4-flash';
@@ -201,7 +201,7 @@ export async function extractFamilySalesMemories({
     } else {
       body.temperature = 0;
     }
-    const response = await fetchImpl(new URL('/chat/completions', config.baseUrl), {
+    const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(config.baseUrl), {
       method: 'POST',
       signal: controller.signal,
       headers: {

@@ -134,6 +134,7 @@ test('sales champion decides when to call the insurance expert for product facts
   assert.equal(expertCalls[0].context.intent, 'insurance_product_knowledge');
   assert.deepEqual(expertCalls[0].context.queryAspects, ['renewal']);
   assert.equal(received.salesTurn.selection.primary.key, 'plain_language_explanation');
+  assert.equal(Array.isArray(received.salesTurn.trainingPacks), true);
   assert.deepEqual(received.salesTurn.insuranceNeedResults, [{ type: 'product_facts', status: 'verified' }]);
   assert.deepEqual(received.insuranceExpertEvidence, [{
     status: 'verified',
@@ -176,6 +177,43 @@ test('sales champion calls the insurance expert for an authorized family coverag
   assert.equal(received.insuranceExpertEvidence[0].answer, '已核验家庭保障缺口。');
 });
 
+test('sales champion passes unresolved skill boundaries to the existing sales executor', async () => {
+  const question = '第一次接触这个老保单客户，不清楚之前是谁服务的。';
+  let received;
+  const tool = createSalesChampionTool({
+    interpretTurn: async () => salesProposal(question, {
+      stage: { value: 'post_sale', confidence: 0.93 },
+      concerns: [{ type: 'unknown', priority: 'primary', confidence: 0.9 }],
+      missingInformation: ['customer_relationship_origin'],
+      proposedCapabilities: ['needs_discovery'],
+      situations: [],
+    }),
+    execute(_action, context) { received = context; return result(); },
+  });
+
+  await tool.askSalesChampionTool({ context: {
+    internalUserId: 7,
+    familyId: 9,
+    intent: 'sales_coaching',
+    question,
+  } });
+
+  assert.equal(received.salesTurn.trainingPacks.some(
+    (pack) => pack.key === 'serve_orphan_policy_before_selling',
+  ), false);
+  assert.deepEqual(received.salesTurn.boundaryCandidates.map((candidate) => ({
+    key: candidate.key,
+    mappingStatus: candidate.mappingStatus,
+    confirmationSlots: candidate.confirmationSlots,
+    unknownFallback: candidate.unknownFallback,
+  })), [{
+    key: 'serve_orphan_policy_before_selling',
+    mappingStatus: 'needs_confirmation',
+    confirmationSlots: ['customer_relationship_origin'],
+    unknownFallback: 'generic_service_first',
+  }]);
+});
+
 test('sales champion does not call the insurance expert when products are only background', async () => {
   const question = '客户五十多岁，提到买过几份保险，比较在意养老，我怎么跟进？';
   let expertCalled = false;
@@ -192,8 +230,16 @@ test('sales champion does not call the insurance expert when products are only b
 
   assert.equal(expertCalled, false);
   assert.equal(executeCalled, false);
-  assert.match(output.interaction.text, /现在属于需求发现阶段/u);
-  assert.match(output.interaction.text, /不急着谈新产品/u);
+  assert.match(output.interaction.text, /下一步只做一件事/u);
+  assert.match(output.interaction.text, /先不急着给您推荐东西/u);
+  assert.equal(output.provenance.trainingPacks[0], 'advance_relationship_by_stage');
+  assert.equal(output.provenance.trainingPacks.includes('diagnose_problem_before_product'), true);
+  assert.deepEqual(output.provenance.evidenceRefs, [
+    'douyin:cheng-jiye:7617439313277553955',
+    'douyin:cheng-jiye:7630848003833711872',
+    'douyin:cheng-jiye:7621478600243432739',
+    'douyin:cheng-jiye:7630847723284991247',
+  ]);
   assert.equal(output.provenance.skill, 'needs_discovery');
 });
 

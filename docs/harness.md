@@ -77,7 +77,7 @@ The full gate now starts with a non-mutating harness audit:
 npm run harness:audit
 ```
 
-The audit checks production-sensitive changed paths, required harness execution points, focused test mappings in `docs/harness-test-map.json`, read-only optional responsibility data quality in the development SQLite database, and scripts that default to the production SQLite path.
+The audit checks production-sensitive changed paths, required harness execution points, focused test mappings in `docs/harness-test-map.json`, Skill changes under `.agents/skills/`, read-only optional responsibility data quality in the development SQLite database, and scripts that default to the production SQLite path.
 
 Run all tests with:
 
@@ -324,6 +324,68 @@ When changing any of these areas, look for the closest focused test and run it w
 - local stack scripts or ports
 
 For mapped high-risk files, `npm run harness:audit` runs the focused tests automatically before the broader quality gate. Add new mappings to `docs/harness-test-map.json` when a new domain file or test area becomes part of a high-risk workflow.
+
+## Insurance Agent Routing Guardrails
+
+For DingTalk and other conversational channels, keep semantic understanding separate from professional insurance execution:
+
+- Current DingTalk Agent flow is a protected harness boundary:
+
+```text
+DingTalk raw user message
+  -> verified DingTalk identity and conversation context load
+  -> Hermes / semantic interpreter or controlled outage handling
+  -> conversation runtime context grounding
+  -> policy router authorization and domain dispatch
+  -> insurance expert / sales champion / confirmation handler
+  -> channel renderer
+  -> confirmed context commit
+```
+
+- Candidate replies such as `1`, `2`, or `3` are user messages with conversation context. They must be treated as semantic candidate-selection input tied to a stored, non-expired candidate set, not as ad-hoc product-name rewrites scattered through channel adapters.
+- The current compatibility path may preserve production behavior while the semantic resolver migration is unfinished, but any change to Hermes, the interpreter, conversation runtime, conversation context, DingTalk gateway, policy router, product knowledge handler, or their tests must remain mapped in `docs/harness-test-map.json`.
+- `npm run harness:audit` hard-fails if the current DingTalk/Hermes conversation path is not fully covered by the `hermes-question-routing` focused test mapping. Do not remove a mapped file or focused command without replacing it with an equivalent boundary test.
+- A future semantic-resolver implementation may move candidate-selection restoration out of compatibility code, but the harness contract remains the same: raw user input first enters semantic/context resolution; domain handlers receive only resolved, authorized entities and the preserved user question intent.
+- Insurance expert and sales champion must evolve as skill-orchestrated domain agents, not as scattered phrase rules in the channel or router layer:
+  - Insurance expert skill orchestration covers product knowledge, responsibility evidence, source resolution, planner/template selection, responsibility card normalization, and quality gates. Product facts, responsibility details, exclusions, waiting periods, renewal rules, and fact-based comparisons must stay evidence-backed and tested through `insurance-expert-skill-orchestration`.
+  - Sales champion skill orchestration covers sales-stage interpretation, readiness gates, skill registry selection, shadow interpreter/router audit, sales memory, turn contract validation, and final sales response generation. Customer objections, suitability, recommendations, and sales language must stay in this domain path and be tested through `sales-champion-skill-orchestration`.
+  - A skill may be implemented as code-backed domain capability, a versioned registry item, or a reviewed prompt/template, but it must have a bounded input/output contract, explicit prerequisites, anti-triggers, evidence requirements, and focused tests.
+  - Routers and DingTalk adapters may select or call the appropriate domain agent; they must not duplicate the insurance expert's responsibility reasoning or the sales champion's sales strategy locally.
+- `npm run harness:audit` hard-fails if either skill-orchestration mapping is missing required files or focused commands.
+- Hermes or the direct language-model interpreter owns conversational intent recognition, context reference resolution, and customer-facing clarification. Professional agents own domain analysis and answer generation. Routers and channel adapters only orchestrate these roles; they must not reproduce professional reasoning locally.
+- Model the stable business capability, not the customer's possible wording. Do not add a new enum, intent, field, regular expression, or conditional branch for every recommendation wording, customer profile, budget, product category, synonym, follow-up phrase, or example scenario.
+- Contract facts, insurance responsibilities, exclusions, waiting periods, claims rules, product facts, and fact-based product comparisons route to the insurance expert.
+- Customer-needs analysis, product selection or recommendation, suitability, configuration, product advantages, sales strategy, and sales language route to the sales champion. These rules apply generically; do not hard-code a particular product, age, budget, or example question.
+- A product mentioned earlier may be restored only when the current message names it or clearly refers to it, such as “这个产品” or “刚才那款”. An open recommendation must not silently inherit the previous product.
+- Context grounding must be generic and evidence-based: distinguish entities explicitly present in the current message from entities restored through a clear reference. Do not infer that every follow-up belongs to the latest product, family, policy, or report.
+- Service-side patterns may provide a conservative fallback only when model interpretation is unavailable. They must not replace model-based semantic classification, become an expanding phrase dictionary, select a specific product, or generate professional insurance conclusions.
+- Before adding a hard-coded business-semantic rule, first fix the responsible layer: model instructions or schema for understanding failures, insurance-expert strategy for insurance analysis failures, sales-champion strategy for recommendation or sales failures, and renderer/channel contracts for presentation failures.
+- A hard-coded rule is acceptable only for deterministic protocol, authorization, safety, validation, bounded normalization, or outage fallback behavior. The change must document why a model or professional agent cannot safely own it and include a regression test at the architectural boundary.
+- Hermes must not rewrite, summarize, or truncate the professional agent's answer. Preserve the professional agent's structured response, cards, evidence, and source citations for channel rendering.
+
+When changing this flow, include focused tests for model classification, context grounding, professional-agent routing, provider-failure fallback, and preservation of structured output. Test semantic classes with varied wording; do not make a single example sentence the implementation contract.
+
+## Integration Worktree and Batch Gate
+
+The normal harness checks the current worktree's code. It does not decide which worktree is allowed to feed a batch. That is a separate integration gate:
+
+```bash
+npm run harness:integration
+npm run harness:integration-manifest -- --output /absolute/path/to/batch-manifest.json --source-manifest /absolute/path/to/source-manifest.json
+npm run harness:batch-gate -- --manifest /absolute/path/to/batch-manifest.json
+```
+
+The integration gate uses `docs/integration-harness.json` as the source of truth and requires:
+
+- commands that prepare or run a batch to execute from `.worktrees/dev-agent-semantic-integration`;
+- the exact branch `codex/dev-agent-semantic-integration`;
+- a clean canonical worktree with no uncommitted or untracked code or Skill files;
+- every required Skill entrypoint to exist and be hashed in the canonical worktree;
+- a batch manifest bound to the canonical commit and Skill manifest before a batch gate can pass.
+
+The batch manifest must use `ocr-insurance-batch-manifest/v1` and contain `canonicalWorktree`, `canonicalBranch`, `codeCommit`, `skillManifestSha256`, and the exact `skills` list. If it carries `sourceManifestPath`, it must also carry the matching `sourceManifestSha256`. A changed code commit, Skill, source manifest, branch, or worktree invalidates the batch gate; do not repair the manifest in place.
+
+Feature windows may remain on separate branches/worktrees. They must be merged into the canonical integration worktree first. SOURCE, FIRST_PARSE, MODEL, REVIEW, and IMPORT windows must consume the resulting immutable batch manifest rather than whichever directory happens to be open in another window.
 
 ## OCR Optional Responsibility Guardrails
 

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 import { buildKnowledgeSearchArtifacts } from './policy-knowledge.service.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
@@ -2511,7 +2511,7 @@ async function requestPolicyAnalysis({ config, model, messages, fetchImpl, optio
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const url = new URL('/chat/completions', config.baseUrl);
+    const url = buildDeepSeekChatCompletionsUrl(config.baseUrl);
     const body = {
       model,
       max_tokens: options.maxTokens ?? DEFAULT_ANALYSIS_MAX_TOKENS,

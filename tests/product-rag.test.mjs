@@ -3,6 +3,32 @@ import test from 'node:test';
 
 import { createProductRagService } from '../server/product-rag.service.mjs';
 
+test('product RAG forwards product version and as-of date as hard search filters', () => {
+  const searchInputs = [];
+  const service = createProductRagService({
+    store: {
+      searchChunks(input) {
+        searchInputs.push(input);
+        return [];
+      },
+      getChunksByIds() { return []; },
+      listProductFacts() { return []; },
+    },
+  });
+
+  service.retrieve({
+    tenantId: 'default',
+    query: '等待期多久',
+    canonicalProductId: 'product-1',
+    productVersionId: 'version-2026',
+    asOfDate: '2026-07-18',
+  });
+
+  assert.ok(searchInputs.length > 0);
+  assert.equal(searchInputs.every((input) => input.productVersionId === 'version-2026'), true);
+  assert.equal(searchInputs.every((input) => input.asOfDate === '2026-07-18'), true);
+});
+
 test('product RAG preserves a matched table instead of replacing it with flattened parent text', () => {
   const table = {
     id: 'table-1',
@@ -31,6 +57,104 @@ test('product RAG preserves a matched table instead of replacing it with flatten
   assert.equal(result.evidenceChunks.length, 1);
   assert.equal(result.evidenceChunks[0].chunkId, 'table-1');
   assert.match(result.evidenceChunks[0].content, /电话咨询 \| 1次\/年 \| √/u);
+});
+
+test('product RAG keeps a cross-page child when its parent does not cover the full page range', () => {
+  const child = {
+    id: 'child-cross-page',
+    tenantId: 'default',
+    documentId: 'doc-1',
+    parentChunkId: 'parent-page-1',
+    chunkType: 'child',
+    content: '被保险人身故，我们按保险金额给付。\n给付后本合同终止。',
+    contextualPrefix: '',
+    tokenCount: 20,
+    pageStart: 1,
+    pageEnd: 2,
+    sourceAuthority: 'insurer_official',
+    reviewStatus: 'published',
+  };
+  const incompleteParent = {
+    ...child,
+    id: 'parent-page-1',
+    chunkType: 'parent',
+    content: child.content,
+    tokenCount: 20,
+    pageEnd: 1,
+  };
+  const service = createProductRagService({
+    store: {
+      searchChunks() { return [child]; },
+      getChunksByIds() { return [incompleteParent]; },
+    },
+  });
+
+  const result = service.retrieve({ tenantId: 'default', query: '身故后合同是否终止' });
+  assert.equal(result.evidenceChunks.length, 1);
+  assert.equal(result.evidenceChunks[0].chunkId, 'child-cross-page');
+  assert.match(result.evidenceChunks[0].content, /给付后本合同终止/u);
+  assert.equal(result.evidenceChunks[0].pageEnd, 2);
+});
+
+test('product RAG keeps a child when its parent page range covers but does not contain the match', () => {
+  const child = {
+    id: 'child-1', tenantId: 'default', documentId: 'doc-1', parentChunkId: 'parent-1', chunkType: 'child',
+    content: '给付后本合同终止。', contextualPrefix: '', tokenCount: 9,
+    pageStart: 2, pageEnd: 2, sourceAuthority: 'insurer_official', reviewStatus: 'published',
+  };
+  const unrelatedParent = {
+    ...child, id: 'parent-1', chunkType: 'parent', content: '第二条 保险责任\n被保险人身故。', tokenCount: 20,
+    pageStart: 1, pageEnd: 2,
+  };
+  const service = createProductRagService({
+    store: {
+      searchChunks() { return [child]; },
+      getChunksByIds() { return [unrelatedParent]; },
+    },
+  });
+
+  const result = service.retrieve({ tenantId: 'default', query: '身故后合同是否终止' });
+  assert.equal(result.evidenceChunks[0].chunkId, 'child-1');
+  assert.equal(result.evidenceChunks[0].content, '给付后本合同终止。');
+});
+
+test('product RAG replaces a child only with a parent that covers and contains it', () => {
+  const child = {
+    id: 'child-cross-page',
+    tenantId: 'default',
+    documentId: 'doc-1',
+    parentChunkId: 'parent-section',
+    chunkType: 'child',
+    content: '给付后本合同终止。',
+    contextualPrefix: '',
+    tokenCount: 9,
+    pageStart: 2,
+    pageEnd: 2,
+    sourceAuthority: 'insurer_official',
+    reviewStatus: 'published',
+  };
+  const sectionParent = {
+    ...child,
+    id: 'parent-section',
+    chunkType: 'parent',
+    content: '第二条 保险责任\n被保险人身故，我们按保险金额给付。\n给付后本合同终止。',
+    tokenCount: 35,
+    pageStart: 1,
+    pageEnd: 2,
+  };
+  const service = createProductRagService({
+    store: {
+      searchChunks() { return [child]; },
+      getChunksByIds() { return [sectionParent]; },
+    },
+  });
+
+  const result = service.retrieve({ tenantId: 'default', query: '身故后合同是否终止' });
+  assert.equal(result.evidenceChunks.length, 1);
+  assert.equal(result.evidenceChunks[0].chunkId, 'parent-section');
+  assert.equal(result.evidenceChunks[0].matchedChunkId, 'child-cross-page');
+  assert.equal(result.evidenceChunks[0].pageStart, 1);
+  assert.equal(result.evidenceChunks[0].pageEnd, 2);
 });
 
 test('product RAG searches business topics instead of repeating a bound product name', () => {

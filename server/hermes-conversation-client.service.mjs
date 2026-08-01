@@ -143,6 +143,7 @@ function promptFor({ question, safeRecentContext }) {
     '“他、它、这个产品、上述产品”等指代只放入 references，不得猜测或编造规范产品名、公司名、家庭名。',
     '凡是保险产品、条款、责任、理赔、核保、保单、保障分析或产品比较等专业问题，必须归入最匹配的保险专业意图；产品类或无法再细分的保险专业问题使用 insurance_product_knowledge，不得归入 chat。',
     '凡是客户需求分析、产品推荐、销售方案、沟通话术、异议处理或成交辅导等销售专业问题，使用 sales_coaching，不得归入 chat。',
+    '同一问题同时要求保险事实核验和销售表达时，保险事实核验优先，归入最匹配的保险专业意图；不得用 sales_coaching 代替保险事实核验。',
     'chat 只用于不需要保险知识或销售判断的普通寒暄和一般交流。',
     '保险结论将由受控保险专家工具核验，你不得凭记忆补充责任、金额、销售状态或来源。',
     `SAFE_RECENT_CONTEXT=${JSON.stringify(history)}`,

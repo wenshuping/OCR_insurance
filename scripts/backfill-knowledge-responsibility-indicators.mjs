@@ -93,6 +93,7 @@ const PAID_PREMIUM_PATTERN = '已\\s*交(?:\\s*纳)?(?:保险费|保费)|累计�
 function canonicalAmountBasis(rawBasis, context = '') {
   const basis = normalizeSpaces(rawBasis);
   const compact = normalizeSpaces(context).replace(/\s+/gu, '');
+  if (/保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(compact)) return '保单生效对应日基本责任保险金额';
   if (/基本保险金额(?:与|和)累积红利保险金额(?:二者)?之和/u.test(compact)) return '有效保险金额';
   return basis;
 }
@@ -933,7 +934,9 @@ export function formulaFor(liability, sectionText) {
     if (amountPercentBeforeLiability?.[1] && amountPercentBeforeLiability?.[2] && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
       const percentValue = Number(amountPercentBeforeLiability[2]);
       if (Number.isFinite(percentValue) && percentValue > 0) {
-        const basis = /基本责任.{0,18}保险金额/u.test(leadWindow) && amountPercentBeforeLiability[1] !== '有效保险金额'
+        const basis = /保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(compactLeadWindow)
+          ? '保单生效对应日基本责任保险金额'
+          : /基本责任.{0,18}保险金额/u.test(leadWindow) && amountPercentBeforeLiability[1] !== '有效保险金额'
           ? '基本责任保险金额'
           : canonicalAmountBasis(amountPercentBeforeLiability[1], leadWindow);
         return {

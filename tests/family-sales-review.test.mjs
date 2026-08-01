@@ -378,6 +378,9 @@ test('family sales chat prompt uses privacy-safe context and restores display na
   assert.match(prompt, /sourceUpdated=true/);
   assert.match(prompt, /客户说预算不够怎么办/);
   assert.match(prompt, /帮我改成微信话术/);
+  assert.match(prompt, /信息不完整.*直说下一步怎么跟.*可立即执行的动作或话术/u);
+  assert.match(prompt, /补充信息只能放在已有建议之后.*低成本短事实可以合并.*高成本资料一次只问一项/u);
+  assert.match(prompt, /不得只输出问题清单、资料清单/u);
   assert.doesNotMatch(prompt, /张三|李四|张三家庭|110101198606141234|110101198812016543/);
   assert.match(prompt, /\{\{member_1\}\}/);
   assert.match(prompt, /\{\{id_number_1\}\}/);
@@ -439,7 +442,7 @@ test('family sales chat answers identity questions as insurance marketing expert
   assert.doesNotMatch(reply.content, /DeepSeek|deepseek|大模型/u);
 });
 
-test('open sales coaching keeps the full customer narrative and requires a complete customer profile', () => {
+test('open sales coaching keeps the full customer narrative without demanding a complete profile', () => {
   const question = '客户五十多岁，是普通职员，估计月收入七八千，夫妻分居，在杭州租房且没有孩子，已有新华保险康建华尊和平安年金险或增额终身寿险，比较在意养老，我怎么跟进？';
   const messages = buildFamilySalesChatMessages({
     context: { consultationScope: 'open', familyInput: {} },
@@ -448,9 +451,9 @@ test('open sales coaching keeps the full customer narrative and requires a compl
   const prompt = messages.map((message) => message.content).join('\n');
 
   assert.equal(messages.at(-1).content, question);
-  assert.match(prompt, /年龄或人生阶段、工作与收入、婚姻及共同决策关系、居住和房产、子女或赡养责任、现有保障线索、明确关注目标/u);
+  assert.match(prompt, /已识别的KYC事实和客户标签/u);
   assert.match(prompt, /严格区分客户事实、顾问估计和待核实项/u);
-  assert.match(prompt, /不得因产品名称模糊而忽略其余客户信息/u);
+  assert.match(prompt, /不得为了完整而逐项盘问/u);
   assert.match(prompt, /五十多岁.*月收入七八千.*夫妻分居.*杭州租房.*没有孩子.*在意养老/u);
 });
 
@@ -473,6 +476,10 @@ test('family sales chat consumes the structured sales turn instead of routing ra
         },
         readiness: { decision: 'execute', reason: 'ready', officialFactsRequired: false, insuranceExpertRequired: false },
         selection: { primary: { key: 'needs_discovery', version: 1 }, supporting: [] },
+        trainingPacks: [{
+          key: 'advance_relationship_by_stage',
+          promptRules: ['说人话，先给一个今天就能做的跟进动作，再补问最多两项。'],
+        }],
         insuranceNeedResults: [],
       },
     },
@@ -481,6 +488,10 @@ test('family sales chat consumes the structured sales turn instead of routing ra
 
   assert.match(prompt, /结构化 turn contract 校验/u);
   assert.match(prompt, /needs_discovery/u);
+  assert.match(prompt, /本轮已审核培训方法/u);
+  assert.match(prompt, /说人话，先给一个今天就能做的跟进动作/u);
+  assert.match(prompt, /不得使用“客户理解、当前阶段、优先确认、建议进一步/u);
+  assert.match(prompt, /至少给一段可直接发给客户的原话/u);
   assert.match(prompt, /不得重新按关键词判断意图或 Skill/u);
   assert.doesNotMatch(prompt, /产品比对与替换评估|智能 skill router/u);
 });

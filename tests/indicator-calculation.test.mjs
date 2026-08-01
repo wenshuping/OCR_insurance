@@ -50,6 +50,32 @@ test('normalizeIndicatorCalculation treats paid premium as cumulative paid premi
   assert.equal(result.meta.calculationKey, 'total_paid_premium');
 });
 
+test('normalizeIndicatorCalculation keeps policy-anniversary amount separate from initial basic amount', () => {
+  const indicator = {
+    coverageType: '现金流',
+    liability: '生存保险金',
+    value: 9,
+    unit: '%',
+    basis: '保单生效对应日基本责任保险金额',
+    formulaText: '生存保险金 = 保单生效对应日基本责任保险金额 × 9%',
+    sourceExcerpt: '本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+  };
+
+  const meta = normalizeIndicatorCalculation(indicator);
+  assert.equal(meta.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(meta.calculationKey, 'schedule_or_policy_table');
+  assert.equal(meta.calculationEligible, false);
+  assert.match(meta.calculationReason, /分红型增额红利/u);
+
+  const result = resolveIndicatorAmountFromCalculation(indicator, {
+    baseAmount: 88998,
+    firstPremium: 12000,
+    paymentYears: 10,
+  });
+  assert.equal(result.resolved, false);
+  assert.equal(result.amount, 0);
+});
+
 test('normalizeIndicatorCalculation blocks cash value and rule parameter calculations', () => {
   const cashValue = normalizeIndicatorCalculation({
     coverageType: '现金流',
@@ -67,6 +93,18 @@ test('normalizeIndicatorCalculation blocks cash value and rule parameter calcula
   });
   assert.equal(ruleParameter.calculationEligible, false);
   assert.equal(ruleParameter.calculationKey, 'not_calculable');
+});
+
+test('normalizeIndicatorCalculation does not collapse tiered percentages into one value', () => {
+  const meta = normalizeIndicatorCalculation({
+    coverageType: '人寿保障',
+    liability: '身故或高残保险金',
+    basis: '累计已交保险费、现金价值和年龄分段比例',
+    formulaText: '18至41周岁前取累计已交保险费160%与现金价值较大者；41至61周岁前取140%与现金价值较大者；61周岁后取120%与现金价值较大者。',
+  });
+
+  assert.equal(meta.value, null);
+  assert.equal(meta.calculationEligible, false);
 });
 
 test('normalizeIndicatorCalculation preserves structured non-calculable metadata', () => {

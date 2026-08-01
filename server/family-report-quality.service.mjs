@@ -1,4 +1,4 @@
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_FAMILY_REPORT_MODEL = 'deepseek-v4-pro';
@@ -582,7 +582,7 @@ export async function generateFamilyReportQualityIssues({
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
-    const url = new URL('/chat/completions', config.baseUrl);
+    const url = buildDeepSeekChatCompletionsUrl(config.baseUrl);
     const body = {
       model: config.model,
       max_tokens: config.maxTokens,

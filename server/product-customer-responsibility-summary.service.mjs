@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 
 import { jsonrepair } from 'jsonrepair';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
 import {
@@ -712,7 +712,7 @@ export async function callDeepSeekForCustomerResponsibilitySummary({
   try {
     let response;
     try {
-      response = await fetchImpl(new URL('/chat/completions', config.baseUrl), {
+      response = await fetchImpl(buildDeepSeekChatCompletionsUrl(config.baseUrl), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${config.apiKey}`,

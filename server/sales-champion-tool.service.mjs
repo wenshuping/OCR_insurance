@@ -204,6 +204,9 @@ export function createSalesChampionTool({
           proposal,
           readiness: route.readiness,
           selection: route.selection,
+          trainingPacks: route.trainingPacks || [],
+          boundaryCandidates: route.boundaryCandidates || [],
+          navigation: route.navigation || null,
           insuranceNeedResults,
         };
         const atomicResult = executeSalesChampionAtomicSkill({

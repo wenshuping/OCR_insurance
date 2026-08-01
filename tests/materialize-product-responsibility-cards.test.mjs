@@ -595,6 +595,8 @@ test('reviewed artifact import honors explicit cashflow coverage for maturity be
         payoutSummary: '给付累计应交保险费的110%。',
         value: 110,
         unit: '%',
+        basisKey: 'total_paid_premium',
+        calculationKey: 'percent_of_total_paid_premium',
         cashflowTreatment: 'scheduled_cashflow',
         calculationStatus: 'calculable',
         calculationEligible: true,
@@ -978,6 +980,112 @@ test('materializeProductResponsibilityCards honors explicit cashflow category wh
       assert.equal(JSON.parse(card.payload).indicatorCheckStatus, 'verified_calculable');
     } finally {
       readDb.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reviewed artifact import rejects manual formulas without explicit inputs', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'review-missing-manual-inputs.jsonl');
+    fs.writeFileSync(artifactPath, `${JSON.stringify({
+      company: '渤海人寿',
+      productName: '渤海人寿附加健康尊享两全保险（尊享版）',
+      acceptedResponsibilities: [{
+        liability: '满期保险金',
+        customerSummary: '保险期间届满时生存，保险公司按约定给付满期保险金。',
+        triggerCondition: '被保险人在保险期间届满时生存',
+        insurerObligation: '给付基本保险金额与累计已交保险费之和。',
+        sourceUrl: 'https://www.bohailife.net/terms.pdf',
+        sourceExcerpt: '满期生存时，我们给付基本保险金额与累计已交保险费之和。',
+      }],
+      internalIndicatorChecks: [{
+        liability: '满期保险金',
+        basisKey: 'manual_formula',
+        calculationKey: 'manual_formula',
+        calculationEligible: false,
+        calculationStatus: 'needs_table',
+        calculationReason: '需要多项保单字段。',
+        indicatorCheckStatus: 'accepted_manual_review',
+      }],
+    })}\n`);
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+    });
+
+    assert.deepEqual(result.validationFailures[0].issues, [
+      'manual_formula_missing_requiredInputs:满期保险金',
+    ]);
+    assert.equal(result.ok, false);
+    assert.equal(result.validationIssueCount, 1);
+    assert.equal(result.acceptedResponsibilities, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reviewed artifact import preserves customer summaries, limits, and explicit inputs', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'review-preserved-customer-fields.jsonl');
+    const company = '渤海人寿';
+    const productName = '渤海人寿附加健康尊享两全保险（尊享版）';
+    const customerSummary = '保险期间届满时生存，保险公司给付基本保险金额与累计已交保险费之和。';
+    const importantLimits = ['主合同已给付重度疾病保险金的，不再承担满期保险金责任。'];
+    const requiredInputs = ['policy.amount', 'policy.firstPremium', 'policy.paymentPeriodYears'];
+    fs.writeFileSync(artifactPath, `${JSON.stringify({
+      company,
+      productName,
+      acceptedResponsibilities: [{
+        liability: '满期保险金',
+        coverageType: '现金流',
+        customerSummary,
+        triggerCondition: '被保险人在保险期间届满时生存',
+        insurerObligation: '给付基本保险金额与累计已交保险费之和。',
+        importantLimits,
+        sourceUrl: 'https://www.bohailife.net/terms.pdf',
+        sourceExcerpt: '满期生存时，我们给付基本保险金额与累计已交保险费之和。',
+      }],
+      internalIndicatorChecks: [{
+        liability: '满期保险金',
+        coverageType: '现金流',
+        basis: '基本保险金额与累计已交保险费',
+        formulaText: '满期保险金 = 基本保险金额 + 累计已交保险费',
+        basisKey: 'manual_formula',
+        calculationKey: 'manual_formula',
+        requiredInputs,
+        calculationEligible: false,
+        calculationStatus: 'needs_table',
+        calculationReason: '需要多项保单字段。',
+        cashflowTreatment: 'scheduled_cashflow',
+        indicatorCheckStatus: 'accepted_manual_review',
+      }],
+    })}\n`);
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+    });
+
+    assert.deepEqual(result.validationFailures, []);
+    assert.equal(result.ok, true);
+    assert.equal(result.validationIssueCount, 0);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const row = db.prepare('SELECT payload FROM product_responsibility_cards WHERE company = ? AND product_name = ? AND title = ?')
+        .get(company, productName, '满期保险金');
+      const payload = JSON.parse(row.payload);
+      assert.equal(payload.plainSummary, customerSummary);
+      assert.deepEqual(payload.importantLimits, importantLimits);
+      assert.deepEqual(payload.indicators[0].requiredInputs, requiredInputs);
+    } finally {
+      db.close();
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

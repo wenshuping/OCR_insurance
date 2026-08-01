@@ -115,12 +115,30 @@ export function assessProductPublishReadiness(input = {}) {
   }
 
   const explicitVersionId = text(document?.payload?.productVersionId);
+  const versionLabel = text(document?.payload?.versionLabel);
+  if (versionLabel && !explicitVersionId) {
+    checks.push(check('product_version_resolution_missing', 'blocked', '资料填写了版本标签，但尚未解析为正式产品版本'));
+  }
   const missingVersionChunks = explicitVersionId
-    ? readyChunks.filter((chunk) => text(chunk?.productVersionId) !== explicitVersionId)
+    ? publishableChunks.filter((chunk) => text(chunk?.productVersionId) !== explicitVersionId)
     : [];
   if (missingVersionChunks.length) {
     checks.push(check('product_version_binding_missing', 'blocked', '部分切片未绑定已选择的产品版本', {
       affectedCount: missingVersionChunks.length,
+    }));
+  }
+
+  const candidateIndexVersion = text(document?.payload?.candidateIndexVersion);
+  const pageReviews = document?.payload?.pageReviews && typeof document.payload.pageReviews === 'object'
+    ? Object.values(document.payload.pageReviews)
+    : [];
+  const unresolvedPageReviews = pageReviews.filter((review) => (
+    text(review?.indexVersion) === candidateIndexVersion
+    && ['needs_correction', 'pending_confirmation'].includes(text(review?.status))
+  ));
+  if (unresolvedPageReviews.length) {
+    checks.push(check('page_correction_unconfirmed', 'blocked', '存在人工不通过或 AI 修正后尚未再次确认的页面', {
+      affectedCount: unresolvedPageReviews.length,
     }));
   }
 
@@ -131,6 +149,6 @@ export function assessProductPublishReadiness(input = {}) {
     blockingReasons,
     publishableChunkCount: publishableChunks.length,
     isolatedChunkCount: unboundChunks.length,
-    qualityRuleVersion: 'product-publish-readiness-v1',
+    qualityRuleVersion: 'product-publish-readiness-v3',
   };
 }

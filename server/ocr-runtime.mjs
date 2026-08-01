@@ -213,6 +213,47 @@ export async function recognizeDocumentTextWithConfiguredRuntime(uploadItem, fet
   }
 }
 
+export async function parseProductPageWithPaddleVl16Runtime(input, fetchImpl = fetch, env = process.env) {
+  const baseUrl = resolveOcrServiceUrl(env);
+  if (!baseUrl) {
+    const error = new Error('PaddleOCR-VL 1.6 产品页面解析服务未配置');
+    error.code = 'PRODUCT_PPT_PADDLE_VL16_UNAVAILABLE';
+    error.status = 503;
+    throw error;
+  }
+  const headers = { 'content-type': 'application/json', 'x-internal-service': 'policy-ocr-app' };
+  const token = trim(env.POLICY_OCR_SERVICE_TOKEN);
+  if (token) headers['x-ocr-service-token'] = token;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), resolveOcrTimeoutMs(env));
+  try {
+    const response = await fetchImpl(`${baseUrl}/internal/ocr/product-pages/parse`, {
+      method: 'POST',
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify(input),
+    });
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      const error = new Error(payload?.message || payload?.code || 'PaddleOCR-VL 1.6 产品页面解析失败');
+      error.code = payload?.code || 'PRODUCT_PPT_PADDLE_VL16_FAILED';
+      error.status = response.status;
+      throw error;
+    }
+    return payload;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      const timeoutError = new Error('PaddleOCR-VL 1.6 产品页面解析超时');
+      timeoutError.code = 'PRODUCT_PPT_PADDLE_VL16_TIMEOUT';
+      timeoutError.status = 504;
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function analyzePolicyLocally({ scan }) {
   const text = `${trim(scan?.ocrText)} ${trim(scan?.data?.name)}`;
   const amount = pickAmount(text) || Number(scan?.data?.amount || 0) || 0;

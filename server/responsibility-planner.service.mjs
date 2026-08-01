@@ -1,5 +1,5 @@
 import { jsonrepair } from 'jsonrepair';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 
 const PLANNER_MODE_SET = new Set(['auto', 'all', 'off']);
 const COMPLEX_CATEGORIES = new Set([
@@ -263,7 +263,7 @@ export async function callDeepSeekForResponsibilityPlanner({
   const apiKey = textOf(process.env.DEEPSEEK_API_KEY);
   if (!apiKey) throw new Error('DEEPSEEK_API_KEY is required for responsibility Planner');
   const baseUrl = textOf(process.env.DEEPSEEK_BASE_URL) || 'https://api.deepseek.com';
-  const response = await fetchImpl(`${baseUrl.replace(/\/$/u, '')}/chat/completions`, {
+  const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,

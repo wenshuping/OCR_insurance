@@ -1,5 +1,5 @@
 import { listProductCatalogCompanies, searchProductCatalog } from './product-catalog-search.mjs';
-import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { buildDeepSeekChatCompletionsUrl, sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
 import { chunkProductDocument } from './product-chunker.service.mjs';
 import { parseProductDocument } from './product-document-parser.service.mjs';
 import {
@@ -9,7 +9,7 @@ import {
   validateProductRetrievalPlan,
 } from './agent-product-retrieval-plan.service.mjs';
 
-const RESPONSIBILITY_QUESTION_PATTERN = /(?:保险|保障)?责任|保什么|保哪些|赔什么|怎么赔/u;
+const RESPONSIBILITY_QUESTION_PATTERN = /(?:保险|保障)?责任|保什么|保啥|保哪些|赔什么|怎么赔/u;
 const SALES_STATUS_QUESTION_PATTERN = /在售|停售|销售中|还(?:在)?卖|还能买|可以买/u;
 const PRODUCT_COMPARISON_SEPARATOR = /\s*(?:对比|比较|区别于|相比(?:于)?|与|和|VS\.?)\s*/iu;
 const MAX_OFFICIAL_DOCUMENT_BYTES = 8 * 1024 * 1024;
@@ -1143,7 +1143,7 @@ export function createAgentProductKnowledgeSearch({
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const conflicts = evidenceConflicts(summary, materialEvidence);
-      const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+      const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
@@ -1304,7 +1304,7 @@ export function createAgentProductKnowledgeSearch({
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+      const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
@@ -1532,6 +1532,34 @@ export function createAgentProductKnowledgeSearch({
     const eligible = [];
     for (const product of products) {
       if (Number(product.score || 0) <= 0) continue;
+      const responsibilityQuestion = RESPONSIBILITY_QUESTION_PATTERN.test(text(question));
+      const row = summaryStatement.get(product.company, product.productName);
+      if (responsibilityQuestion && row) {
+        try {
+          const storedSummary = JSON.parse(row.summary_json || '{}');
+          const storedSourceUrls = JSON.parse(row.source_urls_json || '[]');
+          const customerSummary = customerResponsibilitySummaryEvidence({
+            summary: {
+              ...storedSummary,
+              sourceUrls: Array.isArray(storedSummary.sourceUrls) && storedSummary.sourceUrls.length
+                ? storedSummary.sourceUrls
+                : storedSourceUrls,
+            },
+          }, product, allowedOrigins);
+          if (customerSummary?.sources.length) {
+            eligible.push({
+              product,
+              summary: customerSummary.summary,
+              sources: customerSummary.sources,
+              directAnswer: customerSummary.directAnswer,
+              customerResponsibilitySummary: customerSummary.summary,
+            });
+            break;
+          }
+        } catch {
+          // The ready summary is unusable; continue to the existing evidence fallbacks.
+        }
+      }
       const productKnowledgeRows = knowledgeStatement
         ? knowledgeStatement.all(product.company, product.productName)
         : [];
@@ -1586,7 +1614,6 @@ export function createAgentProductKnowledgeSearch({
           // Fall back to the same product's persisted verified evidence.
         }
       }
-      const row = summaryStatement.get(product.company, product.productName);
       if (!eligible.some((item) => item.product === product) && row) {
         try {
           const summary = JSON.parse(row.summary_json || '{}');

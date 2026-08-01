@@ -1,7 +1,16 @@
 import { SEMANTIC_QUERY_ASPECTS } from './agent-semantic-contract.mjs';
-import { SALES_CHAMPION_CAPABILITY_KEYS, validateSalesTurnProposal } from './sales-champion-turn.contract.mjs';
+import {
+  SALES_CHAMPION_CAPABILITY_KEYS,
+  SALES_CHAMPION_KYC_EVIDENCE_SOURCES,
+  SALES_CHAMPION_KYC_FACT_KEYS,
+  SALES_CHAMPION_MISSING_INFORMATION_KEYS,
+  SALES_CHAMPION_SITUATION_KEYS,
+  validateSalesTurnProposal,
+} from './sales-champion-turn.contract.mjs';
+import { SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY } from './sales-champion-customer-labels.mjs';
 import {
   redactDeepSeekDirectIdentifiers,
+  buildDeepSeekChatCompletionsUrl,
   sanitizeDeepSeekRequestBody,
 } from './deepseek-privacy-gateway.mjs';
 
@@ -11,10 +20,27 @@ const CONCERNS = [
   'insurer_safety', 'benefits', 'claims', 'underwriting', 'surrender', 'rebate',
   'risk_pooling', 'follow_up', 'unknown',
 ];
-const MISSING_INFORMATION = [
-  'customer_goal', 'future_fund_use', 'budget', 'existing_coverage', 'product_contract',
-  'cash_value_schedule', 'family_decision_process', 'health_information', 'contact_preference',
-];
+const SITUATION_MAPPING_RULES = Object.freeze([
+  'first_insurance_conversation：明确是第一次和该客户谈保险；仅仅第一次见面、第一次服务不算。',
+  'orphan_policy：明确是原业务员离职、公司转交保单、刚接手别人的老保单客户；不要求出现“孤儿单”三个字。一直由当前顾问服务的老客户不算。',
+  'high_value_client：顾问明确要经营高净值客户旅程；只有年龄、职业、收入或资产背景不算。',
+  'retirement_planning：客户明确在谈养老目标或退休现金流；只有五十多岁或买过年金险不算。',
+  'investment_comparison：客户明确在比较保险与投资、存款或其他资产工具的角色；只出现产品名称不算。',
+  'long_payment_commitment：客户明确担心缴费期限太长、坚持不住或退休前交不完；不要自动推断预算不足。',
+  'premium_coverage_tradeoff：客户明确在权衡保费投入和保障额度；只有收入、预算或保额背景不算。',
+  'medical_critical_illness_overlap：明确询问医疗险和重疾险如何分工或是否重复；只有已买医疗险不算。',
+  'social_commercial_overlap：明确询问社保与商业保险如何分工或是否重复；只有有社保不算。',
+  'dividend_uncertainty：明确质疑红利、分红或非保证利益；只出现分红型产品名称不算。',
+  'solvency_concern：明确担心保险公司偿付能力或长期安全；普通品牌偏好不算。',
+  'return_expectation：明确表达收益预期、嫌收益低或要求先说明收益限制；只出现利率背景不算。',
+  'buying_signal：客户主动询问投保手续、下一步、材料或明确表示愿意推进；礼貌回应不算。',
+  'health_risk_conversation：当前任务是和客户讨论健康风险和保障需求；年龄或健康背景本身不算。',
+  'verified_product_change：存在已经核验的产品调整、停售或生效变化；传闻和未经核验的变化不算。',
+  'service_trust_recovery：明确存在失联服务、强推、投诉或不愉快服务经历；普通“不信任保险”不算。',
+  'existing_customer_add_on：明确是已有客户的加保、追加或重新规划；仅仅提到客户买过保险不算。',
+  'event_follow_up：明确是在活动、讲座或客户沙龙后跟进；普通见面后跟进不算。',
+  'regional_pipeline：明确要按区域安排一批客户的经营和约访；单个客户跟进不算。',
+]);
 
 function text(value) {
   return String(value || '').trim();
@@ -70,23 +96,40 @@ function interpreterMessages({ question, history }) {
           '只能返回一个 JSON 对象，不要输出 Markdown、解释或额外字段。',
           `stage.value 只能是：${STAGES.join(', ')}`,
           `concerns.type 只能是：${CONCERNS.join(', ')}`,
-          `missingInformation 只能是：${MISSING_INFORMATION.join(', ')}`,
+          `missingInformation 只能是：${SALES_CHAMPION_MISSING_INFORMATION_KEYS.join(', ')}`,
           `proposedCapabilities 只能是：${SALES_CHAMPION_CAPABILITY_KEYS.join(', ')}`,
+          `situations 只能是：${SALES_CHAMPION_SITUATION_KEYS.join(', ')}`,
+          `kycFacts.key 只能是：${SALES_CHAMPION_KYC_FACT_KEYS.join(', ')}`,
+          `kycFacts.source 和 customerLabels.source 只能是：${SALES_CHAMPION_KYC_EVIDENCE_SOURCES.join(', ')}`,
+          `customerLabels 必须使用以下受控标签：${JSON.stringify(SALES_CHAMPION_CUSTOMER_LABEL_TAXONOMY)}`,
           `insuranceNeeds.queryAspects 只能是：${SEMANTIC_QUERY_ASPECTS.join(', ')}`,
           'customerStatements 必须拆成 2 到 8 条简短的客户背景或客户原话，每条都必须是当前问题或已确认历史中的逐字连续片段，不得改写；当前问题用 current_message，历史用 confirmed_history。',
           'customerStatements 不要收录顾问的任务请求，例如“我怎么跟进”“给我建议”“怎么回复”；也不要把整段 currentQuestion 原样放进一条 statement。',
+          'kycFacts 从顾问描述中提取年龄人生阶段、工作职业、收入、家庭婚姻子女、居住房产、资产负债、现有保单、客户目标、保险态度、购买行为、决策方式、联系偏好、服务事项和本轮结果。evidence 必须逐字摘录自当前问题或已确认历史。',
+          '客户明确原话用 customer_statement；顾问明确陈述的客观情况用 advisor_fact；“估计、可能、应该、忘记了”等用 advisor_estimate；“我感觉、我觉得他抗保、意向高”等顾问判断用 advisor_inference。',
+          'customerLabels 只登记有证据的受控标签。customer_statement 或明确 advisor_fact 可以 confirmed；advisor_estimate 和 advisor_inference 只能 candidate。没有证据的维度不要输出默认标签。',
+          '工作、家庭、收入、居住、房产和已有保单要进入 KYC，但不得仅凭年龄、职业、收入、婚姻、房产或产品名称推断 economic_capacity、purchase_intent、resistance、decision_maturity、family_decision 或保障缺口。',
+          '购买意向、抗保和决策标签优先依据客户原话与行为，例如主动提问、提供资料、要求方案、约定下次、明确拒绝或表达不信任；顾问主观感觉只能形成 candidate。',
           '只有回答确实依赖产品责任、条款、续保、理赔、核保、现金价值或产品比较事实时，才添加 type=product_facts 的 insuranceNeeds。',
           '只有需要基于已授权家庭保单或保障报告判断现有保障覆盖、重复或缺口时，才添加 type=coverage_gap 的 insuranceNeeds。',
           '产品名称只是客户背景、且销售建议不依赖产品事实时，insuranceNeeds 必须为空。',
           '年龄、收入估计、婚姻状态、居住、房产、子女和已有产品属于客户背景，不会自动成为 affordability、family_decision、benefits 或 product_fit concern。只有客户明确表达预算异议、共同决策问题、产品疑问或购买诉求时才能选择对应 concern。',
           '顾问只问“怎么跟进”，但客户目标和当前销售进展尚不清楚时，使用 discovery + unknown + needs_discovery，不得从背景信息猜一个异议。',
+          'situations 按业务事实语义判断，不要求用户说出 Skill 名称或行业术语；等价的明确事实可以确认场景。没有明确事实时返回空数组，不得根据年龄、收入或产品名称猜测。',
+          '场景映射边界如下：',
+          ...SITUATION_MAPPING_RULES,
+          '如果某个场景可能适用，但缺少决定性信息，不要把它放进 situations；只把对应的最小确认项放进 missingInformation。比如疑似接手老保单但来源不清楚时添加 customer_relationship_origin。',
+          'missingInformation 只记录会改变本轮 Skill、话术安全边界或保险事实核验的信息；不要为了补全客户画像而一次列很多项目。',
+          '如果顾问在当前问题或历史里已明确说某项“不知道、不了解、没问到、拿不到”，把对应字段放进 unknownInformation，不要再放进 missingInformation，也不要重复追问；后续仍按安全兜底给方法。',
           '保险事实和保障缺口交给 Insurance Expert；销售阶段、客户关注点、跟进策略归 Sales Champion。',
           '明确拒绝或要求停止联系时设置对应 signals，不得选择促成类能力。',
-          'JSON 字段必须完整：contractVersion, customerStatements, stage, concerns, signals, missingInformation, proposedCapabilities, insuranceNeeds。',
+          'JSON 字段必须完整：contractVersion, customerStatements, kycFacts, customerLabels, stage, concerns, signals, missingInformation, unknownInformation, proposedCapabilities, insuranceNeeds, situations。',
           'contractVersion 必须是 JSON 数字 1，不能是字符串。confidence 必须是 0 到 1 的 JSON 数字。',
           'insuranceNeeds 每项格式为 {"type":"product_facts|coverage_gap","queryAspects":[]}。',
+          'kycFacts 每项格式为 {"key":"受控字段","value":"简短结构化值","source":"证据来源","evidence":"逐字证据"}。',
+          'customerLabels 每项格式为 {"dimension":"标签维度","value":"受控标签值","status":"confirmed|candidate","source":"证据来源","evidence":"逐字证据","confidence":0.9}。',
           '完整 JSON 形状必须是：',
-          '{"contractVersion":1,"customerStatements":[{"text":"逐字摘录的原句","source":"current_message"}],"stage":{"value":"discovery","confidence":0.9},"concerns":[{"type":"unknown","priority":"primary","confidence":0.9}],"signals":{"explicitRefusal":false,"stopContact":false,"factSensitive":false},"missingInformation":["customer_goal"],"proposedCapabilities":["needs_discovery"],"insuranceNeeds":[]}',
+          '{"contractVersion":1,"customerStatements":[{"text":"逐字摘录的原句","source":"current_message"}],"kycFacts":[],"customerLabels":[],"stage":{"value":"discovery","confidence":0.9},"concerns":[{"type":"unknown","priority":"primary","confidence":0.9}],"signals":{"explicitRefusal":false,"stopContact":false,"factSensitive":false},"missingInformation":["customer_goal"],"unknownInformation":[],"proposedCapabilities":["needs_discovery"],"insuranceNeeds":[],"situations":[]}',
         ].join('\n'),
       },
       {
@@ -118,7 +161,7 @@ export async function interpretSalesChampionTurn({
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const complete = async (requestMessages) => {
-      const response = await fetchImpl(new URL('/chat/completions', baseUrl), {
+      const response = await fetchImpl(buildDeepSeekChatCompletionsUrl(baseUrl), {
         method: 'POST',
         signal: controller.signal,
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },

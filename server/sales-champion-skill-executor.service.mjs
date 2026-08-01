@@ -14,7 +14,14 @@ function text(value) {
   return String(value || '').trim();
 }
 
-function needsDiscoveryReply(proposal) {
+function plannedQuestions(salesTurn) {
+  return (Array.isArray(salesTurn?.navigation?.questionPlan)
+    ? salesTurn.navigation.questionPlan : [])
+    .map((item) => text(item?.question))
+    .filter(Boolean);
+}
+
+function needsDiscoveryReply(proposal, questionPlan = []) {
   const statements = (Array.isArray(proposal?.customerStatements) ? proposal.customerStatements : [])
     .map((statement) => text(statement?.text))
     .filter(Boolean)
@@ -22,33 +29,44 @@ function needsDiscoveryReply(proposal) {
   const missing = [...new Set((Array.isArray(proposal?.missingInformation)
     ? proposal.missingInformation : [])
     .map((key) => MISSING_INFORMATION_LABELS[key])
-    .filter(Boolean))].slice(0, 5);
-  const missingLines = (missing.length ? missing : [MISSING_INFORMATION_LABELS.customer_goal])
-    .map((item, index) => `${index + 1}. ${item}。`);
+    .filter(Boolean))].slice(0, 2);
+  const missingLines = (questionPlan.length
+    ? questionPlan
+    : (missing.length ? missing : [MISSING_INFORMATION_LABELS.customer_goal]))
+    .map((item, index) => `${index + 1}. ${item}${/[？?!！。；;]$/u.test(item) ? '' : '。'}`);
+  const knownFacts = statements.length ? statements.join('；') : '还没有能确认的客户原话';
   return [
-    '客户理解',
-    ...(statements.length
-      ? statements.map((statement) => `- 顾问本轮提供：${statement}`)
-      : ['- 当前还缺少可确认的客户原话。']),
-    '- 以上内容只按原话记录；其中的估计、可能性和未确认产品类型仍保持未确认，不据此推导保障缺口、购买能力、家庭决策或财产结论。',
+    `这单先别急着推。客户现在明确说到的是：${knownFacts}。没说的先别替他脑补。`,
     '',
-    '当前阶段',
-    '现在属于需求发现阶段。本轮先弄清客户真正想解决的问题和下一步沟通目标，不急着推荐、比较或替换产品；没有已核验证据时，也不判断现有保障是否充足。',
+    '下一步只做一件事：约十来分钟，把客户最想解决什么、以前做过什么安排听明白。聊清楚以后，再决定要不要谈方案。',
     '',
-    '下次沟通话术',
-    '“您好，上次聊到您已经做过一些安排。我想先不急着谈新产品，先听听您现在最希望解决的是什么、理想结果是什么样。把目标和现实约束弄清楚后，我们再结合您已经做过的准备逐项核实，这样给您的建议才不会偏。您看什么时候方便聊十几分钟？”',
+    '可以直接这样发：',
+    '“我先不急着给您推荐东西。您现在最想解决的到底是哪件事？我先把您的想法和已经做过的安排听明白，再看有没有必要往下聊，免得一上来就给您讲一堆不合适的。您哪天方便，咱们聊十来分钟？”',
     '',
-    '优先确认',
+    '等客户愿意聊了，再顺手问两句：',
     ...missingLines,
   ].join('\n');
 }
 
-function readinessReply(readiness) {
+function readinessReply(readiness, questionPlan = []) {
   if (readiness?.decision === 'stop_contact') {
     return '客户已明确拒绝或要求停止联系。本轮不要继续促成、追问或安排跟进；记录客户的联系偏好，后续仅在客户主动提出需求时回应。';
   }
   if (readiness?.decision === 'clarify') {
-    return '当前信息不足以稳定判断销售阶段或客户主要关注点。请先确认客户这次最想解决的问题、目前沟通到哪一步，以及希望下一次沟通达成什么结果；在确认前不要推荐产品或判断保障缺口。';
+    const questions = questionPlan.length
+      ? questionPlan.map((question, index) => `${index + 1}. ${question}`).join('\n')
+      : '1. 客户这次最想解决什么？\n2. 目前聊到了哪一步？';
+    return [
+      '现在还判断不准客户到底卡在哪儿，但不用等资料全了才跟进。先别推产品，也别急着判断保障够不够。',
+      '',
+      '先轻轻碰一下，只争取让客户说出眼下最在意的问题。',
+      '',
+      '可以直接这样发：',
+      '“我先不急着给您讲方案，想先确认一下：您现在最想解决的是哪个问题？我按您最关心的部分来准备，不占用您太多时间。”',
+      '',
+      '你再补我两点左右你知道的，下一步就能说得更准；这轮实际问几个按下面问题来，不知道的不用查：',
+      questions,
+    ].join('\n');
   }
   if (readiness?.decision === 'retry_later') {
     return '销售语义解释服务暂时不可用，本轮无法可靠判断销售阶段和客户关注点，请稍后重试。';
@@ -57,7 +75,8 @@ function readinessReply(readiness) {
 }
 
 export function executeSalesChampionAtomicSkill({ context = {}, salesTurn = {} } = {}) {
-  const gatedAnswer = readinessReply(salesTurn?.readiness);
+  const questions = plannedQuestions(salesTurn);
+  const gatedAnswer = readinessReply(salesTurn?.readiness, questions);
   if (gatedAnswer) {
     return {
       facts: { answer: gatedAnswer },
@@ -68,10 +87,17 @@ export function executeSalesChampionAtomicSkill({ context = {}, salesTurn = {} }
   }
   if (context.familyId) return null;
   if (salesTurn?.selection?.primary?.key !== 'needs_discovery') return null;
-  const answer = needsDiscoveryReply(salesTurn.proposal);
+  const answer = needsDiscoveryReply(salesTurn.proposal, questions);
+  const trainingPacks = Array.isArray(salesTurn?.trainingPacks) ? salesTurn.trainingPacks : [];
   return {
     facts: { answer },
-    provenance: { source: 'sales_champion_atomic_skill', skill: 'needs_discovery', version: 1 },
+    provenance: {
+      source: 'sales_champion_atomic_skill',
+      skill: 'needs_discovery',
+      version: 1,
+      trainingPacks: trainingPacks.map((pack) => pack.key).filter(Boolean),
+      evidenceRefs: trainingPacks.flatMap((pack) => Array.isArray(pack?.evidenceRefs) ? pack.evidenceRefs : []),
+    },
     presentation: { message: answer },
     interaction: { type: 'answer', text: answer },
   };

@@ -11,6 +11,16 @@ RUN npm run build
 FROM node:22-alpine AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
+RUN apk add --no-cache \
+    font-noto \
+    font-noto-cjk \
+    fontconfig \
+    libreoffice-calc \
+    libreoffice-common \
+    libreoffice-impress \
+    libreoffice-writer \
+    poppler-utils \
+  && fc-cache -f
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
