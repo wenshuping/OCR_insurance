@@ -470,12 +470,14 @@ export function PolicyDetailSheet({
             <p className="mt-1 text-xs text-slate-500">
               {customerSummarySource === 'customer_upload'
                 ? '以下内容来自本保单客户上传的保险责任，仅供本保单使用。'
+                : customerSummarySource === 'responsibility_cards'
+                  ? '以下内容来自已审核的官网保险责任卡。'
                 : '以下内容来自官网保险责任摘要。'}
             </p>
           </div>
           {customerSummaryLoading ? (
             <article className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 text-sm font-semibold leading-6 text-slate-500">
-              正在生成客户可读保险责任摘要...
+              正在读取客户可读保险责任摘要...
             </article>
           ) : customerSummary ? (
             <CustomerResponsibilitySummaryCard
