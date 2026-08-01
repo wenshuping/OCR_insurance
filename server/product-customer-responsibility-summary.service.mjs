@@ -1272,6 +1272,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   productName = '',
   canonicalProductId = '',
   sourceRecords = [],
+  requireSourceDigest = false,
 } = {}) {
   const normalizedCompany = text(company);
   const normalizedProductName = text(productName);
@@ -1289,6 +1290,9 @@ export function buildCustomerResponsibilitySummaryFromCards({
     productName: normalizedProductName,
   });
   const cardsWithSourceDigests = alignCardsToApprovedArtifactSourceDigests(cards, approvedArtifacts);
+  if (requireSourceDigest && cardsWithSourceDigests.some((card) => !text(card.sourceDigest || card.responsibilitySourceDigest))) {
+    return null;
+  }
   const sourceUrls = uniqueStrings(cardsWithSourceDigests.map((card) => text(card.sourceUrl || card.source_url)));
   const responsibilities = cardsWithSourceDigests
     .map((card) => {

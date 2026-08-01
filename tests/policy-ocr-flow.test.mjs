@@ -5620,6 +5620,82 @@ test('responsibility cards resolve a legal insurer name through a short insurer 
   }
 });
 
+test('customer summary returns source-pinned responsibility cards before source generation', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (
+      id INTEGER PRIMARY KEY
+    );
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  const card = {
+    id: 'card_customer_summary_xinhua_sunshine_child',
+    productKey: 'company_product:新华人寿保险股份有限公司:阳光灿烂少儿两全保险（分红型）',
+    company: '新华人寿保险股份有限公司',
+    productName: '阳光灿烂少儿两全保险（分红型）',
+    title: '教育金',
+    category: '两全保险',
+    plainSummary: '被保险人生存至约定年龄时给付教育金。',
+    payoutSummary: '按条款约定的基本保险金额比例给付。',
+    sourceUrl: 'https://official.example-life.test/sunshine-child.pdf',
+    sourceExcerpt: '教育金：被保险人生存至约定年龄时给付教育金。',
+    sourceDigest: 'sha256:test-new-china-sunshine-child',
+    indicators: [],
+  };
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id, product_key, company, product_name, title, category, source_url, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    card.id,
+    card.productKey,
+    card.company,
+    card.productName,
+    card.title,
+    card.category,
+    card.sourceUrl,
+    JSON.stringify(card),
+  );
+  let analyzerCalls = 0;
+  const app = createPolicyOcrApp({
+    db,
+    state: createInitialState(),
+    assistantAnalyzer: async () => {
+      analyzerCalls += 1;
+      throw new Error('analyzer should not run when source-pinned responsibility cards exist');
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '新华保险',
+        name: '阳光灿烂少儿两全保险（分红型）',
+      }),
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.ok, true);
+    assert.equal(result.payload.source, 'responsibility_cards');
+    assert.equal(result.payload.summary.mainResponsibilities.length, 1);
+    assert.equal(result.payload.summary.mainResponsibilities[0].title, '教育金');
+    assert.equal(analyzerCalls, 0);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary generates once and then reads from database', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

@@ -1058,6 +1058,23 @@ export function createResponsibilityRoutes(context) {
         // Keep the in-memory fallback for test stores and legacy runtimes.
       }
     }
+    if (!usesPrivateSource && typeof buildCustomerResponsibilitySummaryFromCards === 'function') {
+      const summary = buildCustomerResponsibilitySummaryFromCards({
+        db,
+        company: input.company,
+        productName: input.name,
+        canonicalProductId,
+        sourceRecords: summaryState.knowledgeRecords,
+        requireSourceDigest: true,
+      });
+      if (summary) {
+        return {
+          ok: true,
+          source: 'responsibility_cards',
+          summary,
+        };
+      }
+    }
     const result = await generateProductCustomerResponsibilitySummary({
       state: summaryState,
       db,
