@@ -344,6 +344,14 @@ function companyFrom(row = {}) {
 
 function normalizeCardRow(row = {}) {
   const payload = parseJson(row.payload, row);
+  const indicators = normalizeArray(payload.indicators);
+  const indicatorSourceDigests = uniqueStrings(indicators.map((indicator) => text(
+    indicator?.sourceDigest
+      || indicator?.source_digest
+      || indicator?.responsibilitySourceDigest
+      || indicator?.responsibility_source_digest,
+  )));
+  const inheritedSourceDigest = indicatorSourceDigests.length === 1 ? indicatorSourceDigests[0] : '';
   return {
     ...payload,
     id: text(payload.id || row.id),
@@ -359,7 +367,11 @@ function normalizeCardRow(row = {}) {
     sourceTitle: text(payload.sourceTitle || payload.source_title),
     sourceExcerpt: text(payload.sourceExcerpt || payload.source_excerpt),
     sourceDigest: text(
-      payload.sourceDigest || payload.source_digest || payload.responsibilitySourceDigest || row.source_digest,
+      payload.sourceDigest
+        || payload.source_digest
+        || payload.responsibilitySourceDigest
+        || row.source_digest
+        || inheritedSourceDigest,
     ),
     responsibilitySourceDigest: text(
       payload.responsibilitySourceDigest
@@ -370,7 +382,7 @@ function normalizeCardRow(row = {}) {
     calculationStatus: text(payload.calculationStatus || payload.calculation_status),
     requiredInputs: normalizeArray(payload.requiredInputs || payload.required_inputs),
     referenceOnly: payload.referenceOnly === true || payload.reference_only === true,
-    indicators: normalizeArray(payload.indicators),
+    indicators,
   };
 }
 

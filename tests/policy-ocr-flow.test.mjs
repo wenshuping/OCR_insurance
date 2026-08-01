@@ -5648,8 +5648,9 @@ test('customer summary returns source-pinned responsibility cards before source 
     payoutSummary: '按条款约定的基本保险金额比例给付。',
     sourceUrl: 'https://official.example-life.test/sunshine-child.pdf',
     sourceExcerpt: '教育金：被保险人生存至约定年龄时给付教育金。',
-    sourceDigest: 'sha256:test-new-china-sunshine-child',
-    indicators: [],
+    indicators: [{
+      sourceDigest: 'sha256:test-new-china-sunshine-child',
+    }],
   };
   db.prepare(`
     INSERT INTO product_responsibility_cards (
