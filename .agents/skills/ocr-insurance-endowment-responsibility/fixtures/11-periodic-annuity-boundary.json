@@ -1,0 +1,58 @@
+{
+  "fixtureId": "periodic-annuity-boundary",
+  "sourceText": "本合同独立生效。被保险人在保险期间内身故，我们按已交保险费给付身故保险金，本合同终止。被保险人自第五个保单周年日起每个保单周年日生存，我们每年按基本保险金额的10%给付生存年金。",
+  "artifact": {
+    "sourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "death",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按已交保险费给付身故保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故，我们按已交保险费给付身故保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "已交保险费",
+            "normalizedFormula": "total_paid_premium",
+            "requiredInputs": ["total_paid_premium"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "survival-annuity",
+        "responsibilityRole": "periodic_annuity",
+        "triggerCondition": "被保险人自第五个保单周年日起每个保单周年日生存",
+        "insurerObligation": "每年按基本保险金额的10%给付生存年金",
+        "sourceExcerpt": "被保险人自第五个保单周年日起每个保单周年日生存，我们每年按基本保险金额的10%给付生存年金。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "annual",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额的10%",
+            "normalizedFormula": "basic_insured_amount * 0.1",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "review",
+    "classification": "not_endowment"
+  }
+}

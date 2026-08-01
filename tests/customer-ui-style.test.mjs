@@ -1003,7 +1003,8 @@ test('responsibility assistant shows DeepSeek summary blocks and structured resp
   assert.match(summaryBranch, /customerSummaryRows\.map/);
   assert.match(summaryBranch, /责任明细/);
   assert.match(summaryBranch, /触发条件：/);
-  assert.match(summaryBranch, /calculationStatus:/);
+  assert.match(summaryBranch, /customerCalculationStatusLabel\(item\.calculationStatus\)/);
+  assert.doesNotMatch(summaryBranch, /calculationStatus:\s*\{item\.calculationStatus\}/);
   assert.match(summaryBranch, /sourceRefs\.map/);
   assert.match(summaryBranch, /customerSummaryNotices\.map/);
   assert.match(summaryBranch, /customerSummarySourceUrls\.slice/);

@@ -34,12 +34,12 @@ function parseJsonObject(value) {
   }
 }
 
-const DEFAULT_SKILL_REGISTRY = createInsuranceExpertSkillRegistry();
+let defaultSkillRegistry = null;
 
 function registryOrDefault(skillRegistry) {
   return skillRegistry && typeof skillRegistry.skillsForIntent === 'function'
     ? skillRegistry
-    : DEFAULT_SKILL_REGISTRY;
+    : (defaultSkillRegistry ||= createInsuranceExpertSkillRegistry());
 }
 
 function allowedSkillDefinitions(intent, context = {}, skillRegistry = null) {

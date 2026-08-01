@@ -1,0 +1,85 @@
+{
+  "fixtureId": "accident-substitutive-benefit",
+  "sourceText": "本合同独立生效。被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。被保险人因公共交通意外身故，我们按基本保险金额的五倍给付公共交通意外身故保险金，不再给付上述身故保险金。被保险人生存至合同满期日，我们按已交保险费给付满期保险金，本合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "benefitRelationships": [
+      {
+        "baseResponsibilityIds": ["death"],
+        "additionalResponsibilityId": "transit-death",
+        "semantics": "substitutive",
+        "multiplierOrLimit": "基本保险金额的五倍",
+        "sourceExcerpt": "被保险人因公共交通意外身故，我们按基本保险金额的五倍给付公共交通意外身故保险金，不再给付上述身故保险金。"
+      }
+    ],
+    "responsibilities": [
+      {
+        "responsibilityId": "death",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按基本保险金额给付身故保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故，我们按基本保险金额给付身故保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "transit-death",
+        "responsibilityRole": "additional_accident",
+        "triggerCondition": "被保险人因公共交通意外身故",
+        "insurerObligation": "按基本保险金额的五倍给付公共交通意外身故保险金",
+        "sourceExcerpt": "被保险人因公共交通意外身故，我们按基本保险金额的五倍给付公共交通意外身故保险金，不再给付上述身故保险金。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额的五倍",
+            "normalizedFormula": "basic_insured_amount * 5",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至合同满期日",
+        "insurerObligation": "按已交保险费给付满期保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至合同满期日，我们按已交保险费给付满期保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "已交保险费",
+            "normalizedFormula": "total_paid_premium",
+            "requiredInputs": ["total_paid_premium"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

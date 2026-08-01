@@ -1,0 +1,46 @@
+{
+  "fixtureId": "endowment-conversion-option",
+  "realSample": true,
+  "identity": {
+    "company": "吉祥人寿保险股份有限公司",
+    "productName": "吉祥人寿鼎盛2号两全保险（万能型）",
+    "sourceDigest": "sha256:b4d2775634291e309661868f0f6c004cc8118f778dea9cacf4209ba1fde3fead"
+  },
+  "sourceText": "二、满期生存保险金 被保险人生存至保险期间届满，我们按保险期间届满之日本合同个人账户价值给付“满期生存保险金”，给付后个人账户价值为零，本合同终止。第八条 年金转换选择权 在被保险人生存至保险期间届满时，您可以申请年金转换，经我们审核同意后，可将本合同申请时的全部现金价值按照我们当时所提供的年金领取方式转换为年金产品，转换后本合同终止。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "maturity",
+      "liability": "满期生存保险金",
+      "role": "maturity_responsibility",
+      "triggerCondition": "被保险人生存至保险期间届满",
+      "insurerObligation": "我们按保险期间届满之日本合同个人账户价值给付“满期生存保险金”",
+      "sourceExcerpt": "二、满期生存保险金 被保险人生存至保险期间届满，我们按保险期间届满之日本合同个人账户价值给付“满期生存保险金”，给付后个人账户价值为零，本合同终止。",
+      "indicators": [
+        {
+          "formulaText": "保险期间届满日个人账户价值",
+          "basisKey": "personal_account_value",
+          "requiredInputs": [
+            "personal_account_value_at_maturity"
+          ],
+          "evidenceTokens": [
+            "个人账户价值",
+            "保险期间届满"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": [
+    {
+      "title": "年金转换选择权",
+      "role": "product_function",
+      "sourceExcerpt": "第八条 年金转换选择权 在被保险人生存至保险期间届满时，您可以申请年金转换，经我们审核同意后，可将本合同申请时的全部现金价值按照我们当时所提供的年金领取方式转换为年金产品，转换后本合同终止。"
+    }
+  ]
+}

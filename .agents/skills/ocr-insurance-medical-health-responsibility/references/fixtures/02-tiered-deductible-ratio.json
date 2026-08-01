@@ -1,0 +1,101 @@
+{
+  "fixtureId": "tiered-deductible-ratio",
+  "sourceText": "本合同为主险合同。一般医疗保险金：被保险人接受住院治疗时，我们对合理医疗费用按保险计划表给付。计划一年度免赔额1万元、给付比例100%；计划二年度免赔额2万元、给付比例80%。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例分档医疗保险",
+    "sourceDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "general-medical",
+        "liability": "一般医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人接受住院治疗时",
+        "insurerObligation": "我们对合理医疗费用按保险计划表给付",
+        "sourceExcerpt": "一般医疗保险金：被保险人接受住院治疗时，我们对合理医疗费用按保险计划表给付。计划一年度免赔额1万元、给付比例100%；计划二年度免赔额2万元、给付比例80%。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "合理医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [
+            {
+              "valueText": "1万元",
+              "scopeText": "计划一年度免赔额1万元",
+              "sourceExcerpt": "计划一年度免赔额1万元、给付比例100%"
+            },
+            {
+              "valueText": "2万元",
+              "scopeText": "计划二年度免赔额2万元",
+              "sourceExcerpt": "计划二年度免赔额2万元、给付比例80%"
+            }
+          ],
+          "reimbursementRates": [
+            {
+              "valueText": "100%",
+              "scopeText": "计划一",
+              "sourceExcerpt": "计划一年度免赔额1万元、给付比例100%"
+            },
+            {
+              "valueText": "80%",
+              "scopeText": "计划二",
+              "sourceExcerpt": "计划二年度免赔额2万元、给付比例80%"
+            }
+          ],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "basisKey": "piecewise",
+            "requiredInputs": [
+              "actualMedicalExpense",
+              "deductible",
+              "reimbursementRate",
+              "manualFormulaInputs"
+            ],
+            "branches": [
+              {
+                "branchId": "plan-1",
+                "conditionText": "计划一",
+                "formulaText": "年度免赔额1万元、给付比例100%"
+              },
+              {
+                "branchId": "plan-2",
+                "conditionText": "计划二",
+                "formulaText": "年度免赔额2万元、给付比例80%"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "一般医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

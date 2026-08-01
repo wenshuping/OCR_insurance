@@ -1,0 +1,109 @@
+{
+  "fixtureId": "guaranteed-balance-frequency-branches",
+  "realSample": true,
+  "identity": {
+    "company": "中信保诚人寿保险有限公司",
+    "productName": "中信保诚「福享隽生」养老年金保险",
+    "sourceDigest": "sha256:79441760371020beea91dd073a7ec8a8a2ddfe34837dd440339c54d194f00dd1"
+  },
+  "sourceText": "自养老年金开始领取日（含）起至养老年金截止领取日（含）止，若被保险人在每个养老年金领取日生存，我们按以下约定给付养老年金：若您选择年领方式，我们在每个养老年金领取日将按本主险合同基本保险金额的1.19倍给付养老年金。若您选择月领方式，我们在每个养老年金领取日将按本主险合同基本保险金额的10%给付养老年金。若被保险人在保证给付期限内身故，我们将按保证给付期限内应给付的养老年金总额与累计已给付的养老年金两者的差额一次性向身故保险金受益人给付“保证给付的养老年金”。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity_survival",
+      "liability": "养老年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "若被保险人在每个养老年金领取日生存",
+      "insurerObligation": "我们按以下约定给付养老年金",
+      "sourceExcerpt": "自养老年金开始领取日（含）起至养老年金截止领取日（含）止，若被保险人在每个养老年金领取日生存，我们按以下约定给付养老年金：若您选择年领方式，我们在每个养老年金领取日将按本主险合同基本保险金额的1.19倍给付养老年金。若您选择月领方式，我们在每个养老年金领取日将按本主险合同基本保险金额的10%给付养老年金。",
+      "annuityProfile": {
+        "startConditionText": "自养老年金开始领取日（含）起",
+        "survivalConditionText": "若被保险人在每个养老年金领取日生存",
+        "frequency": {
+          "type": "multiple",
+          "optionTexts": [
+            "年领方式",
+            "月领方式"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "fixed_term",
+          "startText": "养老年金开始领取日（含）",
+          "endText": "养老年金截止领取日（含）",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "guaranteed_total",
+          "periodText": "保证给付期限"
+        },
+        "growthRule": {
+          "type": "level"
+        },
+        "terminationConditions": []
+      },
+      "indicators": [
+        {
+          "formulaText": "年领为基本保险金额×1.19，月领为基本保险金额×10%",
+          "basisKey": "piecewise",
+          "requiredInputs": [
+            "basic_insurance_amount",
+            "annuity_frequency"
+          ],
+          "evidenceTokens": [
+            "1.19倍",
+            "10%"
+          ],
+          "branches": [
+            {
+              "branchId": "annual",
+              "conditionText": "若您选择年领方式",
+              "formulaText": "基本保险金额×1.19",
+              "basisKey": "basic_insurance_amount",
+              "requiredInputs": [
+                "basic_insurance_amount"
+              ]
+            },
+            {
+              "branchId": "monthly",
+              "conditionText": "若您选择月领方式",
+              "formulaText": "基本保险金额×10%",
+              "basisKey": "basic_insurance_amount",
+              "requiredInputs": [
+                "basic_insurance_amount"
+              ]
+            }
+          ],
+          "operands": []
+        }
+      ]
+    },
+    {
+      "responsibilityId": "annuity_guaranteed_balance",
+      "liability": "保证给付的养老年金",
+      "role": "death_responsibility",
+      "triggerCondition": "若被保险人在保证给付期限内身故",
+      "insurerObligation": "一次性向身故保险金受益人给付“保证给付的养老年金”",
+      "sourceExcerpt": "若被保险人在保证给付期限内身故，我们将按保证给付期限内应给付的养老年金总额与累计已给付的养老年金两者的差额一次性向身故保险金受益人给付“保证给付的养老年金”。",
+      "indicators": [
+        {
+          "formulaText": "保证总额-累计已给付养老年金",
+          "basisKey": "guaranteed_total_minus_cumulative",
+          "requiredInputs": [
+            "guaranteed_total_annuity",
+            "cumulative_paid_annuity"
+          ],
+          "evidenceTokens": [
+            "保证给付期限内应给付的养老年金总额",
+            "累计已给付的养老年金"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": []
+}

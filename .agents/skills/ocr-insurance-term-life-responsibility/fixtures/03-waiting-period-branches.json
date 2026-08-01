@@ -1,0 +1,74 @@
+{
+  "fixtureId": "term-life-waiting-period-branches",
+  "title": "等待期内外不同给付",
+  "sourceText": "身故或全残保险金：被保险人因意外伤害或等待期九十日后因疾病导致身故或全残，我们按基本保险金额给付；被保险人在等待期九十日内因疾病导致身故或全残，我们返还事件发生时实际交纳的保险费。给付后本合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "waiting_period_different_payment",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故或全残给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_or_total_disability_benefit",
+        "liability": "身故或全残保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人身故或全残",
+        "insurerObligation": "按分支给付基本保险金额或返还实际交纳的保险费",
+        "normalizedFormula": "piecewise",
+        "requiredInputs": [
+          "term_sum_assured",
+          "actual_paid_premium_at_event"
+        ],
+        "branches": [
+          {
+            "branchId": "accident_or_after_waiting",
+            "conditionText": "被保险人因意外伤害或等待期九十日后因疾病导致身故或全残",
+            "formulaText": "按基本保险金额给付",
+            "basisKey": "term_sum_assured",
+            "calculationStatus": "display_only",
+            "requiredInputs": [
+              "term_sum_assured"
+            ],
+            "evidenceTokens": [
+              "基本保险金额"
+            ],
+            "operands": []
+          },
+          {
+            "branchId": "disease_during_waiting",
+            "conditionText": "被保险人在等待期九十日内因疾病导致身故或全残",
+            "formulaText": "返还事件发生时实际交纳的保险费",
+            "basisKey": "actual_paid_premium",
+            "calculationStatus": "display_only",
+            "requiredInputs": [
+              "actual_paid_premium_at_event"
+            ],
+            "evidenceTokens": [
+              "实际交纳的保险费"
+            ],
+            "operands": []
+          }
+        ],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故或全残保险金：被保险人因意外伤害或等待期九十日后因疾病导致身故或全残，我们按基本保险金额给付；被保险人在等待期九十日内因疾病导致身故或全残，我们返还事件发生时实际交纳的保险费。给付后本合同终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

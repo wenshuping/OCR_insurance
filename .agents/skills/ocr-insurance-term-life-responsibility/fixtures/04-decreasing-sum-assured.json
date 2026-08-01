@@ -1,0 +1,45 @@
+{
+  "fixtureId": "term-life-decreasing-sum-assured",
+  "title": "递减保额",
+  "sourceText": "保险期间为二十年。身故保险金：被保险人在保险期间内身故，我们按身故所在保单年度的年度有效保额给付身故保险金，本合同终止。年度有效保额自第二个保单年度起按保险单载明的递减表逐年减少。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "decreasing_sum_assured",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "schedule"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按身故所在保单年度的年度有效保额给付",
+        "normalizedFormula": "decreasing_term_sum_assured_schedule[policy_year]",
+        "requiredInputs": [
+          "policy_year_at_event",
+          "decreasing_term_sum_assured_schedule"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：被保险人在保险期间内身故，我们按身故所在保单年度的年度有效保额给付身故保险金，本合同终止。年度有效保额自第二个保单年度起按保险单载明的递减表逐年减少。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

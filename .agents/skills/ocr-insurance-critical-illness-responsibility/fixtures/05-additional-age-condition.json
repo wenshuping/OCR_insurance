@@ -1,0 +1,25 @@
+{
+  "fixtureId": "additional-age-condition",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立疾病保险合同。",
+  "sourceText": "本合同为独立疾病保险合同。重度疾病额外保险金：被保险人在年满60周岁的首个保单周年日前于等待期后初次确诊重度疾病，保险人除给付重度疾病保险金外，再按基本保险金额的50%给付重度疾病额外保险金；达到该保单周年日后不承担本项额外给付责任。",
+  "candidates": [
+    {
+      "heading": "重度疾病额外保险金",
+      "sectionType": "responsibility",
+      "evidence": "重度疾病额外保险金：被保险人在年满60周岁的首个保单周年日前于等待期后初次确诊重度疾病，保险人除给付重度疾病保险金外，再按基本保险金额的50%给付重度疾病额外保险金；达到该保单周年日后不承担本项额外给付责任。",
+      "triggerCondition": "被保险人在年满60周岁的首个保单周年日前于等待期后初次确诊重度疾病",
+      "insurerObligation": "再按基本保险金额的50%给付重度疾病额外保险金",
+      "formula": {
+        "formulaText": "基本保险金额的50%",
+        "requiredInputs": ["basic_insurance_amount", "insured_age_at_policy_anniversary", "diagnosis_date"],
+        "evidenceTokens": ["60周岁", "保单周年日前", "50%"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["重度疾病额外保险金"],
+    "rejectedHeadings": [],
+    "patterns": ["additional_benefit", "age_condition", "branch"]
+  }
+}

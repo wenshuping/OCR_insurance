@@ -1,0 +1,74 @@
+{
+  "fixtureId": "max-premium-cash-value",
+  "sourceText": "本合同独立生效。被保险人在保险期间内身故，我们按实际交纳的保险费与身故时现金价值的较大者给付身故保险金，本合同终止。被保险人生存至保险期间届满，我们按基本保险金额给付满期保险金，本合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "death",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按实际交纳的保险费与身故时现金价值的较大者给付身故保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故，我们按实际交纳的保险费与身故时现金价值的较大者给付身故保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "实际交纳的保险费与身故时现金价值的较大者",
+            "normalizedFormula": "max(actual_paid_premium, cash_value)",
+            "requiredInputs": ["actual_paid_premium", "cash_value"],
+            "branches": [],
+            "operands": [
+              {
+                "operandId": "paid-premium",
+                "formulaText": "实际交纳的保险费",
+                "basisKey": "actual_paid_premium",
+                "requiredInputs": ["actual_paid_premium"],
+                "evidenceTokens": ["实际交纳的保险费"]
+              },
+              {
+                "operandId": "cash-value",
+                "formulaText": "身故时现金价值",
+                "basisKey": "cash_value",
+                "requiredInputs": ["cash_value"],
+                "evidenceTokens": ["身故时现金价值"]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至保险期间届满",
+        "insurerObligation": "按基本保险金额给付满期保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至保险期间届满，我们按基本保险金额给付满期保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

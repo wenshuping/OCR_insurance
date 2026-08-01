@@ -1,120 +1,88 @@
 ---
 name: ocr-insurance-single-product-responsibility-review
-description: Use for OCR_insurance single-product manual review of insurance responsibilities and quantitative indicators from official insurer PDFs or official pages. Trigger when a product has no responsibility cards, garbled or weak pageText, user disputes whether text is an insurance responsibility, or the user says not to batch inject responsibilities and wants one-by-one policy-qa plus policy-liability-qa verification before writing SQLite or Feishu.
+description: "Orchestrate complete OCR_insurance review for exactly one insurance product: exact-version official-source responsibility inventory, product overview, customer responsibility cards, quantitative indicator mapping, independent semantic audit, and guarded SQLite or Feishu publication. Use when a product is missing, incomplete, disputed, duplicated, version-confused, or needs one-by-one repair."
 ---
 
-# OCR Insurance Single Product Responsibility Review
+# Single Product Responsibility Review
 
-Use this skill to review exactly one insurance product at a time, split official responsibility clauses, decide indicator computability, and write only manually checked rows into the OCR_insurance development database.
+Review exactly one product through four separate evidence stages. Never let generated cards or existing indicators define what the official product contains.
+
+## Required Pipeline
+
+Use `$ocr-insurance-product-responsibility-pipeline` as the single entry point. It automatically applies the inventory, card, indicator, mapping, and independent-audit stages. Do not skip its inventory or audit even when the database already has cards and indicators.
 
 ## Hard Rules
 
-- Do not batch inject responsibilities with broad rules.
-- Do not treat `scripts/materialize-product-responsibility-cards.mjs` output as trusted until every generated card is manually reviewed.
-- Use official insurer PDFs, official insurer pages, or regulator/industry disclosure sources only.
-- Apply `policy-qa` source discipline: keep source URL, product name, company, title, access/extraction evidence, and exact excerpt.
-- Apply `policy-liability-qa` responsibility threshold: accepted text must include a covered event/condition and the insurer obligation to pay, reimburse, waive, or provide a benefit.
-- For code or DB writes, follow `karpathy-guidelines`, project `AGENTS.md`, and create a SQLite backup first.
-- Write the development DB unless the user explicitly names production: `.runtime/local/policy-ocr.sqlite`.
-- If the user asks Feishu too, write local first, then sync Feishu and prove readback separately. Never claim Feishu is done without readback.
-- Keep customer-facing policy responsibility text separate from internal indicator validation.
-  - Customer-facing output may show product summary, covered event/condition, benefit/payment explanation, limits, exclusions, and official source.
-  - Do not show `indicatorCheckStatus`, `indicatorCheckIssues`, `basisKey`, `calculationKey`, `calculationEligible`, `calculationStatus`, `calculationReason`, `needs_table`, or phrases such as `指标核对`, `结构化指标`, `现金流测算`, `需表格`.
-  - Internal verification reports may include those fields, but label them as internal and keep them out of policy responsibility copy shown to customers.
+- Use exact-version official insurer clauses/pages or regulator disclosures.
+- Keep `可选责任一/二` and similar labels as groups; create cards and indicators for their concrete child responsibilities.
+- Preserve product overview, responsibility text, card copy, and indicator metadata as separate outputs.
+- Never substitute premium for insured amount or simplify unsupported formula branches.
+- Existing database rows are comparison targets, not completeness evidence.
+- Back up SQLite before any write.
+- Default to `.runtime/local/policy-ocr.sqlite`; use production only when explicitly requested.
+- Keep customer-facing cards free of internal audit keys, model names, and implementation commentary.
+- Write Feishu only when explicitly requested and prove readback separately.
 
-## Single Product Workflow
+## Workflow
 
-1. Lock the product scope.
-   - Identify exact `company`, `product_name`, and official URL.
-   - Query local rows before changing anything:
-     ```bash
-     sqlite3 .runtime/local/policy-ocr.sqlite "
-       select count(*) from product_responsibility_cards where company='<公司>' and product_name='<产品>';
-       select id, url, length(json_extract(payload,'$.pageText')) from knowledge_records where company='<公司>' and product_name='<产品>';
-       select id, liability, coverage_type from insurance_indicator_records where company='<公司>' and product_name='<产品>';
-     "
-     ```
+1. Pin exact `company`, `productName`, and product-version evidence.
+2. Read existing knowledge, cards, indicators, and optional-responsibility records for comparison.
+3. Run the inventory stage from official source and save the artifact.
+4. Build exactly one card per inventory responsibility.
+5. Map every responsibility to one or more indicators or an explicit `not_quantitative` decision.
+6. Run an independent audit against a fresh official responsibility checklist.
+7. Stop unless audit status is `approved`.
+8. Create a SQLite backup.
+9. Upsert reviewed indicators/cards by stable responsibility ID; prune stale rows only when the independent audit identifies them and the accepted inventory replaces them.
+10. Read back SQLite and compare it again to the approved artifact.
+11. Run focused tests and `npm run check` if code changed.
 
-2. Inspect the official source directly.
-   - Download official PDF to `.runtime/tmp/`.
-   - Extract text with `pypdf`.
-   - Locate the real responsibility section, not the table of contents. Prefer anchors such as `在本合同有效期内`, `我们按以下约定承担保险责任`, `保险责任`, `保险金`, `年金`, `满期`, `身故`, `全残`, `医疗`, `豁免`.
-   - If local `pageText` starts with escaped or garbled text such as `\376\377`, treat the local source as broken and re-extract from PDF.
+## Development Database Inspection
 
-3. Decide responsibilities manually.
-   - Create one responsibility per clean liability name, for example `身故保险金`, `满期保险金`, `生存保险金`, `住院医疗保险金`, `豁免保险费`.
-   - Reject section labels and fragments such as `保险金`, `诉讼时效受益人向我们请求给付保险金`, `未还款项我们在给付各项保险金`, `责任免除`, claim procedure text, surrender-only text, or headings without an obligation.
-   - Preserve the exact official `sourceExcerpt` covering each accepted liability.
+```bash
+sqlite3 .runtime/local/policy-ocr.sqlite "
+  select count(*) from product_responsibility_cards
+   where company='<公司>' and product_name='<产品>';
+  select id, url, length(json_extract(payload,'$.pageText'))
+    from knowledge_records
+   where company='<公司>' and product_name='<产品>';
+  select id, liability, coverage_type
+    from insurance_indicator_records
+   where company='<公司>' and product_name='<产品>';
+"
+```
 
-4. Decide indicator computability.
-   - Scheduled returns such as maturity, survival, annuity, birthday, education, retirement, and other certain payments can be `scheduled_cashflow` when the amount and timing are computable from policy fields.
-   - Death, full disability, critical illness, medical, accident, and waiver benefits are responsibility indicators but normally not fixed cashflows; use `claim_contingent` or `waiver_only`.
-   - Keep table-dependent formulas structured but not directly computable. Examples:
-     - `满期保险金 = 已支付保险费 × 110%`: `basisKey: total_paid_premium`, `calculationKey: percent_of_total_paid_premium`, `calculationEligible: true`.
-     - `身故保险金 = max(现金价值 + 附加险现金价值, 已支付保险费 × 110%)`: `basisKey: cash_value`, `calculationKey: manual_formula`, `calculationEligible: false`, reason: needs cash value / attached-policy data.
-   - Do not silently reduce a `max(...)` formula to only the paid-premium side.
-   - Every stored indicator must include `basisKey`, `calculationKey`, `calculationEligible`, `calculationReason`, and `calculationMetadataVersion`.
+## Backup Before Write
 
-5. Back up before writing.
-   ```bash
-   RUN_DIR=".runtime/single-product-responsibility-$(date +%Y%m%d-%H%M%S)"
-   mkdir -p "$RUN_DIR"
-   sqlite3 .runtime/local/policy-ocr.sqlite "VACUUM INTO '$RUN_DIR/policy-ocr-before.sqlite';"
-   ```
+```bash
+RUN_DIR=".runtime/single-product-responsibility-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$RUN_DIR"
+sqlite3 .runtime/local/policy-ocr.sqlite \
+  "VACUUM INTO '$RUN_DIR/policy-ocr-before.sqlite';"
+```
 
-6. Write only reviewed rows.
-   - Update `knowledge_records.payload.pageText` only for the matching source row when PDF extraction repaired broken or incomplete text.
-   - Upsert only the manually reviewed `insurance_indicator_records`.
-   - Include source fields on every indicator: `sourceRecordId`, `sourceUrl`, `sourceTitle`, `sourceExcerpt`, `sourceEvidenceLevel`, `responsibilityScope`, `selectionStatus`, `selectionEvidence`.
-   - Use the repo normalizer from `src/indicator-calculation.mjs` to generate calculation metadata; do not hand-write inconsistent keys.
+## Publication Gate
 
-7. Materialize and prune.
-   - Run materialization only for the product:
-     ```bash
-     node scripts/materialize-product-responsibility-cards.mjs \
-       --db-path=.runtime/local/policy-ocr.sqlite \
-       --company='<公司>' \
-       --product-name='<产品>' \
-       --write \
-       --sample-limit=20
-     ```
-   - Immediately inspect generated cards.
-   - Delete any card not manually accepted. The final product card count must equal the reviewed responsibility list, not the raw materializer output.
+Require all of these before marking the product verified:
 
-8. Verify.
-   - Read back final cards:
-     ```bash
-     sqlite3 .runtime/local/policy-ocr.sqlite "
-       select title, category, cashflow_treatment, calculation_status, calculation_reason,
-              json_extract(payload,'$.indicatorCheckStatus'),
-              json_extract(payload,'$.indicatorCheckSummary')
-         from product_responsibility_cards
-        where company='<公司>' and product_name='<产品>'
-        order by title;
-     "
-     ```
-   - Read back indicators and confirm formulas/source excerpts.
-   - Run computability audit for the DB and ensure no metadata drift for the written rows.
-   - If code changed, run focused tests plus `npm run check`.
+- independent official checklist equals approved inventory by stable IDs;
+- approved inventory equals responsibility cards by stable IDs;
+- every responsibility has an indicator decision;
+- all formula constants and bases are supported by the responsibility source excerpt;
+- optional selection is preserved and unselected/unknown benefits are not included in current-policy totals;
+- exact product version is proven;
+- SQLite readback equals the approved artifact.
+
+Do not use `inventory count == card count == indicator count` as the only approval test.
 
 ## Final Report
 
-For customer-facing responsibility output, report these items:
+Report separately:
 
-- What type of product this is and what need it solves.
-- The main covered responsibilities in plain language.
-- Benefit/payment method and important limits.
-- Major exclusions or waiting-period limits when relevant.
-- Official source URL or title.
-
-For internal verification output, report these items separately:
-
-- Product and company.
-- Official source URL and PDF/page title.
-- Whether local `pageText` was repaired.
-- Accepted responsibilities and rejected fragments.
-- Indicator table with formula, `cashflowTreatment`, `calculationStatus`, and `indicatorCheckStatus`.
-- Exact DB path written.
-- Backup path.
-- Verification commands/results.
-- Feishu status separately if requested.
+- product overview and customer-facing responsibilities;
+- optional responsibility selection state;
+- indicator formulas and calculability status;
+- official source and exact-version evidence;
+- independent audit matrix and status;
+- database path, backup path, writes/prunes, and readback result;
+- Feishu status only when requested.

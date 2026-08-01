@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR 重疾险责任解析"
+  short_description: "从官方条款提取、校验并审计通用重疾险责任结构与证据"
+  default_prompt: "Use $ocr-insurance-critical-illness-responsibility to parse and audit critical-illness responsibilities from exact official terms."

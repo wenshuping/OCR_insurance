@@ -1,0 +1,65 @@
+{
+  "fixtureId": "participating-dividend-function",
+  "sourceText": "本合同为独立生效的分红型两全保险合同。被保险人在保险期间内身故，我们按已交保险费给付身故保险金，本合同终止。被保险人生存至合同期满日，我们按基本保险金额给付满期保险金，本合同终止。本合同的红利分配是不确定的，保单红利为非保证利益。",
+  "artifact": {
+    "sourceDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为独立生效的分红型两全保险合同。"
+        }
+      ]
+    },
+    "productFunctions": [
+      {
+        "functionKind": "participating_dividend",
+        "guaranteeStatus": "non_guaranteed",
+        "sourceExcerpt": "本合同的红利分配是不确定的，保单红利为非保证利益。"
+      }
+    ],
+    "responsibilities": [
+      {
+        "responsibilityId": "death",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故",
+        "insurerObligation": "按已交保险费给付身故保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故，我们按已交保险费给付身故保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "已交保险费",
+            "normalizedFormula": "total_paid_premium",
+            "requiredInputs": ["total_paid_premium"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至合同期满日",
+        "insurerObligation": "按基本保险金额给付满期保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至合同期满日，我们按基本保险金额给付满期保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

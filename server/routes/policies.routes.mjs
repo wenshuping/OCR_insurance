@@ -5,8 +5,10 @@ import {
   customerPolicyPhotoPendingMatch,
   mergeCustomerPolicyPhotoScans,
   normalizeCustomerPolicyPhotoUploadItems,
+  sanitizeCustomerPolicyPhotoOcrPage,
   sanitizeCustomerPolicyPhotoKnowledgeText,
 } from '../customer-policy-photo-knowledge.service.mjs';
+import { parseCustomerUploadResponsibilityArtifact } from '../customer-upload-responsibility-pipeline.service.mjs';
 import { evidenceVerificationFields } from '../evidence-classification.service.mjs';
 import { hydratePolicyCoverageIndicators } from '../policy-ocr.domain.mjs';
 import { isCurrentResponsibilityProjection } from '../policy-derived-results.service.mjs';
@@ -64,6 +66,7 @@ export function createPolicyRoutes(context) {
     normalizeOptionalResponsibilities,
     buildOptionalResponsibilityReview,
     findPolicyCoverageIndicators,
+    parseCustomerUploadResponsibility = parseCustomerUploadResponsibilityArtifact,
     normalizeProvidedAnalysis,
     requestOwner,
     familyInputHasBindingFields,
@@ -529,18 +532,49 @@ export function createPolicyRoutes(context) {
         ...(mergedScan.data || {}),
         ocrText: String(mergedScan.ocrText || '').trim(),
       };
+      const ocrPages = supplementScans.map((scan, index) => ({
+        pageNumber: index + 1,
+        name: uploadItems[index]?.name || `第${index + 1}张`,
+        ocrText: sanitizeCustomerPolicyPhotoOcrPage({
+          ocrText: scan?.ocrText,
+          scan,
+          manualData,
+        }),
+      })).filter((page) => page.ocrText);
+      const existingCoverageIndicators = findPolicyCoverageIndicators(policyDraft, state.insuranceIndicatorRecords);
+      const reusablePipelineIndicators = existingCoverageIndicators.filter((indicator) => (
+        String(indicator?.extractionMethod || '') === 'official_clause_deterministic_pipeline'
+        && String(indicator?.responsibilityId || '').trim()
+      ));
+      const reuseExistingPipelineResult = reusablePipelineIndicators.length > 0;
+      const responsibilityPipeline = reuseExistingPipelineResult
+        ? {
+            status: 'reused_library',
+            pipelineVersion: 'official_clause_deterministic_pipeline',
+            attempts: 0,
+            normalizationPasses: 0,
+            validationIssues: [],
+            artifact: null,
+          }
+        : await parseCustomerUploadResponsibility({
+            company: policyDraft.company,
+            productName: policyDraft.name,
+            ocrPages,
+          });
       const sanitizedText = sanitizeCustomerPolicyPhotoKnowledgeText({
         ocrText: mergedScan.ocrText,
         scan: mergedScan,
         manualData,
-      });
-      const knowledgeRecord = buildCustomerPolicyPhotoKnowledgeRecord({
+      }) || ocrPages.map((page) => page.ocrText).join('\n').slice(0, 6000).trim();
+      const knowledgeRecord = reuseExistingPipelineResult ? null : buildCustomerPolicyPhotoKnowledgeRecord({
         company: policyDraft.company,
         productName: policyDraft.name,
         pageText: sanitizedText,
         ownerUserId: user?.id,
         ownerGuestId: guestId,
         uploadItems,
+        ocrPages,
+        responsibilityPipeline,
       });
       const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
       const savedKnowledgeRecords = knowledgeRecord && typeof upsertKnowledgeRecords === 'function'
@@ -598,6 +632,10 @@ export function createPolicyRoutes(context) {
         optionalResponsibilities,
         knowledgeRecordIds: savedKnowledgeRecords.map((record) => record.id).filter(Boolean),
         uploadedCount: uploadItems.length,
+        responsibilityPipelineStatus: responsibilityPipeline.status,
+        responsibilityPipelineAttempts: responsibilityPipeline.attempts,
+        responsibilityValidationIssues: responsibilityPipeline.validationIssues,
+        reusedLibraryResponsibilityCount: reusablePipelineIndicators.length,
         ...matchPayload,
       });
     } catch (error) {

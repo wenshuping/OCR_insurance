@@ -1,0 +1,44 @@
+{
+  "fixtureId": "rider-accident-medical",
+  "realSample": true,
+  "identity": {
+    "company": "工银安盛人寿保险有限公司",
+    "productName": "工银安盛人寿附加意外伤害医疗保险（B款）",
+    "sourceDigest": "sha256:d501ca06f1a1c8ce8eb354fbd9240cf0246f80e2a131c518ad34b9baad16ff44"
+  },
+  "contractTopology": "rider",
+  "topologyEvidence": {
+    "mainContractDependency": {
+      "required": true,
+      "sourceExcerpt": ""
+    },
+    "effectiveTerminationLinkage": {
+      "effectiveRule": "本附加合同有效期内",
+      "terminationRule": "",
+      "sourceExcerpt": ""
+    },
+    "insuredAmountReference": {
+      "source": "rider_schedule",
+      "formulaText": "累计给付以本附加合同的基本保险金额为限",
+      "sourceExcerpt": "累计给付金额以本附加合同的基本保险金额为限"
+    }
+  },
+  "sections": [
+    {
+      "sectionId": "accident-outpatient-medical",
+      "heading": "意外伤害门急诊医疗补偿金",
+      "role": "responsibility",
+      "triggerCondition": "遭受意外伤害事故并在境内医院接受门急诊治疗",
+      "insurerObligation": "对90日内实际门急诊医疗费用按是否已获补偿的分支给付",
+      "sourceExcerpt": "我们对于自该意外伤害事故发生之日起90日内实际产生的门急诊医疗费用，按以下计算方式给付意外伤害门急诊医疗补偿金。",
+      "requiredInputs": ["actual_expense", "third_party_compensation", "reimbursement_ratio"],
+      "branches": ["with_other_compensation", "without_other_compensation"]
+    }
+  ],
+  "expected": {
+    "status": "review",
+    "responsibilityIds": ["accident-outpatient-medical"],
+    "supportingSectionIds": [],
+    "issueCodes": ["rider_main_contract_dependency_missing", "rider_effective_termination_linkage_missing"]
+  }
+}

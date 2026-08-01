@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Audit"
+  short_description: "Audit source, card, and indicator completeness independently"
+  default_prompt: "Use $ocr-insurance-responsibility-audit to independently audit official responsibilities, cards, indicators, formulas, and product-version evidence."

@@ -1,0 +1,29 @@
+{
+  "fixtureId": "rider-dependency",
+  "contractTopology": "rider",
+  "topologyEvidence": "本附加合同须附加于主合同，主合同终止时本附加合同同时终止。",
+  "topology": {
+    "mainContractDependency": "须附加于主合同",
+    "terminationLink": "主合同终止时本附加合同同时终止"
+  },
+  "sourceText": "本附加合同须附加于主合同，主合同终止时本附加合同同时终止。附加重大疾病保险金：本附加合同有效且等待期后初次确诊重大疾病，保险人按本附加合同基本保险金额给付。",
+  "candidates": [
+    {
+      "heading": "附加重大疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "附加重大疾病保险金：本附加合同有效且等待期后初次确诊重大疾病，保险人按本附加合同基本保险金额给付。",
+      "triggerCondition": "本附加合同有效且等待期后初次确诊重大疾病",
+      "insurerObligation": "保险人按本附加合同基本保险金额给付",
+      "formula": {
+        "formulaText": "按本附加合同基本保险金额给付",
+        "requiredInputs": ["rider_basic_insurance_amount", "rider_contract_status"],
+        "evidenceTokens": ["本附加合同有效", "本附加合同基本保险金额"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["附加重大疾病保险金"],
+    "rejectedHeadings": [],
+    "patterns": ["rider_dependency"]
+  }
+}

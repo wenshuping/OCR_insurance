@@ -1,0 +1,21 @@
+{
+  "id": "cognitive-impairment-care",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "cognitive_monthly_care",
+      "liability": "认知障碍长期护理保险金",
+      "triggerCondition": "专科医生诊断认知障碍并由认可机构评定持续需要他人监护。",
+      "insurerObligation": "保险人按月给付认知障碍护理保险金。",
+      "sourceExcerpt": "经专科医生诊断认知障碍并由认可机构评定持续需要他人监护满180日，我们每月给付约定护理金额，最多给付60次；不再需要监护、身故或满60次时停止。",
+      "careTrigger": {"cognitiveImpairment": {"definitionText": "认知障碍并持续需要他人监护", "diagnosisOrEvidenceText": "专科医生和认可机构评定"}, "continuousState": {"durationText": "180日"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "paymentCountText": "最多60次", "terminationText": "不再需要监护、身故或满60次"},
+      "formula": {"formulaText": "月护理金=约定护理金额", "normalizedFormula": "monthly_care = scheduled_care_amount", "requiredInputs": ["monthly_benefit_amount"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "cognitive_medical_note", "classification": "medical_explanation", "text": "医学说明不构成保险责任。"},
+    {"fragmentId": "assessment_steps", "classification": "assessment_process", "text": "列明评定材料和流程。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["medical_explanation", "assessment_process"]}
+}

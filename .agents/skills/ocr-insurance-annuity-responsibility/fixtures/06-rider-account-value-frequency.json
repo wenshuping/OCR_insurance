@@ -1,0 +1,146 @@
+{
+  "fixtureId": "rider-account-value-frequency",
+  "realSample": true,
+  "identity": {
+    "company": "富德生命人寿保险股份有限公司",
+    "productName": "富德生命附加金管家D款年金保险（万能型）（2016版）",
+    "sourceDigest": "sha256:89472c41d329c79704168dcf88e73dae527a0c7e761cb17ed9bf0507e06cf4a5"
+  },
+  "sourceText": "1.年领 若被保险人在约定的首次领取日（须为某月1日）及之后的每个首次领取日对应的周年日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的1%给付年金，给付后个人账户价值等额减少。2.月领 若被保险人在约定的首次领取日（须为某月1日）及之后的每月1日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的0.1%给付年金，给付后个人账户价值等额减少。若被保险人在保险合同上所载明的本附加合同期满日的二十四时仍生存，本公司将按期满日的个人账户价值给付满期保险金，给付后个人账户价值即为零，本附加合同终止。",
+  "contractTopology": {
+    "type": "rider",
+    "evidenceSegments": [
+      {
+        "sourceExcerpt": "本附加合同期满日"
+      }
+    ]
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "annuity_annual",
+      "liability": "年金给付（年领）",
+      "role": "annuity_responsibility",
+      "triggerCondition": "若被保险人在约定的首次领取日（须为某月1日）及之后的每个首次领取日对应的周年日零时仍生存",
+      "insurerObligation": "本公司将按当时个人账户价值的1%给付年金",
+      "sourceExcerpt": "1.年领 若被保险人在约定的首次领取日（须为某月1日）及之后的每个首次领取日对应的周年日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的1%给付年金，给付后个人账户价值等额减少。",
+      "annuityProfile": {
+        "startConditionText": "约定的首次领取日",
+        "survivalConditionText": "若被保险人在约定的首次领取日（须为某月1日）及之后的每个首次领取日对应的周年日零时仍生存",
+        "frequency": {
+          "type": "annual",
+          "optionTexts": [
+            "年领"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "other",
+          "startText": "约定的首次领取日",
+          "endText": "",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "decrease"
+        },
+        "terminationConditions": [
+          "个人账户价值不足"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "个人账户价值×1%",
+          "basisKey": "personal_account_value",
+          "requiredInputs": [
+            "personal_account_value_at_annuity_date"
+          ],
+          "evidenceTokens": [
+            "个人账户价值",
+            "1%"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    },
+    {
+      "responsibilityId": "annuity_monthly",
+      "liability": "年金给付（月领）",
+      "role": "annuity_responsibility",
+      "triggerCondition": "若被保险人在约定的首次领取日（须为某月1日）及之后的每月1日零时仍生存",
+      "insurerObligation": "本公司将按当时个人账户价值的0.1%给付年金",
+      "sourceExcerpt": "2.月领 若被保险人在约定的首次领取日（须为某月1日）及之后的每月1日零时仍生存，在个人账户结算并扣除当月保单管理费后，本公司将按当时个人账户价值的0.1%给付年金，给付后个人账户价值等额减少。",
+      "annuityProfile": {
+        "startConditionText": "约定的首次领取日",
+        "survivalConditionText": "若被保险人在约定的首次领取日（须为某月1日）及之后的每月1日零时仍生存",
+        "frequency": {
+          "type": "monthly",
+          "optionTexts": [
+            "月领"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "other",
+          "startText": "约定的首次领取日",
+          "endText": "",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "decrease"
+        },
+        "terminationConditions": [
+          "个人账户价值不足"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "个人账户价值×0.1%",
+          "basisKey": "personal_account_value",
+          "requiredInputs": [
+            "personal_account_value_at_annuity_date"
+          ],
+          "evidenceTokens": [
+            "个人账户价值",
+            "0.1%"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    },
+    {
+      "responsibilityId": "maturity",
+      "liability": "满期保险金",
+      "role": "maturity_responsibility",
+      "triggerCondition": "若被保险人在保险合同上所载明的本附加合同期满日的二十四时仍生存",
+      "insurerObligation": "本公司将按期满日的个人账户价值给付满期保险金",
+      "sourceExcerpt": "若被保险人在保险合同上所载明的本附加合同期满日的二十四时仍生存，本公司将按期满日的个人账户价值给付满期保险金，给付后个人账户价值即为零，本附加合同终止。",
+      "indicators": [
+        {
+          "formulaText": "期满日个人账户价值",
+          "basisKey": "personal_account_value",
+          "requiredInputs": [
+            "personal_account_value_at_maturity"
+          ],
+          "evidenceTokens": [
+            "期满日",
+            "个人账户价值"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": [
+    {
+      "title": "个人账户结算及保单管理费",
+      "role": "product_function",
+      "sourceExcerpt": "在个人账户结算并扣除当月保单管理费后"
+    }
+  ]
+}

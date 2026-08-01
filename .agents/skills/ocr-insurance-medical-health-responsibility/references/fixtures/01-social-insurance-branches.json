@@ -1,0 +1,110 @@
+{
+  "fixtureId": "social-insurance-branches",
+  "sourceText": "本合同为主险合同。住院医疗保险金：被保险人因疾病住院治疗，对实际发生的合理且必要的住院医疗费用，扣除其他途径补偿和1000元免赔额后，已从基本医疗保险获得补偿的按100%给付，未从基本医疗保险获得补偿的按60%给付，年度限额100万元。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例住院医疗保险",
+    "sourceDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "inpatient-medical",
+        "liability": "住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因疾病住院治疗",
+        "insurerObligation": "已从基本医疗保险获得补偿的按100%给付，未从基本医疗保险获得补偿的按60%给付",
+        "sourceExcerpt": "住院医疗保险金：被保险人因疾病住院治疗，对实际发生的合理且必要的住院医疗费用，扣除其他途径补偿和1000元免赔额后，已从基本医疗保险获得补偿的按100%给付，未从基本医疗保险获得补偿的按60%给付，年度限额100万元。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {
+            "identityText": "基本医疗保险",
+            "settlementText": "已从基本医疗保险获得补偿",
+            "branchIds": [
+              "with-social-insurance",
+              "without-social-insurance"
+            ]
+          },
+          "deductibles": [
+            {
+              "valueText": "1000元",
+              "scopeText": "1000元免赔额",
+              "sourceExcerpt": "扣除其他途径补偿和1000元免赔额后"
+            }
+          ],
+          "reimbursementRates": [
+            {
+              "valueText": "100%",
+              "scopeText": "已从基本医疗保险获得补偿",
+              "sourceExcerpt": "已从基本医疗保险获得补偿的按100%给付"
+            },
+            {
+              "valueText": "60%",
+              "scopeText": "未从基本医疗保险获得补偿",
+              "sourceExcerpt": "未从基本医疗保险获得补偿的按60%给付"
+            }
+          ],
+          "limits": {
+            "annual": [
+              {
+                "valueText": "100万元",
+                "scopeText": "年度限额100万元",
+                "sourceExcerpt": "年度限额100万元"
+              }
+            ],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "basisKey": "piecewise",
+            "requiredInputs": [
+              "actualMedicalExpense",
+              "thirdPartyPaid",
+              "deductible",
+              "reimbursementRate",
+              "liabilityLimit"
+            ],
+            "branches": [
+              {
+                "branchId": "with-social-insurance",
+                "conditionText": "已从基本医疗保险获得补偿",
+                "formulaText": "按100%给付"
+              },
+              {
+                "branchId": "without-social-insurance",
+                "conditionText": "未从基本医疗保险获得补偿",
+                "formulaText": "按60%给付"
+              }
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "住院医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

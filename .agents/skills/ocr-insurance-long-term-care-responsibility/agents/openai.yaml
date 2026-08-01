@@ -1,0 +1,4 @@
+interface:
+  display_name: "护理保险责任解析"
+  short_description: "精准解析护理责任的状态条件、给付公式、证据与审计门禁"
+  default_prompt: "Use $ocr-insurance-long-term-care-responsibility to parse exact-version long-term-care responsibilities and report unsupported fields for review."

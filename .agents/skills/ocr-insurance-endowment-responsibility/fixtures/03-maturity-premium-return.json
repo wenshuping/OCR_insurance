@@ -1,0 +1,59 @@
+{
+  "fixtureId": "maturity-premium-return",
+  "sourceText": "本合同独立生效。被保险人在保险期间内身故或全残，我们按基本保险金额给付身故或全残保险金，本合同终止。被保险人生存至满期日，我们按本合同实际交纳的保险费的120%给付满期生存保险金，本合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "death-total-disability",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在保险期间内身故或全残",
+        "insurerObligation": "按基本保险金额给付身故或全残保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人在保险期间内身故或全残，我们按基本保险金额给付身故或全残保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "maturity-return",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至满期日",
+        "insurerObligation": "按本合同实际交纳的保险费的120%给付满期生存保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "被保险人生存至满期日，我们按本合同实际交纳的保险费的120%给付满期生存保险金，本合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "本合同实际交纳的保险费的120%",
+            "normalizedFormula": "actual_paid_premium * 1.2",
+            "requiredInputs": ["actual_paid_premium"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

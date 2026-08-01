@@ -7,6 +7,9 @@ import { DatabaseSync } from 'node:sqlite';
 
 import {
   auditDurableDataPersistence,
+  auditDevelopmentDatabaseBinding,
+  auditDevelopmentProcessOwnership,
+  auditDevelopmentSourceOwnership,
   auditExecutionPoints,
   auditFeatureTestGate,
   auditHighRiskScriptDefaults,
@@ -79,6 +82,102 @@ test('execution point audit fails when check.sh does not invoke harness audit', 
   const report = auditExecutionPoints({ projectRoot: root });
   assert.equal(report.failed.length, 1);
   assert.match(report.failed[0].message, /scripts\/check\.sh/);
+});
+
+test('development source ownership audit fails from a non-owning worktree', () => {
+  const report = auditDevelopmentSourceOwnership({
+    projectRoot: '/repo/non-owner',
+    runtimeDir: '/runtime/local',
+    realpath: (value) => value,
+    readSourceOwner: () => '/repo/dev-owner',
+  });
+  assert.equal(report.failed.length, 1);
+  assert.match(report.failed[0].detail, /current worktree: \/repo\/non-owner/u);
+  assert.match(report.failed[0].detail, /development source owner: \/repo\/dev-owner/u);
+});
+
+test('development source ownership audit passes for the owning worktree and skips before first start', () => {
+  const passed = auditDevelopmentSourceOwnership({
+    projectRoot: '/repo/dev-owner',
+    runtimeDir: '/runtime/local',
+    realpath: (value) => value,
+    readSourceOwner: () => '/repo/dev-owner',
+  });
+  assert.equal(passed.failed.length, 0);
+  assert.equal(passed.passed.length, 1);
+
+  const skipped = auditDevelopmentSourceOwnership({
+    projectRoot: '/repo/new',
+    runtimeDir: '/runtime/local',
+    realpath: (value) => value,
+    readSourceOwner: () => '',
+  });
+  assert.equal(skipped.failed.length, 0);
+  assert.equal(skipped.skipped.length, 1);
+});
+
+test('development process ownership audit accepts listeners managed by the bound worktree', () => {
+  const report = auditDevelopmentProcessOwnership({
+    runtimeDir: '/runtime/local',
+    readSourceOwner: () => '/repo/dev-owner',
+    realpath: (value) => value,
+    servicePorts: [{ name: 'api', label: 'API 服务', port: 4207 }],
+    readManagedPid: () => 101,
+    findListeners: () => [101],
+    readCwd: () => '/repo/dev-owner',
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 1);
+});
+
+test('development process ownership audit rejects unmanaged listeners and listeners from another worktree', () => {
+  const unmanaged = auditDevelopmentProcessOwnership({
+    runtimeDir: '/runtime/local',
+    readSourceOwner: () => '/repo/dev-owner',
+    realpath: (value) => value,
+    servicePorts: [{ name: 'web', label: '前端页面', port: 3014 }],
+    readManagedPid: () => 0,
+    findListeners: () => [202],
+    readCwd: () => '/repo/dev-owner',
+  });
+  assert.equal(unmanaged.failed.length, 1);
+  assert.match(unmanaged.failed[0].message, /not managed/u);
+
+  const wrongWorktree = auditDevelopmentProcessOwnership({
+    runtimeDir: '/runtime/local',
+    readSourceOwner: () => '/repo/dev-owner',
+    realpath: (value) => value,
+    servicePorts: [{ name: 'api', label: 'API 服务', port: 4207 }],
+    readManagedPid: () => 101,
+    findListeners: () => [101],
+    readCwd: () => '/repo/other-worktree',
+  });
+  assert.equal(wrongWorktree.failed.length, 1);
+  assert.match(wrongWorktree.failed[0].message, /different worktree/u);
+});
+
+test('development database binding audit requires the configured database and matches the API process', () => {
+  const matching = auditDevelopmentDatabaseBinding({
+    runtimeDir: '/runtime/local',
+    realpath: (value) => value,
+    readConfiguredPath: () => '/ssd/policy-ocr.sqlite',
+    pathExists: () => true,
+    readManagedPid: () => 101,
+    readProcessEnv: () => '/ssd/policy-ocr.sqlite',
+  });
+  assert.equal(matching.failed.length, 0);
+  assert.equal(matching.passed.length, 1);
+
+  const mismatch = auditDevelopmentDatabaseBinding({
+    runtimeDir: '/runtime/local',
+    realpath: (value) => value,
+    readConfiguredPath: () => '/ssd/policy-ocr.sqlite',
+    pathExists: () => true,
+    readManagedPid: () => 101,
+    readProcessEnv: () => '/repo/.runtime/local/policy-ocr.sqlite',
+  });
+  assert.equal(mismatch.failed.length, 1);
+  assert.match(mismatch.failed[0].message, /different database/u);
 });
 
 test('pattern matching supports recursive glob patterns', () => {

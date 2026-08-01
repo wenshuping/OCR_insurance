@@ -1,6 +1,7 @@
 import {
   catalogProductIdentity,
   catalogProductScore,
+  catalogSearchTerms,
   searchExactProductCatalog,
   searchProductCatalog,
 } from './product-catalog-search.mjs';
@@ -95,20 +96,24 @@ function publicProductRows(db, tenantId) {
   return productRowsByStatus(db, tenantId, 'active');
 }
 
-function readySummaryProductRows(db) {
+function readySummaryProductRows(db, query = '') {
+  const normalizedQuery = clean(query);
+  if (!normalizedQuery) return [];
   const columns = tableColumns(db, 'product_customer_responsibility_summaries');
   if (!columns.has('company') || !columns.has('product_name') || !columns.has('status')) return [];
-  const updatedAt = columns.has('updated_at') ? 'updated_at DESC,' : '';
+  const terms = catalogSearchTerms(normalizedQuery).filter((term) => term.length >= 2).slice(0, 20);
+  if (!terms.length) return [];
   const rows = db.prepare(`
     SELECT company, product_name
     FROM product_customer_responsibility_summaries
     WHERE status = 'ready'
-    ORDER BY ${updatedAt} company, product_name
-  `).all();
+      AND (${terms.map(() => 'product_name LIKE ?').join(' OR ')})
+    ORDER BY company, product_name
+  `).all(...terms.map((term) => `%${term}%`));
   const products = new Map();
   for (const row of rows) {
     const company = clean(row.company);
-    const officialName = clean(row.product_name);
+    const officialName = clean(row.productName || row.product_name);
     const identity = catalogProductIdentity(officialName);
     if (!company || !identity) continue;
     const key = `${company}\u0000${identity}`;
@@ -125,9 +130,9 @@ function readySummaryProductRows(db) {
   return [...products.values()].filter((product) => product.canonicalProductId);
 }
 
-function publicResolvableProducts(db, tenantId) {
+function publicResolvableProducts(db, tenantId, query = '') {
   const products = new Map();
-  for (const product of [...publicProductRows(db, tenantId), ...readySummaryProductRows(db)]) {
+  for (const product of [...publicProductRows(db, tenantId), ...readySummaryProductRows(db, query)]) {
     const key = productIdentityKey(product);
     if (!products.has(key)) products.set(key, product);
   }
@@ -500,7 +505,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
     resolveAllFromText({ question, insurerMentions = [] } = {}) {
       const normalizedQuestion = comparable(clean(question).slice(0, 1_000));
       if (!normalizedQuestion) return { entities: [], overflow: false };
-      const products = publicResolvableProducts(db, scopedTenantId);
+      const products = publicResolvableProducts(db, scopedTenantId, normalizedQuestion);
       const companies = [...new Set(products.map((row) => row.company))];
       const mentionedCompanies = insurerCompaniesInQuestion({
         normalizedQuestion,
@@ -599,7 +604,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
       if (!productText) {
         const entity = boundedActiveProduct(activeProduct);
         if (!entity) return emptyResult('missing');
-        const products = publicResolvableProducts(db, scopedTenantId);
+        const products = publicResolvableProducts(db, scopedTenantId, entity.officialName);
         const current = products.find((product) => (
           product.canonicalProductId === entity.canonicalProductId
         ));
@@ -619,7 +624,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         }, candidates: [] };
       }
 
-      const products = publicResolvableProducts(db, scopedTenantId);
+      const products = publicResolvableProducts(db, scopedTenantId, productText);
       const draftProducts = productRowsByStatus(db, scopedTenantId, 'draft');
       const companies = [...new Set([...products, ...draftProducts].map((row) => row.company))];
       const company = resolveCompany(insurerText, companies, profiles);

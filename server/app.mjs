@@ -118,11 +118,15 @@ import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { createProductRagService } from './product-rag.service.mjs';
 import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
 import { createInsuranceExpertAgentPlanner } from './insurance-expert-agent-planner.service.mjs';
-import { createInsuranceExpertSkillRegistry } from './insurance-expert-skill-registry.service.mjs';
 import {
+  buildCustomerResponsibilitySummaryFromCards,
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
 } from './product-customer-responsibility-summary.service.mjs';
+import {
+  createProductResponsibilityPipelineQueue,
+  createProductResponsibilityPipelineRunner,
+} from './product-responsibility-pipeline-queue.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
@@ -1108,13 +1112,14 @@ function clearPolicyReportForRegeneration(state, policy) {
 function normalizeResponsibilityQueryInput(value = {}) {
   const company = trim(value?.company).slice(0, 80);
   const name = trim(value?.name).slice(0, 160);
+  const canonicalProductId = trim(value?.canonicalProductId).slice(0, 200);
   if (!company || !name) {
     const error = new Error('请输入保险公司和保险名称');
     error.code = 'POLICY_RESPONSIBILITY_QUERY_INPUT_REQUIRED';
     error.status = 400;
     throw error;
   }
-  return { company, name };
+  return { company, name, canonicalProductId };
 }
 
 function policyInputMetrics(body = {}) {
@@ -2444,6 +2449,36 @@ export function createPolicyOcrApp(options = {}) {
   const findProductCustomerResponsibilitySummary = typeof options.findProductCustomerResponsibilitySummary === 'function'
     ? (input = {}) => options.findProductCustomerResponsibilitySummary(input)
     : null;
+  let customerResponsibilitySummaryQuery = null;
+  const runProductResponsibilityPipeline = options.runProductResponsibilityPipeline
+    || (options.db && options.productResponsibilityPipelineDbPath
+      ? createProductResponsibilityPipelineRunner({
+        db: options.db,
+        dbPath: options.productResponsibilityPipelineDbPath,
+        runtimeDir: options.productResponsibilityPipelineRuntimeDir,
+      })
+      : null);
+  const productResponsibilityPipelineQueue = options.productResponsibilityPipelineQueue
+    || (options.db && runProductResponsibilityPipeline ? createProductResponsibilityPipelineQueue({
+      db: options.db,
+      runJob: runProductResponsibilityPipeline,
+      intervalMs: options.productResponsibilityPipelineIntervalMs,
+      afterPublished: async (job) => {
+        if (typeof customerResponsibilitySummaryQuery !== 'function') {
+          throw new Error('Customer responsibility summary query is not registered');
+        }
+        const result = await customerResponsibilitySummaryQuery({
+          company: job.company,
+          name: job.productName,
+        });
+        if (!result?.ok) {
+          throw new Error(result?.message || 'Customer responsibility summary generation failed');
+        }
+      },
+    }) : null);
+  const enqueueProductResponsibilityPipeline = productResponsibilityPipelineQueue
+    ? (input = {}) => productResponsibilityPipelineQueue.enqueue(input)
+    : null;
   const markPolicyDerivedResultsStaleByProductKeys = typeof options.markPolicyDerivedResultsStaleByProductKeys === 'function'
     ? (input = {}) => options.markPolicyDerivedResultsStaleByProductKeys({ state, ...input })
     : null;
@@ -2525,20 +2560,25 @@ export function createPolicyOcrApp(options = {}) {
     ));
     if (!needsHydration || !cashflowDb || ownsCashflowDb) return existing;
 
-    const current = loadCurrentPolicyIndicators(policy);
-    if (!current.length) return existing;
-    if (!existing.length) return current;
+    try {
+      const current = loadCurrentPolicyIndicators(policy);
+      if (!current.length) return existing;
+      if (!existing.length) return current;
 
-    const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
-    return existing.map((indicator) => {
-      const latest = byId.get(String(indicator?.id || ''));
-      return latest ? {
-        ...latest,
-        responsibilityScope: indicator.responsibilityScope || latest.responsibilityScope,
-        selectionStatus: indicator.selectionStatus || latest.selectionStatus,
-        selectionEvidence: indicator.selectionEvidence || latest.selectionEvidence,
-      } : indicator;
-    });
+      const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
+      return existing.map((indicator) => {
+        const latest = byId.get(String(indicator?.id || ''));
+        if (!latest) return indicator;
+        return {
+          ...latest,
+          responsibilityScope: indicator.responsibilityScope || latest.responsibilityScope,
+          selectionStatus: indicator.selectionStatus || latest.selectionStatus,
+          selectionEvidence: indicator.selectionEvidence || latest.selectionEvidence,
+        };
+      });
+    } catch {
+      return existing;
+    }
   }
 
   /**
@@ -2586,7 +2626,6 @@ export function createPolicyOcrApp(options = {}) {
 
   let responsibilityAssistantQuery = null;
   let responsibilityAssistantProductMatch = null;
-  let customerResponsibilitySummaryQuery = null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
   const productRagService = options.productRagService
@@ -2611,6 +2650,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
+    parseCustomerUploadResponsibility: options.parseCustomerUploadResponsibility,
     persistPolicyDerivedResult,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
@@ -2755,6 +2795,7 @@ export function createPolicyOcrApp(options = {}) {
     legacyExternalProductReferenceRecords,
     withPolicyProductMatchStatus,
     generateProductCustomerResponsibilitySummary,
+    buildCustomerResponsibilitySummaryFromCards,
     enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek: options.generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek: options.generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
@@ -2779,6 +2820,7 @@ export function createPolicyOcrApp(options = {}) {
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
+    enqueueProductResponsibilityPipeline,
     buildAdminOverview,
     buildOptionalResponsibilityGaps,
     buildAdminReportIssueDetail,
@@ -2930,8 +2972,7 @@ export function createPolicyOcrApp(options = {}) {
     && typeof agentStore.createAgentActionConfirmation === 'function'
     && typeof agentStore.transferPolicyBetweenFamilies === 'function';
   const insuranceExpertEnv = options.env || process.env;
-  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry
-    || createInsuranceExpertSkillRegistry();
+  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry || null;
   const insuranceExpertPlanner = options.insuranceExpertPlanner
     || (insuranceExpertEnv.DEEPSEEK_API_KEY
       ? createInsuranceExpertAgentPlanner({
@@ -3149,6 +3190,11 @@ export function createPolicyOcrApp(options = {}) {
   if (recovery) {
     app.locals.transferRegenerationRecovery = recovery;
     app.once('close', () => recovery.stop());
+  }
+  if (productResponsibilityPipelineQueue && options.disableProductResponsibilityPipelineWorker !== true) {
+    productResponsibilityPipelineQueue.start();
+    app.locals.productResponsibilityPipelineQueue = productResponsibilityPipelineQueue;
+    app.once('close', () => productResponsibilityPipelineQueue.stop());
   }
   app.locals.agentConfirmationService = agentConfirmationService;
   app.use('/api/agent', createAgentRouter({

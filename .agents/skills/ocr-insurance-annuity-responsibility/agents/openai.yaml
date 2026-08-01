@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR Insurance Annuity Responsibility"
+  short_description: "Parse and audit source-locked annuity responsibilities"
+  default_prompt: "Use $ocr-insurance-annuity-responsibility to parse or audit an exact-version annuity product without guessing from its name."

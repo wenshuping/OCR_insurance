@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR 定期寿险责任解析"
+  short_description: "解析中国定期寿险责任、给付公式、证据门与合同结构边界"
+  default_prompt: "Use $ocr-insurance-term-life-responsibility to review a Chinese term-life product from exact-version official evidence."

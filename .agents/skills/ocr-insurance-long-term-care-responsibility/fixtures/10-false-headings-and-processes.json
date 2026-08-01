@@ -1,0 +1,24 @@
+{
+  "id": "false-headings-and-processes",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "one_time_care",
+      "liability": "一次性护理保险金",
+      "triggerCondition": "首次达到条款约定的护理状态。",
+      "insurerObligation": "保险人按基本保险金额给付一次性护理保险金。",
+      "sourceExcerpt": "被保险人首次达到条款约定的护理状态时，我们按基本保险金额给付一次性护理保险金，仅给付一次，给付后本项责任终止。",
+      "benefit": {"paymentMode": "lump_sum", "cadence": "once", "terminationText": "仅给付一次，给付后终止"},
+      "formula": {"formulaText": "一次性护理金=基本保险金额", "normalizedFormula": "lump_sum_care = basic_sum_insured", "requiredInputs": ["basic_sum_insured"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "care_state", "classification": "care_state_definition", "text": "护理状态定义。"},
+    {"fragmentId": "disease_terms", "classification": "disease_definition", "text": "疾病医学定义。"},
+    {"fragmentId": "medical_note", "classification": "medical_explanation", "text": "医学说明。"},
+    {"fragmentId": "exclusions", "classification": "exclusion", "text": "责任免除。"},
+    {"fragmentId": "assessment", "classification": "assessment_process", "text": "护理状态评定流程。"},
+    {"fragmentId": "claims", "classification": "claims_process", "text": "保险金申请材料。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["care_state_definition", "disease_definition", "medical_explanation", "exclusion", "assessment_process", "claims_process"]}
+}

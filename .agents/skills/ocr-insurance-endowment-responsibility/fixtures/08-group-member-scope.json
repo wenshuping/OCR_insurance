@@ -1,0 +1,63 @@
+{
+  "fixtureId": "group-member-scope",
+  "sourceText": "本合同为团体保险合同，符合约定并加入本合同的团体成员为被保险人，成员离开投保团体时其保险责任终止。被保险人在其保险期间内身故或全残，我们按该成员保险金额给付身故或全残保险金，该成员保险责任终止。被保险人生存至其保险期间届满，我们按该成员保险金额给付满期保险金，该成员保险责任终止。",
+  "artifact": {
+    "sourceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "contractTopology": {
+      "type": "group",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为团体保险合同，符合约定并加入本合同的团体成员为被保险人，成员离开投保团体时其保险责任终止。"
+        }
+      ],
+      "groupContract": {
+        "memberEligibilityText": "符合约定并加入本合同的团体成员为被保险人",
+        "exitText": "成员离开投保团体时其保险责任终止"
+      }
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "member-death-total-disability",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "被保险人在其保险期间内身故或全残",
+        "insurerObligation": "按该成员保险金额给付身故或全残保险金",
+        "terminationEffect": "该成员保险责任终止",
+        "sourceExcerpt": "被保险人在其保险期间内身故或全残，我们按该成员保险金额给付身故或全残保险金，该成员保险责任终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "该成员保险金额",
+            "normalizedFormula": "member_insured_amount",
+            "requiredInputs": ["member_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "member-maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至其保险期间届满",
+        "insurerObligation": "按该成员保险金额给付满期保险金",
+        "terminationEffect": "该成员保险责任终止",
+        "sourceExcerpt": "被保险人生存至其保险期间届满，我们按该成员保险金额给付满期保险金，该成员保险责任终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "该成员保险金额",
+            "normalizedFormula": "member_insured_amount",
+            "requiredInputs": ["member_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

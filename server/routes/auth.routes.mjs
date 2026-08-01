@@ -1,5 +1,6 @@
 import express from 'express';
 import { sendError } from '../http/errors.mjs';
+import { isCurrentResponsibilityProjection } from '../policy-derived-results.service.mjs';
 
 function guestPoliciesToMigrate(state, guestId) {
   if (!guestId) return [];
@@ -62,10 +63,15 @@ export function createAuthRoutes(context) {
   function attachStoredPolicyDerivedResult(policy) {
     const displayed = attachPolicyFamilyDisplay(policy, state);
     const derivedResult = findPolicyDerivedResult(policy?.id);
-    if (derivedResult && typeof mergePolicyDerivedResult === 'function') {
+    const needsLiveCoverageProjection = Boolean(
+      derivedResult
+      && !isCurrentResponsibilityProjection(derivedResult)
+      && !(Array.isArray(derivedResult.coverageIndicators) && derivedResult.coverageIndicators.length),
+    );
+    if (derivedResult && !needsLiveCoverageProjection && typeof mergePolicyDerivedResult === 'function') {
       return mergePolicyDerivedResult(displayed, derivedResult);
     }
-    if (!derivedResult && typeof attachPolicyCoverageIndicators === 'function') {
+    if ((!derivedResult || needsLiveCoverageProjection) && typeof attachPolicyCoverageIndicators === 'function') {
       const attached = attachPolicyCoverageIndicators(
         displayed,
         state.insuranceIndicatorRecords,
@@ -73,12 +79,15 @@ export function createAuthRoutes(context) {
         state.optionalResponsibilityRecords,
       );
       if (typeof mergePolicyDerivedResult === 'function') {
-        return mergePolicyDerivedResult(attached, null);
+        return {
+          ...mergePolicyDerivedResult(attached, null),
+          derivedStaleReason: derivedResult ? 'missing_coverage_indicators' : 'missing',
+        };
       }
       return {
         ...attached,
         derivedStatus: 'stale',
-        derivedStaleReason: 'missing',
+        derivedStaleReason: derivedResult ? 'missing_coverage_indicators' : 'missing',
       };
     }
     return {

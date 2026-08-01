@@ -1,0 +1,28 @@
+{
+  "id": "bundle-care-and-medical-separation",
+  "topology": "bundle_component",
+  "responsibilities": [
+    {
+      "responsibilityId": "component_monthly_care",
+      "liability": "长期护理津贴保险金",
+      "triggerCondition": "达到约定护理状态并持续通过复核。",
+      "insurerObligation": "保险人按月给付固定护理津贴。",
+      "sourceExcerpt": "达到约定护理状态并持续通过复核的，我们按月给付固定护理津贴，最多24个月；恢复、身故或满24个月时停止。",
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "benefitPeriodText": "最多24个月", "terminationText": "恢复、身故或满24个月"},
+      "formula": {"formulaText": "月护理津贴=保单载明固定金额", "normalizedFormula": "monthly_care = scheduled_fixed_amount", "requiredInputs": ["monthly_benefit_amount"], "branches": [], "operands": []}
+    },
+    {
+      "responsibilityId": "component_care_medical_reimbursement",
+      "liability": "护理医疗费用补偿保险金",
+      "triggerCondition": "因约定护理状态发生实际且必要的护理医疗费用。",
+      "insurerObligation": "保险人扣除其他补偿和免赔额后按比例补偿实际医疗费用。",
+      "sourceExcerpt": "因约定护理状态发生实际且必要的护理医疗费用，我们在扣除其他补偿和免赔额后按80%补偿实际医疗费用，以责任限额为上限。",
+      "benefit": {"paymentMode": "reimbursement", "cadence": "other", "aggregateLimitText": "以责任限额为上限", "terminationText": "达到责任限额时停止"},
+      "formula": {"formulaText": "min((实际医疗费用-其他补偿-免赔额)×80%,责任限额)", "normalizedFormula": "min((actual_medical_expense - third_party_paid - deductible) * 0.8, liability_limit)", "requiredInputs": ["actual_medical_expense", "third_party_paid", "deductible", "liability_limit"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "bundle_plan_name", "classification": "group_heading", "text": "营销组合名称只用于映射组件。"}
+  ],
+  "expected": {"acceptedCount": 2, "rejectedClassifications": ["group_heading"]}
+}

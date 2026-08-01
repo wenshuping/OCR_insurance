@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Pipeline"
+  short_description: "Generate audited responsibilities, cards, and mapped indicators"
+  default_prompt: "Use $ocr-insurance-product-responsibility-pipeline to generate the artifact from exact-version official clauses, execute the bundled canonicalizer, validator, and renderer from this selected skill directory, and for generation/repair/backfill runs publish an approved result to the development SQLite database with the bundled publisher. Return the complete execution and publication receipt plus verbatim renderer output. Never claim approved or published without actual zero exit codes and passed database readback."

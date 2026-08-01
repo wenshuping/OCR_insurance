@@ -1,0 +1,55 @@
+{
+  "fixtureId": "term-life-bundle-component",
+  "title": "组合保障计划中的定期寿险组件",
+  "sourceText": "本定期寿险责任为组合保障计划的组成部分，责任保险期间以计划书载明为准；组合保障计划终止时，本责任同时终止。身故保险金：被保险人在本责任保险期间内身故，我们按计划书载明的本责任保险金额给付身故保险金，本责任终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "bundle_component",
+    "focusedShape": "bundle_component_term_life",
+    "topology": {
+      "mainContractDependency": {
+        "relationship": "组合保障计划组成部分",
+        "terminationEffect": "组合保障计划终止时本责任同时终止"
+      },
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "bundle_plan"
+      },
+      "terminationLinkage": [
+        {
+          "event": "组合保障计划终止",
+          "effect": "bundle_component_terminates"
+        },
+        {
+          "event": "身故保险金给付",
+          "effect": "responsibility_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "bundle_term_death_benefit",
+        "liability": "身故保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "responsibilityEffectivePeriod": {
+          "scope": "bundle_component",
+          "sourceExcerpt": "责任保险期间以计划书载明为准"
+        },
+        "triggerCondition": "被保险人在本责任保险期间内身故",
+        "insurerObligation": "按计划书载明的本责任保险金额给付身故保险金",
+        "normalizedFormula": "bundle_term_component_sum_assured",
+        "requiredInputs": [
+          "bundle_term_component_sum_assured"
+        ],
+        "branches": [],
+        "operands": [],
+        "terminationEffects": [
+          "responsibility_terminates"
+        ],
+        "sourceExcerpt": "身故保险金：被保险人在本责任保险期间内身故，我们按计划书载明的本责任保险金额给付身故保险金，本责任终止。"
+      }
+    ],
+    "rejectedFragments": []
+  }
+}

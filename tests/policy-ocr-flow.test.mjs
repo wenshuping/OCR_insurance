@@ -5439,6 +5439,9 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
       analyzerCalls += 1;
       throw new Error('analyzer should not run when product cards already exist');
     },
+    onlineResponsibilityProductMatcher: async () => {
+      throw new Error('online matcher should not run when product cards already exist');
+    },
     persistResponsibilityLookupArtifacts: async (input) => {
       persistenceCalls += 1;
       return {
@@ -5482,6 +5485,33 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
     assert.equal(partialNameResult.payload.persistence.reusedResponsibilityCardCount, 1);
     assert.equal(analyzerCalls, 0);
     assert.equal(persistenceCalls, 0);
+
+    const legalPrefixResult = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/query', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '测试保险股份有限公司安心一号',
+      }),
+    });
+    assert.equal(legalPrefixResult.response.status, 200);
+    assert.equal(legalPrefixResult.payload.analysis.rawAnalysis.generatedBy, 'existing_responsibility_cards_fast_path');
+    assert.equal(legalPrefixResult.payload.analysis.responsibilityCards[0].productName, '安心一号');
+    assert.equal(analyzerCalls, 0);
+    assert.equal(persistenceCalls, 0);
+
+    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
+      method: 'POST',
+      body: JSON.stringify({
+        company: '测试保险',
+        name: '安心一号',
+        includeOnline: true,
+      }),
+    });
+    assert.equal(matched.response.status, 200);
+    assert.equal(matched.payload.status, 'exact');
+    assert.equal(matched.payload.matches.length, 1);
+    assert.equal(matched.payload.matches[0].productName, '安心一号');
+    assert.equal(matched.payload.matches[0].needsConfirmation, false);
   } finally {
     await server.close();
     db.close();
@@ -5668,6 +5698,7 @@ test('customer responsibility summary generates once and then reads from databas
   const persistedSummaries = new Map();
   let modelCalls = 0;
   let materialModelCalls = 0;
+  let materialRetrieveCalls = 0;
   const app = createPolicyOcrApp({
     state,
     db,
@@ -5700,17 +5731,20 @@ test('customer responsibility summary generates once and then reads from databas
       };
     },
     productRagService: {
-      retrieve: () => ({
-        evidenceChunks: [{
-          evidenceId: 'M1',
-          content: '上传课件介绍了保单检视服务。',
-          sourceAuthority: 'company_material',
-          reviewStatus: 'published',
-          pageStart: 6,
-          pageEnd: 6,
-          citation: { fileName: '产品培训课件.pptx', pageStart: 6, pageEnd: 6 },
-        }],
-      }),
+      retrieve: () => {
+        materialRetrieveCalls += 1;
+        return {
+          evidenceChunks: [{
+            evidenceId: 'M1',
+            content: '上传课件介绍了保单检视服务。',
+            sourceAuthority: 'company_material',
+            reviewStatus: 'published',
+            pageStart: 6,
+            pageEnd: 6,
+            citation: { fileName: '产品培训课件.pptx', pageStart: 6, pageEnd: 6 },
+          }],
+        };
+      },
     },
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek: async ({ prompt }) => {
       materialModelCalls += 1;
@@ -7865,6 +7899,65 @@ test('policy list falls back to live indicator records when derived result is mi
   }
 });
 
+test('policy detail rebuilds an empty legacy derived projection from current indicators', async () => {
+  const state = {
+    users: [{ id: 1, mobile: '13800000000', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' }],
+    sessions: [{ token: 'user-token', userId: 1, createdAt: '2026-06-08T00:00:00.000Z' }],
+    smsCodes: [],
+    policies: [{
+      id: 7,
+      userId: 1,
+      guestId: '',
+      company: '新华保险',
+      name: '测试两全保险',
+      insured: '温舒萍',
+      amount: 100000,
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z',
+    }],
+    insuranceIndicatorRecords: [{
+      id: 'ind_maturity',
+      company: '新华保险',
+      productName: '测试两全保险',
+      coverageType: '现金流',
+      liability: '满期保险金',
+      normalizedFormula: 'basic_insurance_amount',
+      formulaText: '基本保险金额',
+      sourceEvidenceLevel: 'official_excerpt',
+      sourceUrl: 'https://example.com/terms.pdf',
+      sourceExcerpt: '按基本保险金额给付满期保险金。',
+    }],
+    knowledgeRecords: [],
+    optionalResponsibilityRecords: [],
+    policyDerivedResults: [{
+      policyId: 7,
+      coverageIndicators: [],
+      responsibilityCards: [],
+      responsibilityProjectionVersion: 'legacy',
+      status: 'ready',
+      staleReason: '',
+      generatedAt: '2026-06-15T00:00:00.000Z',
+    }],
+    nextId: 8,
+  };
+  const app = createPolicyOcrApp({ state });
+  const server = await listen(app);
+
+  try {
+    const detail = await jsonFetch(server.baseUrl, '/api/policies/7', {
+      headers: { authorization: 'Bearer user-token' },
+    });
+
+    assert.equal(detail.response.status, 200);
+    assert.equal(detail.payload.policy.coverageIndicators[0].id, 'ind_maturity');
+    assert.equal(detail.payload.policy.responsibilityCalculations[0].amount, 100000);
+    assert.equal(detail.payload.policy.derivedStatus, 'stale');
+    assert.equal(detail.payload.policy.derivedStaleReason, 'missing_coverage_indicators');
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy update recomputes and persists the derived result', async () => {
   const derivedCalls = [];
   const state = {
@@ -9023,6 +9116,43 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
   const app = createPolicyOcrApp({
     state,
     adminPassword: 'admin-pass',
+    parseCustomerUploadResponsibility: async ({ company, productName, ocrPages }) => ({
+      status: 'pending_review',
+      pipelineVersion: 'customer_ocr_responsibility_test',
+      attempts: 1,
+      normalizationPasses: 2,
+      validationIssues: [],
+      artifact: {
+        sourceMode: 'customer_ocr_upload',
+        company,
+        productName,
+        responsibilities: [{
+          responsibilityId: 'mild_disease',
+          liability: '轻度疾病保险金',
+          responsibilityKind: 'benefit',
+          coverageAggregation: 'include',
+          selectionStatus: 'unknown',
+          triggerCondition: '被保险人确诊轻度疾病',
+          insurerObligation: '按基本保险金额20%给付',
+          sourcePage: '1',
+          sourceExcerpt: '3.可选责任一 （1）轻度疾病保险金 按基本保险金额20%给付。',
+          card: {
+            title: '轻度疾病保险金',
+            customerSummary: '若投保该责任，确诊轻度疾病后按约定给付。',
+            benefitExplanation: '按基本保险金额20%给付。',
+          },
+          indicators: [{
+            indicatorName: '轻度疾病保险金金额',
+            formulaText: '基本保险金额 × 20%',
+            basisKey: 'insured_amount',
+            calculationStatus: 'display_only',
+            sourcePage: '1',
+            sourceExcerpt: '按基本保险金额20%给付',
+          }],
+        }],
+        evidencePages: ocrPages.map(({ pageNumber, name }) => ({ pageNumber, name })),
+      },
+    }),
     scanner: async ({ uploadItem }) => {
       scannerCalls.push(uploadItem?.name || '');
       return {
@@ -9069,6 +9199,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(scanned.payload.uploadedCount, 5);
     assert.equal(scanned.payload.status, 'candidates');
     assert.equal(scanned.payload.knowledgeRecordIds.length, 1);
+    assert.equal(scanned.payload.responsibilityPipelineStatus, 'pending_review');
+    assert.equal(scanned.payload.responsibilityPipelineAttempts, 1);
     assert.equal(scanned.payload.scan.data.name, '找不到的产品');
     assert.match(scanned.payload.scan.ocrText, /本保单载明已选择可选责任一/u);
     const optionalOne = scanned.payload.optionalResponsibilities.find((item) => item.liability === '可选责任一');
@@ -9083,6 +9215,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(termsRecord.referenceOnly, true);
     assert.doesNotMatch(termsRecord.pageText, /张三|330106198712072413|已选择可选责任一/u);
     assert.match(termsRecord.pageText, /轻度疾病保险金/u);
+    assert.equal(termsRecord.ocrPages.length, 5);
+    assert.equal(termsRecord.responsibilityArtifact.responsibilities.length, 1);
 
     const beforeApproval = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9103,9 +9237,11 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
       headers: { authorization: `Bearer ${login.payload.token}` },
       body: JSON.stringify({ action: 'approved' }),
     });
-    assert.equal(reviewed.response.status, 200);
+    assert.equal(reviewed.response.status, 200, JSON.stringify(reviewed.payload));
     assert.equal(reviewed.payload.record.reviewStatus, 'approved');
     assert.equal(reviewed.payload.record.globalSearchable, true);
+    assert.equal(reviewed.payload.record.publishedResponsibilityCardIds.length, 1);
+    assert.equal(reviewed.payload.record.publishedIndicatorRecordIds.length, 1);
 
     const afterApproval = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9115,7 +9251,7 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
       }),
     });
     const termsMatch = afterApproval.payload.matches.find((match) => match.sourceKind === 'customer_policy_terms');
-    assert.ok(termsMatch);
+    assert.ok(termsMatch, JSON.stringify({ matches: afterApproval.payload.matches, record: state.knowledgeRecords[0] }));
     assert.equal(termsMatch.verificationStatus, 'verified');
     assert.equal(termsMatch.referenceOnly, false);
     assert.equal(afterApproval.payload.status, 'exact');
@@ -9136,6 +9272,8 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(rolledBack.payload.record.originalProductName, '找不到的产品');
     assert.match(rolledBack.payload.record.originalPageText, /轻度疾病保险金/u);
     assert.equal(rolledBack.payload.record.uploadImages.length, 5);
+    assert.equal(rolledBack.payload.record.ocrPages.length, 5);
+    assert.equal(rolledBack.payload.record.publishedResponsibilityCardIds.length, 0);
 
     const afterRollback = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
       method: 'POST',
@@ -9153,6 +9291,62 @@ test('product knowledge photo scan keeps parsed responsibility pages pending unt
     assert.equal(republished.payload.record.productName, '修改后的找不到产品');
     assert.equal(republished.payload.record.originalProductName, '找不到的产品');
     assert.equal(republished.payload.record.uploadImages.length, 5);
+  } finally {
+    await server.close();
+  }
+});
+
+test('product knowledge photo scan reuses deterministic pipeline responsibilities already in the library', async () => {
+  let parserCalls = 0;
+  const state = {
+    users: [], sessions: [], adminSessions: [], smsCodes: [], sourceRecords: [], pendingScans: [],
+    officialDomainProfiles: [], knowledgeRecords: [], policies: [], optionalResponsibilityRecords: [], nextId: 1,
+    insuranceIndicatorRecords: [{
+      id: 'ind_pipeline_existing',
+      company: '新华保险',
+      productName: '已入库测试重疾保险',
+      coverageType: '疾病保障',
+      liability: '重大疾病保险金',
+      responsibilityId: 'critical_illness',
+      extractionMethod: 'official_clause_deterministic_pipeline',
+      sourceKind: 'insurer_official',
+      evidenceLevel: 'insurer_official',
+      official: true,
+      sourceUrl: 'https://official.example.test/terms.pdf',
+      sourceExcerpt: '按基本保险金额给付重大疾病保险金',
+    }],
+  };
+  const app = createPolicyOcrApp({
+    state,
+    parseCustomerUploadResponsibility: async () => {
+      parserCalls += 1;
+      throw new Error('should not generate duplicate responsibilities');
+    },
+    scanner: async () => ({
+      ocrText: '产品名称:已入库测试重疾保险\n保险责任:重大疾病保险金。',
+      data: { company: '新华保险', name: '已入库测试重疾保险' },
+    }),
+  });
+  const server = await listen(app);
+  try {
+    const scanned = await jsonFetch(server.baseUrl, '/api/policies/product-knowledge-scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-reuse-pipeline',
+        company: '新华保险',
+        name: '已入库测试重疾保险',
+        manualData: { company: '新华保险', name: '已入库测试重疾保险' },
+        scan: { ocrText: '保单', data: { company: '新华保险', name: '已入库测试重疾保险' } },
+        uploadItems: [{ name: 'responsibility.jpg', type: 'image/jpeg', size: 100, dataUrl: 'data:image/jpeg;base64,AAAA' }],
+      }),
+    });
+
+    assert.equal(scanned.response.status, 200);
+    assert.equal(scanned.payload.responsibilityPipelineStatus, 'reused_library');
+    assert.equal(scanned.payload.reusedLibraryResponsibilityCount, 1);
+    assert.deepEqual(scanned.payload.knowledgeRecordIds, []);
+    assert.equal(parserCalls, 0);
+    assert.equal(state.knowledgeRecords.length, 0);
   } finally {
     await server.close();
   }
@@ -13896,6 +14090,9 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
     ownerGuestId: 'guest-family-stale-life-reference',
     status: 'active',
     source: 'code',
+    // A persisted report produced by the prior cashflow contract must be
+    // refreshed even when its old version was previously considered current.
+    engineVersion: 4,
     generatedAt: '2026-06-17T01:02:00.000Z',
     createdAt: '2026-06-17T01:02:00.000Z',
     updatedAt: '2026-06-17T01:02:00.000Z',
@@ -13966,7 +14163,7 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
   try {
     const fetched = await jsonFetch(server.baseUrl, '/api/family-profiles/230/report?guestId=guest-family-stale-life-reference');
     assert.equal(fetched.response.status, 200);
-    assert.equal(fetched.payload.reportRecord.engineVersion > 0, true);
+    assert.equal(fetched.payload.reportRecord.engineVersion, 5);
     const life = fetched.payload.reportRecord.report.radar.members[0].scores.find((score) => score.key === 'life');
     assert.equal(life.amount, 0);
     assert.equal(life.coveragePresent, true);
@@ -13974,6 +14171,15 @@ test('family report fetch refreshes stale formula life reference snapshots', asy
     assert.equal(life.amountDetails[0].referenceOnly, true);
     assert.equal(state.familyReportIssues.some((issue) => issue.status === 'open' && issue.category === 'coverage_gap' && issue.dimension === 'life'), false);
     assert.equal(persistCalls.length, 1);
+
+    // A report can already have the same rendered payload while its persisted
+    // engine version is stale. It still must be marked current so subsequent
+    // reads do not keep retrying the stale snapshot path.
+    state.familyReports[0].engineVersion = 4;
+    const versionOnlyRefresh = await jsonFetch(server.baseUrl, '/api/family-profiles/230/report?guestId=guest-family-stale-life-reference');
+    assert.equal(versionOnlyRefresh.response.status, 200);
+    assert.equal(versionOnlyRefresh.payload.reportRecord.engineVersion, 5);
+    assert.equal(persistCalls.length, 2);
   } finally {
     await server.close();
   }

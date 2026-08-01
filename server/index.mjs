@@ -82,6 +82,12 @@ const store = await createSqliteStateStore({
   lazyKnowledgeRecords: ['1', 'true', 'yes', 'on'].includes(
     String(process.env.POLICY_OCR_LAZY_KNOWLEDGE_RECORDS || 'true').trim().toLowerCase(),
   ),
+  lazyFamilyReports: ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.POLICY_OCR_LAZY_FAMILY_REPORTS || 'true').trim().toLowerCase(),
+  ),
+  lazyLargeState: ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.POLICY_OCR_LAZY_LARGE_STATE || 'true').trim().toLowerCase(),
+  ),
 });
 const state = await store.load();
 const agentGatewayOptions = createProductionAgentGatewayOptions({
@@ -132,6 +138,7 @@ function closeRuntime() {
   if (closed) return;
   closed = true;
   app.locals.transferRegenerationRecovery?.stop?.();
+  app.locals.productResponsibilityPipelineQueue?.stop?.();
   store.close();
 }
 server.once('close', closeRuntime);
