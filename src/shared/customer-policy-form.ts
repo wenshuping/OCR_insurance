@@ -517,7 +517,7 @@ export function updateOptionalResponsibilityItems(
   id: string,
   selectionStatus: OptionalResponsibility['selectionStatus'],
   coverageAmount?: number | null,
-) {
+): OptionalResponsibility[] {
   return (Array.isArray(items) ? items : []).map((item) => {
     if (item.id !== id) return item;
     const next = {

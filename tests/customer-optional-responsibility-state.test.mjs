@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import test from 'node:test';
 
 const customerAppSource = fs.readFileSync(new URL('../src/apps/customer/CustomerApp.tsx', import.meta.url), 'utf8');
+const customerPolicyComponentsSource = fs.readFileSync(new URL('../src/shared/customer-policy-components.tsx', import.meta.url), 'utf8');
+const policyReportUiSource = fs.readFileSync(new URL('../src/shared/policy-report-ui.tsx', import.meta.url), 'utf8');
 
 function functionSource(name, nextName) {
   const start = customerAppSource.indexOf(`function ${name}`);
@@ -16,12 +18,46 @@ test('entry optional responsibility choices are saved from the latest manual sel
   const updateSource = functionSource('updateAnalysisOptionalResponsibility', 'openResponsibilityAssistant');
   const submitSource = functionSource('handleSubmit', 'handleCashValueFileChange');
 
-  assert.match(customerAppSource, /optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility\['selectionStatus'\]>>\(new Map\(\)\)/);
-  assert.match(updateSource, /optionalResponsibilitySelectionRef\.current\.set\(id,\s*selectionStatus\)/);
+  assert.match(customerAppSource, /optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibilitySelectionDraft>>\(new Map\(\)\)/);
+  assert.match(updateSource, /optionalResponsibilitySelectionRef\.current\.set\(id,\s*{\s*selectionStatus,\s*coverageAmount/);
   assert.match(updateSource, /setAnalysisDraft\(\(current\) => current[\s\S]*updateOptionalResponsibilityItems\(\s*current\.optionalResponsibilities,\s*id,\s*selectionStatus,\s*coverageAmount/);
   assert.match(submitSource, /const analysisForSubmit = withRememberedOptionalResponsibilitySelections\(analysisDraft\)/);
   assert.match(submitSource, /const hasGeneratedAnalysis = hasAnalysisResult\(analysisForSubmit\)/);
   assert.match(submitSource, /analysis: hasGeneratedAnalysis \? analysisForSubmit : null/);
+});
+
+test('entry optional responsibility amount survives local OCR draft refreshes', () => {
+  const rememberSource = functionSource('rememberOptionalResponsibilitySelections', 'applyRememberedOptionalResponsibilitySelections');
+  const applySource = functionSource('applyRememberedOptionalResponsibilitySelections', 'withRememberedOptionalResponsibilitySelections');
+
+  assert.match(rememberSource, /coverageAmount:\s*item\.coverageAmount/);
+  assert.match(applySource, /const rememberedSelection = id \? remembered\.get\(id\) : undefined/);
+  assert.match(applySource, /rememberedSelection\.selectionStatus,\s*rememberedSelection\.coverageAmount/);
+});
+
+test('manual optional responsibility choice controls card visibility ahead of stale indicator status', () => {
+  const start = policyReportUiSource.indexOf('function responsibilityCardSelectionStatus');
+  const end = policyReportUiSource.indexOf('export function getVisibleResponsibilityCards', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const selectionSource = policyReportUiSource.slice(start, end);
+
+  assert.ok(
+    selectionSource.indexOf('optionalResponsibilities.find') < selectionSource.indexOf('indicatorStatuses'),
+    'the explicit optional responsibility selection should be checked before nested indicator defaults',
+  );
+});
+
+test('optional responsibility indicators render and calculate only after the responsibility is selected', () => {
+  const start = customerPolicyComponentsSource.indexOf('export function OptionalResponsibilityReview');
+  const end = customerPolicyComponentsSource.indexOf('export function PolicyPlanEditor', start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  const reviewSource = customerPolicyComponentsSource.slice(start, end);
+
+  assert.match(reviewSource, /status === 'selected' && linkedIndicators\.length \? \(/);
+  assert.match(reviewSource, /resolveIndicatorAmountFromCalculation\(indicator, \{ baseAmount: coverageAmount, firstPremium, paymentYears \}\)/);
+  assert.doesNotMatch(reviewSource, /4,?493\.85|8,?987\.70/);
 });
 
 test('entry optional responsibility choices survive local draft refreshes', () => {

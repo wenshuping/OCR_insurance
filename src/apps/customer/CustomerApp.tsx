@@ -336,6 +336,11 @@ const emptyForm: PolicyFormData = {
   insuredMemberId: null,
 };
 
+type OptionalResponsibilitySelectionDraft = {
+  selectionStatus: OptionalResponsibility['selectionStatus'];
+  coverageAmount?: number | null;
+};
+
 function chooseFamilyMemberByName(members: FamilyMember[], name: string, coreMemberId?: number | null) {
   const normalizedName = name.trim();
   if (!normalizedName) return null;
@@ -630,7 +635,7 @@ export function CustomerApp() {
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
-  const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
+  const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibilitySelectionDraft>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
@@ -886,7 +891,10 @@ export function CustomerApp() {
     for (const item of items) {
       const id = String(item?.id || '').trim();
       if (!id || item.selectionEvidence !== 'manual') continue;
-      optionalResponsibilitySelectionRef.current.set(id, item.selectionStatus || 'unknown');
+      optionalResponsibilitySelectionRef.current.set(id, {
+        selectionStatus: item.selectionStatus || 'unknown',
+        coverageAmount: item.coverageAmount,
+      });
     }
   }
 
@@ -896,15 +904,21 @@ export function CustomerApp() {
     let changed = false;
     const nextItems = items.map((item) => {
       const id = String(item?.id || '').trim();
-      const selectionStatus = id ? remembered.get(id) : undefined;
-      if (!selectionStatus) return item;
-      if (item.selectionStatus === selectionStatus && item.selectionEvidence === 'manual') return item;
+      const rememberedSelection = id ? remembered.get(id) : undefined;
+      if (!rememberedSelection) return item;
+      const nextItem = updateOptionalResponsibilityItems(
+        [item],
+        id,
+        rememberedSelection.selectionStatus,
+        rememberedSelection.coverageAmount,
+      )[0];
+      if (
+        item.selectionStatus === nextItem.selectionStatus
+        && item.selectionEvidence === nextItem.selectionEvidence
+        && item.coverageAmount === nextItem.coverageAmount
+      ) return item;
       changed = true;
-      return {
-        ...item,
-        selectionStatus,
-        selectionEvidence: 'manual',
-      };
+      return nextItem;
     });
     return changed ? nextItems : items;
   }
@@ -2817,7 +2831,13 @@ export function CustomerApp() {
     selectionStatus: OptionalResponsibility['selectionStatus'],
     coverageAmount?: number | null,
   ) {
-    optionalResponsibilitySelectionRef.current.set(id, selectionStatus);
+    const rememberedSelection = optionalResponsibilitySelectionRef.current.get(id);
+    optionalResponsibilitySelectionRef.current.set(id, {
+      selectionStatus,
+      coverageAmount: coverageAmount === undefined
+        ? rememberedSelection?.coverageAmount
+        : coverageAmount,
+    });
     setAnalysisDraft((current) => current
       ? {
           ...current,

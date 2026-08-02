@@ -410,7 +410,7 @@ export function OptionalResponsibilityReview({
                   )}
                 </div>
               ) : null}
-              {linkedIndicators.length ? (
+              {status === 'selected' && linkedIndicators.length ? (
                 <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                   <p className="text-[11px] font-black text-blue-700">量化指标（{linkedIndicators.length}项）</p>
                   <div className="mt-1.5 space-y-1">

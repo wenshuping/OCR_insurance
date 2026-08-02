@@ -216,6 +216,9 @@ function optionalResponsibilityMatchesCard(item: OptionalResponsibility, card: R
 type CardSelectionStatusSource = ResponsibilityCard & { selectionStatus?: string };
 
 function responsibilityCardSelectionStatus(card: ResponsibilityCard, optionalResponsibilities: OptionalResponsibility[] = []) {
+  const matched = optionalResponsibilities.find((item) => optionalResponsibilityMatchesCard(item, card));
+  if (matched?.selectionStatus) return matched.selectionStatus;
+
   const indicatorStatuses = (card.indicators || [])
     .map((indicator) => String(indicator.selectionStatus || '').trim())
     .filter(Boolean);
@@ -223,8 +226,6 @@ function responsibilityCardSelectionStatus(card: ResponsibilityCard, optionalRes
   if (indicatorStatuses.includes('not_selected')) return 'not_selected';
   if (indicatorStatuses.includes('unknown')) return 'unknown';
 
-  const matched = optionalResponsibilities.find((item) => optionalResponsibilityMatchesCard(item, card));
-  if (matched?.selectionStatus) return matched.selectionStatus;
   return String((card as CardSelectionStatusSource).selectionStatus || '').trim();
 }
 
