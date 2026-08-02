@@ -869,7 +869,7 @@ export function createResponsibilityRoutes(context) {
     }
   });
 
-  router.post('/local-draft', (req, res) => {
+  router.post('/local-draft', async (req, res) => {
     try {
       const manualData = req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : req.body;
       const data = normalizePolicyScanData(manualData || {});
@@ -881,7 +881,7 @@ export function createResponsibilityRoutes(context) {
           optionalResponsibilities: normalizeOptionalResponsibilities(manualData?.optionalResponsibilities),
         },
       };
-      const analysis = buildRecognizedPolicyAnalysisDraft({
+      const analysis = await buildRecognizedPolicyAnalysisDraft({
         state,
         scan,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),

@@ -453,7 +453,7 @@ export function createPolicyRoutes(context) {
         ...policyInputMetrics(req.body),
         outputOcrChars: String(scan?.ocrText || '').length,
       });
-      const analysis = buildRecognizedPolicyAnalysisDraft({
+      const analysis = await buildRecognizedPolicyAnalysisDraft({
         state,
         scan,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),

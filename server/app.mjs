@@ -2125,6 +2125,89 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
   };
 }
 
+async function loadRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfiles = [], loadKnowledgeRecords, loadResponsibilityIndexes } = {}) {
+  const data = normalizePolicyScanData(scan?.data || {});
+  const products = [];
+  const seen = new Set();
+  const addProduct = (company, productName) => {
+    const normalizedCompany = trim(company);
+    const normalizedProductName = trim(productName);
+    if (!normalizedCompany || !normalizedProductName) return;
+    const key = `${normalizedCompany}\u001f${normalizedProductName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    products.push({ company: normalizedCompany, productName: normalizedProductName });
+  };
+
+  addProduct(data.company, data.name);
+  for (const plan of normalizePolicyPlans(scan?.data?.plans, data.company)) {
+    addProduct(
+      plan?.company || data.company,
+      plan?.matchedProductName || plan?.productName || plan?.name,
+    );
+  }
+
+  if (!products.length || (typeof loadKnowledgeRecords !== 'function' && typeof loadResponsibilityIndexes !== 'function')) {
+    return buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfiles });
+  }
+
+  const [knowledgeBatches, responsibilityBatches] = await Promise.all([
+    typeof loadKnowledgeRecords === 'function'
+      ? Promise.all(products.map((product) => loadKnowledgeRecords({
+          company: product.company,
+          productName: product.productName,
+        })))
+      : [],
+    typeof loadResponsibilityIndexes === 'function'
+      ? Promise.all(products.map(async (product) => {
+          const scoped = await loadResponsibilityIndexes({
+            company: product.company,
+            productName: product.productName,
+          });
+          if (
+            (Array.isArray(scoped?.indicatorRecords) && scoped.indicatorRecords.length)
+            || (Array.isArray(scoped?.optionalResponsibilityRecords) && scoped.optionalResponsibilityRecords.length)
+          ) return scoped;
+          return loadResponsibilityIndexes({ productName: product.productName });
+        }))
+      : [],
+  ]);
+
+  const dedupeBy = (rows, keyFor) => {
+    const byKey = new Map();
+    for (const row of rows) {
+      const key = keyFor(row);
+      if (key && !byKey.has(key)) byKey.set(key, row);
+    }
+    return [...byKey.values()];
+  };
+  const knowledgeRecords = dedupeBy(
+    knowledgeBatches.flatMap((batch) => Array.isArray(batch) ? batch : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.url)}`,
+  );
+  const indicatorRecords = dedupeBy(
+    responsibilityBatches.flatMap((batch) => Array.isArray(batch?.indicatorRecords) ? batch.indicatorRecords : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.liability)}`,
+  );
+  const optionalResponsibilityRecords = dedupeBy(
+    responsibilityBatches.flatMap((batch) => Array.isArray(batch?.optionalResponsibilityRecords) ? batch.optionalResponsibilityRecords : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.liability)}`,
+  );
+
+  return buildRecognizedPolicyAnalysisDraft({
+    state: {
+      ...state,
+      knowledgeRecords: knowledgeRecords.length ? knowledgeRecords : state?.knowledgeRecords || [],
+      insuranceIndicatorRecords: indicatorRecords.length ? indicatorRecords : state?.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: optionalResponsibilityRecords.length
+        ? optionalResponsibilityRecords
+        : state?.optionalResponsibilityRecords || [],
+    },
+    scan,
+    officialDomainProfiles,
+  });
+}
+
 function buildDraftOptionalResponsibilitiesByPlan({
   basePolicy,
   primaryPolicy,
@@ -2743,7 +2826,11 @@ export function createPolicyOcrApp(options = {}) {
     normalizePolicyPlans,
     normalizeOptionalResponsibilities,
     buildOptionalResponsibilityReview,
-    buildRecognizedPolicyAnalysisDraft,
+    buildRecognizedPolicyAnalysisDraft: (input) => loadRecognizedPolicyAnalysisDraft({
+      ...input,
+      loadKnowledgeRecords: options.loadKnowledgeRecords,
+      loadResponsibilityIndexes: options.loadResponsibilityIndexes,
+    }),
     buildEffectiveOfficialDomainProfiles,
     buildResponsibilitySummaryReportFromCards,
     buildResponsibilityCardsForPolicy,

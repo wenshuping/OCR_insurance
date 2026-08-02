@@ -12530,6 +12530,72 @@ test('local responsibility draft endpoint returns optional responsibilities for 
   }
 });
 
+test('local responsibility draft loads optional responsibilities from deferred sqlite indexes', async () => {
+  const company = '新华保险';
+  const productName = '尊尚人生两全保险（分红型）';
+  const requestedProducts = [];
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    loadKnowledgeRecords: async () => [],
+    loadResponsibilityIndexes: async (product) => {
+      requestedProducts.push(product);
+      if (product.company) return { indicatorRecords: [], optionalResponsibilityRecords: [] };
+      return {
+        indicatorRecords: [],
+        optionalResponsibilityRecords: [
+          {
+            id: 'optional_birthday_benefit',
+            company,
+            productName,
+            coverageType: '可选责任',
+            liability: '祝寿金',
+            responsibilityScope: 'optional',
+            selectionStatus: 'unknown',
+            selectionEvidence: 'official_terms',
+            sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+            sourceExcerpt: '投保人可以选择本可选责任作为合同项下的保险责任。',
+          },
+        ],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const drafted = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/local-draft', {
+      method: 'POST',
+      body: JSON.stringify({
+        manualData: {
+          company,
+          name: productName,
+          plans: [{
+            company,
+            role: 'main',
+            name: productName,
+            matchedProductName: productName,
+          }],
+        },
+      }),
+    });
+
+    assert.equal(drafted.response.status, 200);
+    assert.deepEqual(requestedProducts, [
+      { company, productName },
+      { productName },
+    ]);
+    assert.deepEqual(
+      drafted.payload.analysis.optionalResponsibilities.map((item) => ({
+        liability: item.liability,
+        selectionStatus: item.selectionStatus,
+      })),
+      [{ liability: '祝寿金', selectionStatus: 'unknown' }],
+    );
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy analyze returns responsibility cards that verify matching existing indicators', async () => {
   const state = {
     ...createInitialState(),
