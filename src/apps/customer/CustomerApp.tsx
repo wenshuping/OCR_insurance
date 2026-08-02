@@ -2812,12 +2812,21 @@ export function CustomerApp() {
     }
   }
 
-  function updateAnalysisOptionalResponsibility(id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+  function updateAnalysisOptionalResponsibility(
+    id: string,
+    selectionStatus: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) {
     optionalResponsibilitySelectionRef.current.set(id, selectionStatus);
     setAnalysisDraft((current) => current
       ? {
           ...current,
-          optionalResponsibilities: updateOptionalResponsibilityItems(current.optionalResponsibilities, id, selectionStatus),
+          optionalResponsibilities: updateOptionalResponsibilityItems(
+            current.optionalResponsibilities,
+            id,
+            selectionStatus,
+            coverageAmount,
+          ),
         }
       : current,
     );
@@ -3629,9 +3638,19 @@ export function CustomerApp() {
     }
   }
 
-  async function handleUpdateOptionalResponsibility(policy: Policy, id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+  async function handleUpdateOptionalResponsibility(
+    policy: Policy,
+    id: string,
+    selectionStatus: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) {
     if (savingPolicyId) return;
-    const optionalResponsibilities = updateOptionalResponsibilityItems(policy.optionalResponsibilities, id, selectionStatus);
+    const optionalResponsibilities = updateOptionalResponsibilityItems(
+      policy.optionalResponsibilities,
+      id,
+      selectionStatus,
+      coverageAmount,
+    );
     setSavingPolicyId(policy.id);
     setMessage('正在保存可选责任');
     try {

@@ -1286,6 +1286,9 @@ test('customer entry and policy detail expose optional responsibility selection 
   assert.match(reviewSource, /indicatorIds/);
   assert.match(reviewSource, /resolveIndicatorAmountFromCalculation/);
   assert.match(reviewSource, /可选责任保险金额/);
+  assert.match(reviewSource, /可选责任保险金额（元）/);
+  assert.match(reviewSource, /type="number"/);
+  assert.match(reviewSource, /onBlur/);
   assert.match(reviewSource, /不会使用主险保额代算/);
   assert.match(reviewSource, /replace\(\/基本责任保险金额\|基本保险金额/);
   assert.match(reviewSource, /已按本保单计算/);

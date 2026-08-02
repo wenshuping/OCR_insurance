@@ -372,6 +372,40 @@ test('repairs a leaked adjacent liability formula from the official clause befor
   assert.deepEqual(requiredCalculationInputsForMeta(death.meta), ['eventCause', 'eventDate']);
 });
 
+test('scheduled survival branches are calculated as age-stage scenarios without claim-event inputs', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '生存保险金',
+    formulaText: '基本责任的保险金额×给付比例（5%或10%）',
+    basisKey: 'piecewise',
+    calculationKey: 'piecewise',
+    branches: [
+      {
+        branchId: 'surv_branch_1',
+        conditionText: '本合同生效满三年起至60周岁保单生效对应日之前',
+        formulaText: '基本责任的保险金额的5%',
+        basisKey: 'basic_sum_assured',
+      },
+      {
+        branchId: 'surv_branch_2',
+        conditionText: '60周岁保单生效对应日起至80周岁保单生效对应日期间',
+        formulaText: '基本责任的保险金额的10%',
+        basisKey: 'basic_sum_assured',
+      },
+    ],
+  }, { baseAmount: 89877 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.equal(result.hasBranchScenarios, true);
+  assert.equal(result.scenarioKind, 'scheduled_benefit');
+  assert.match(result.calculationText, /领取阶段测算/u);
+  assert.match(result.calculationText, /89,877元 × 5% = 4,493\.85元/u);
+  assert.match(result.calculationText, /89,877元 × 10% = 8,987\.7元/u);
+  assert.doesNotMatch(result.calculationText, /出险/u);
+  assert.doesNotMatch(result.uncertaintyNote, /出险原因|出险日期/u);
+  assert.deepEqual(requiredCalculationInputsForMeta(result.meta), ['policy.amount', 'policyYearOrAge']);
+});
+
 test('resolves a normalized formula stored as a bare basic-responsibility expression', () => {
   const result = resolveIndicatorAmountFromCalculation({
     liability: '满期保险金',

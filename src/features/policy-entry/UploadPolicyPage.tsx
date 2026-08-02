@@ -426,7 +426,11 @@ export function UploadPolicyPage(props: {
   onUpdatePlan: (index: number, key: string, value: string) => void;
   onUpdatePlanProductQuery: (index: number, company: string, q: string) => void;
   onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
-  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+  onUpdateOptionalResponsibility: (
+    id: string,
+    status: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) => void;
   uploadItem: UploadItem | null;
   productKnowledgeFileInputRef: React.RefObject<HTMLInputElement | null>;
   staleClientDetected?: boolean;
@@ -1107,7 +1111,11 @@ export function AnalysisReportPage(props: {
   message: string;
   onBack: () => void;
   onSave: () => void;
-  onUpdateOptionalResponsibility: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+  onUpdateOptionalResponsibility: (
+    id: string,
+    status: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) => void;
 }) {
   const reportRef = useRef<HTMLElement | null>(null);
   const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;

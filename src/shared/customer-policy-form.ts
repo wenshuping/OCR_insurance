@@ -516,14 +516,21 @@ export function updateOptionalResponsibilityItems(
   items: OptionalResponsibility[] | undefined,
   id: string,
   selectionStatus: OptionalResponsibility['selectionStatus'],
+  coverageAmount?: number | null,
 ) {
-  return (Array.isArray(items) ? items : []).map((item) =>
-    item.id === id
-      ? {
-          ...item,
-          selectionStatus,
-          selectionEvidence: 'manual',
-        }
-      : item,
-  );
+  return (Array.isArray(items) ? items : []).map((item) => {
+    if (item.id !== id) return item;
+    const next = {
+      ...item,
+      selectionStatus,
+      selectionEvidence: 'manual',
+    };
+    if (coverageAmount === undefined) return next;
+    const normalizedCoverageAmount = Number(coverageAmount);
+    if (Number.isFinite(normalizedCoverageAmount) && normalizedCoverageAmount > 0) {
+      return { ...next, coverageAmount: normalizedCoverageAmount };
+    }
+    const { coverageAmount: _discardedCoverageAmount, ...withoutCoverageAmount } = next;
+    return withoutCoverageAmount;
+  });
 }

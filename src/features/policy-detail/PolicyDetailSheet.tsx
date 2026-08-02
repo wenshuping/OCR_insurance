@@ -115,7 +115,12 @@ export function PolicyDetailSheet({
   onRetryReport?: (policy: Policy) => void | Promise<void>;
   retrying?: boolean;
   onUpdatePolicy?: (policy: Policy, data: PolicyFormData) => Promise<{ reportRegenerating: boolean } | void>;
-  onUpdateOptionalResponsibility?: (policy: Policy, id: string, status: OptionalResponsibility['selectionStatus']) => void | Promise<void>;
+  onUpdateOptionalResponsibility?: (
+    policy: Policy,
+    id: string,
+    status: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) => void | Promise<void>;
   updating?: boolean;
   onDeletePolicy?: (policy: Policy) => void | Promise<void>;
   deleting?: boolean;
@@ -458,7 +463,9 @@ export function PolicyDetailSheet({
               paymentPeriod={policy.paymentPeriod}
               disabled={updating || deleting}
               saving={updating}
-              onChange={onUpdateOptionalResponsibility ? (id, status) => void onUpdateOptionalResponsibility(policy, id, status) : undefined}
+              onChange={onUpdateOptionalResponsibility
+                ? (id, status, coverageAmount) => void onUpdateOptionalResponsibility(policy, id, status, coverageAmount)
+                : undefined}
               description="未投保或不确定的可选责任不会进入当前保单和家庭报告的量化计算。"
             />
           </div>

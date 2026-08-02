@@ -229,7 +229,9 @@ export function CustomerResponsibilitySummaryCard({
                         <p className="font-black">
                           {calculatedResponsibility.isPending
                             ? (calculatedResponsibility.hasBranchScenarios
-                              ? '已按本保单数据列出条款分支测算，未计入统计'
+                              ? (calculatedResponsibility.scenarioKind === 'scheduled_benefit'
+                                ? '已按本保单数据列出领取阶段测算，未合并统计'
+                                : '已按本保单数据列出条款分支测算，未计入统计')
                               : (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计'))
                             : calculatedResponsibility.isMinimumEstimate
                             ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`

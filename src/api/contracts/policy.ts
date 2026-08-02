@@ -78,6 +78,7 @@ export type ResponsibilityCalculation = {
   isMinimumEstimate: boolean;
   isPending?: boolean;
   hasBranchScenarios?: boolean;
+  scenarioKind?: 'scheduled_benefit' | 'claim_event';
   calculationText: string;
   uncertaintyNote?: string;
 };

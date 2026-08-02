@@ -18,7 +18,7 @@ test('entry optional responsibility choices are saved from the latest manual sel
 
   assert.match(customerAppSource, /optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility\['selectionStatus'\]>>\(new Map\(\)\)/);
   assert.match(updateSource, /optionalResponsibilitySelectionRef\.current\.set\(id,\s*selectionStatus\)/);
-  assert.match(updateSource, /setAnalysisDraft\(\(current\) => current[\s\S]*updateOptionalResponsibilityItems\(current\.optionalResponsibilities,\s*id,\s*selectionStatus\)/);
+  assert.match(updateSource, /setAnalysisDraft\(\(current\) => current[\s\S]*updateOptionalResponsibilityItems\(\s*current\.optionalResponsibilities,\s*id,\s*selectionStatus,\s*coverageAmount/);
   assert.match(submitSource, /const analysisForSubmit = withRememberedOptionalResponsibilitySelections\(analysisDraft\)/);
   assert.match(submitSource, /const hasGeneratedAnalysis = hasAnalysisResult\(analysisForSubmit\)/);
   assert.match(submitSource, /analysis: hasGeneratedAnalysis \? analysisForSubmit : null/);

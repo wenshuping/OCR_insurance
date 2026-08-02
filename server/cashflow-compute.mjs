@@ -1688,6 +1688,7 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
         isMinimumEstimate: false,
         isPending: true,
         hasBranchScenarios: result.hasBranchScenarios === true,
+        scenarioKind: result.scenarioKind,
         calculationText: pendingCalculationText,
         uncertaintyNote: String(result.uncertaintyNote || ''),
       }];

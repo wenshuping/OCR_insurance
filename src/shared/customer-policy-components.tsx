@@ -302,7 +302,11 @@ export function OptionalResponsibilityReview({
   compact?: boolean;
   title?: string;
   description?: string;
-  onChange?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+  onChange?: (
+    id: string,
+    status: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) => void;
 }) {
   const visibleItems = (Array.isArray(items) ? items : []).filter((item) => item?.id);
   if (!visibleItems.length) return null;
@@ -374,15 +378,37 @@ export function OptionalResponsibilityReview({
                 </p>
               ) : null}
               {status === 'selected' ? (
-                coverageAmount > 0 ? (
-                  <p className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-black leading-5 text-cyan-800 ring-1 ring-cyan-100">
-                    可选责任保险金额：{formatCurrency(coverageAmount)}
-                  </p>
-                ) : (
+                <div className="mt-2 space-y-2">
+                  <label className="block text-xs font-black text-slate-700">
+                    <span>可选责任保险金额（元）</span>
+                    <input
+                      key={`${item.id}:${coverageAmount}`}
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      inputMode="decimal"
+                      defaultValue={coverageAmount > 0 ? coverageAmount : ''}
+                      disabled={disabled || saving || !onChange}
+                      placeholder="请输入该可选责任的独立保险金额"
+                      onBlur={(event) => {
+                        const value = Number(event.currentTarget.value);
+                        const nextCoverageAmount = Number.isFinite(value) && value > 0 ? value : null;
+                        if (nextCoverageAmount === (coverageAmount || null)) return;
+                        onChange?.(item.id, status, nextCoverageAmount);
+                      }}
+                      className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-black text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
+                    />
+                  </label>
+                  {coverageAmount > 0 ? (
+                    <p className="rounded-xl bg-cyan-50 px-3 py-2 text-xs font-black leading-5 text-cyan-800 ring-1 ring-cyan-100">
+                      当前可选责任保险金额：{formatCurrency(coverageAmount)}
+                    </p>
+                  ) : (
                   <p className="mt-2 rounded-xl bg-amber-50 px-3 py-2 text-xs font-black leading-5 text-amber-700 ring-1 ring-amber-100">
                     已确认投保，待补充该可选责任的保险金额；不会使用主险保额代算。
                   </p>
-                )
+                  )}
+                </div>
               ) : null}
               {linkedIndicators.length ? (
                 <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
@@ -427,7 +453,7 @@ export function OptionalResponsibilityReview({
                         key={option.value}
                         type="button"
                         disabled={disabled || saving}
-                        onClick={() => onChange(item.id, option.value)}
+                        onClick={() => onChange(item.id, option.value, coverageAmount || undefined)}
                         className={`h-9 rounded-xl px-2 text-xs font-black transition-colors disabled:opacity-50 ${
                           active
                             ? 'bg-blue-600 text-white shadow-sm'
@@ -460,7 +486,11 @@ export function PolicyPlanEditor(props: {
   onSelectProduct?: (index: number, suggestion: PolicyProductSuggestion) => void;
   onUpdate: (index: number, key: string, value: string) => void;
   onUpdateProductQuery?: (index: number, company: string, q: string) => void;
-  onUpdateOptionalResponsibility?: (id: string, status: OptionalResponsibility['selectionStatus']) => void;
+  onUpdateOptionalResponsibility?: (
+    id: string,
+    status: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) => void;
   onSupplementClick?: (plan: NonNullable<PolicyFormData['plans']>[number]) => void;
   supplementUploading?: boolean;
   supplementCount?: number;
