@@ -430,6 +430,7 @@ function isDeterministicWealthBenefitSection(section = {}) {
 function parseBenefitSection(sec, ctx) {
   const { effectiveYear, birthYear, coverageEndYear, pensionStartAge, amount, policy } = ctx;
   if (!isDeterministicWealthBenefitSection(sec)) return [];
+  if (sectionUsesPolicyAnniversaryBasicAmount(sec)) return [];
   const text = sec.content;
   const compactText = normalizeCashflowLookupText(text);
   const name = sec.name;

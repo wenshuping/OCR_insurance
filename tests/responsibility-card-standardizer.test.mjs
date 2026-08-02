@@ -6,6 +6,7 @@ import {
   buildResponsibilitySummaryReportFromCards,
   isGeneratedResponsibilityCountReport,
   mergeCoverageTableWithCheckedRows,
+  normalizePolicyAnniversaryBasicAmountText,
   responsibilityRowsFromCards,
   standardizeResponsibilityIndicator,
 } from '../server/responsibility-card-standardizer.mjs';
@@ -1429,7 +1430,19 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
       company: '新华保险',
       productName,
       coverageType: '人寿保障',
+      id: 'legacy_disease_disability',
       liability: '疾病全残',
+      value: 1.05,
+      unit: '倍',
+      basis: '现金价值',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+      sourceExcerpt: '身故或身体全残保险金 被保险人在祝寿金约定领取日之前身故或身体全残，本公司按约定给付身故或身体全残保险金，本合同可选责任终止。',
+    }, {
+      company: '新华保险',
+      productName,
+      coverageType: '人寿保障',
+      id: 'canonical_death_disability',
+      liability: '身故或身体全残保险金',
       value: 1.05,
       unit: '倍',
       basis: '现金价值',
@@ -1444,6 +1457,10 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
   assert.equal(cards.some((card) => card.title === '疾病全残'), false);
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.selectionStatus, 'unknown');
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.responsibilityScope, 'optional');
+  assert.deepEqual(
+    cards.find((card) => card.title === '身故或身体全残保险金')?.indicators.map((indicator) => indicator.id),
+    ['canonical_death_disability'],
+  );
 });
 
 test('buildResponsibilityCardsForPolicy does not over-derive clauses when structured indicators are already rich', () => {
@@ -1620,6 +1637,52 @@ test('buildResponsibilityCardsForPolicy keeps waiting-period risk-premium refund
 
   assert.deepEqual(cards.map((card) => card.title), ['等待期内重大疾病退还风险保险费']);
   assert.equal(cards[0].cashflowTreatment, 'claim_contingent');
+});
+
+test('buildResponsibilityCardsForPolicy prefers an exact responsibility id over its parent id', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '光大永明人寿保险有限公司',
+      name: '光大永明爱多多重大疾病保险',
+    },
+    responsibilities: [
+      {
+        responsibilityId: 'mild_illness_parent',
+        responsibilityKind: 'benefit',
+        liability: '轻症疾病保险金',
+      },
+      {
+        responsibilityId: 'mild_illness_waiting_refund',
+        responsibilityKind: 'waiting_period_refund',
+        liability: '等待期轻症疾病返还保险金',
+      },
+    ],
+    coverageIndicators: [{
+      company: '光大永明人寿保险有限公司',
+      productName: '光大永明爱多多重大疾病保险',
+      responsibilityId: 'mild_illness_parent',
+      responsibilityKind: 'benefit',
+      coverageType: '疾病保障',
+      liability: '轻症疾病保险金',
+      formulaText: '基本保险金额',
+      sourceUrl: 'https://official.example-life.test/aiduoduo.pdf',
+      sourceExcerpt: '确诊轻症疾病，按基本保险金额给付。',
+    }, {
+      company: '光大永明人寿保险有限公司',
+      productName: '光大永明爱多多重大疾病保险',
+      responsibilityId: 'mild_illness_waiting_refund',
+      parentResponsibilityId: 'mild_illness_parent',
+      responsibilityKind: 'waiting_period_refund',
+      coverageType: '疾病保障',
+      liability: '等待期轻症疾病返还保险金',
+      formulaText: '已交保险费',
+      sourceUrl: 'https://official.example-life.test/aiduoduo.pdf',
+      sourceExcerpt: '等待期内确诊轻症疾病，按已交保险费给付。',
+    }],
+    knowledgeResponsibilityMode: 'authoritative_only',
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['轻症疾病保险金', '等待期轻症疾病返还保险金']);
 });
 
 test('buildResponsibilityCardsForPolicy keeps higher education insurance cashflow', () => {
