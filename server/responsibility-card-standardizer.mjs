@@ -8,6 +8,10 @@ import {
   evidenceVerificationFields,
   isFormalResponsibilityEvidence,
 } from './evidence-classification.service.mjs';
+import {
+  combinedDeathDisabilityTitleForLegacyAlias,
+  removeSupersededDiseaseDisabilityAliases,
+} from './responsibility-indicator-aliases.mjs';
 
 const MISSING_OFFICIAL_EXCERPT_REASON = '缺少官方来源片段，不能进入计算';
 
@@ -58,6 +62,24 @@ function text(value) {
 
 function compact(value) {
   return text(value).normalize('NFKC').replace(/\s+/gu, '');
+}
+
+const POLICY_ANNIVERSARY_BASIC_AMOUNT_RE = /(?:(?:该\s*)?保单\s*生效\s*对应日\s*(?:的\s*)?)+基本责任\s*(?:的\s*)?保险金额/gu;
+const STATIC_BASIC_RESPONSIBILITY_AMOUNT_RE = /基本责任\s*(?:的\s*)?保险金额/gu;
+const ANNIVERSARY_BASIC_AMOUNT_TOKEN = '\uE000';
+
+export function normalizePolicyAnniversaryBasicAmountText(value = '') {
+  const protectedText = text(value).replace(
+    POLICY_ANNIVERSARY_BASIC_AMOUNT_RE,
+    ANNIVERSARY_BASIC_AMOUNT_TOKEN,
+  );
+  return protectedText
+    .replace(STATIC_BASIC_RESPONSIBILITY_AMOUNT_RE, (match, offset, whole) => {
+      const prefix = whole.slice(0, offset);
+      if (/(?:该|当|本)日$|(?:该|当|本)?(?:保单)?(?:生效)?对应日$|周年日$/u.test(prefix)) return match;
+      return '保单生效对应日基本责任保险金额';
+    })
+    .replaceAll(ANNIVERSARY_BASIC_AMOUNT_TOKEN, '保单生效对应日基本责任保险金额');
 }
 
 function collapseChineseSpaces(value = '') {
@@ -111,6 +133,8 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   if (withoutForPrefix && withoutForPrefix !== liability && /保险金/u.test(withoutForPrefix)) return withoutForPrefix;
   const cleanedLiability = cleanClauseTitle(liability);
   if (cleanedLiability && cleanedLiability !== liability) return cleanedLiability;
+  const combinedDeathDisabilityTitle = combinedDeathDisabilityTitleForLegacyAlias(indicator);
+  if (combinedDeathDisabilityTitle) return combinedDeathDisabilityTitle;
   if (name === '满期返还' && excerpt.includes('满期保险金')) return '满期保险金';
   const concreteLiability = concreteScheduledLiabilityFromExcerptForAggregate(indicator, sourceExcerpt);
   if (concreteLiability) return concreteLiability;
@@ -194,7 +218,7 @@ function hasBlockedCalculationDependency(meta = {}) {
 function needsTableForCalculation(value = {}) {
   return (
     ['cash_value', 'account_value', 'schedule_or_policy_table', 'medical_formula', 'daily_allowance', 'manual_formula'].includes(value.calculationKey)
-    || ['cash_value', 'account_value', 'schedule_or_policy_table', 'medical_expense', 'daily_allowance'].includes(value.basisKey)
+    || ['cash_value', 'account_value', 'schedule_or_policy_table', 'policy_anniversary_basic_amount', 'medical_expense', 'daily_allowance'].includes(value.basisKey)
   );
 }
 
@@ -207,6 +231,16 @@ function semanticCalculationMeta(indicator = {}, meta = {}) {
     indicator.basis,
     indicator.sourceExcerpt,
   );
+
+  if (/保单\s*生效\s*对应日\s*(?:的\s*)?基本责任\s*(?:的\s*)?保险金额/u.test(target)) {
+    return {
+      ...meta,
+      basisKey: 'policy_anniversary_basic_amount',
+      calculationKey: 'schedule_or_policy_table',
+      calculationEligible: false,
+      calculationReason: '保单生效对应日基本责任保险金额会随增额红利等保单年度因素变化，需提供对应日金额表',
+    };
+  }
 
   if (/医疗费用|实际合理医疗费用|实际医疗费用|免赔额|报销|补偿/u.test(target)) {
     return {
@@ -231,10 +265,41 @@ function hasReviewedIndicatorMetadata(indicator = {}) {
 
 function reviewedCalculationMeta(indicator = {}, meta = {}) {
   if (meta.calculationKey === 'claim_event_facts') return meta;
+  if (meta.basisKey === 'policy_anniversary_basic_amount') return meta;
   const hasReviewedMetadata = hasReviewedIndicatorMetadata(indicator);
   const basisKey = text(indicator.basisKey);
   const calculationKey = text(indicator.calculationKey);
   if (!hasReviewedMetadata || (!basisKey && !calculationKey)) return meta;
+
+  if (
+    indicator.calculationEligible === false
+    && ['schedule_or_policy_table', 'manual_formula', 'not_calculable'].includes(calculationKey)
+  ) {
+    return {
+      ...meta,
+      basisKey: basisKey || meta.basisKey,
+      calculationKey: calculationKey || meta.calculationKey,
+      calculationEligible: false,
+      calculationReason: text(indicator.calculationReason) || meta.calculationReason,
+    };
+  }
+
+  if (
+    basisKey === 'contract_defined_effective_insured_amount'
+    && calculationKey === 'multiple_of_basis'
+    && meta.calculationKey === 'unknown'
+    && indicator.basisDefinition
+    && typeof indicator.basisDefinition === 'object'
+  ) {
+    return {
+      ...meta,
+      basisKey: 'basic_amount',
+      calculationKey: 'multiple_of_basic_amount',
+      calculationEligible: true,
+      calculationReason: '',
+      decisionSource: 'reviewed_artifact_compatibility',
+    };
+  }
 
   // The June reviewed import used display_only for every contract-defined
   // effective insured amount. Its status is historic metadata, not a safety
@@ -453,6 +518,34 @@ function structuredFormulaFields(indicator = {}) {
   };
 }
 
+const APPROVED_ARTIFACT_SEMANTIC_FIELDS = [
+  'formulaText',
+  'normalizedFormula',
+  'basis',
+  'basisKey',
+  'calculationKey',
+  'requiredInputs',
+  'operands',
+  'branches',
+  'ruleRefs',
+  'sourceExcerpt',
+  'evidenceSegments',
+  'payoutSummary',
+  'customerSummary',
+  'plainSummary',
+  'calculationEligible',
+  'calculationReason',
+];
+
+function approvedArtifactSemanticProjection(indicator = {}) {
+  if (text(indicator.semanticProjectionSource) !== 'approved_artifact') return {};
+  return Object.fromEntries(APPROVED_ARTIFACT_SEMANTIC_FIELDS
+    .filter((field) => Object.hasOwn(indicator, field))
+    .map((field) => [field, Array.isArray(indicator[field])
+      ? indicator[field].map((value) => value && typeof value === 'object' ? { ...value } : value)
+      : indicator[field]]));
+}
+
 export function standardizeResponsibilityIndicator(indicator = {}, { policy = {} } = {}) {
   const repairedIndicator = repairIndicatorFormulaFromOfficialExcerptForDisplay(indicator);
   const meta = reviewedCalculationMeta(repairedIndicator, semanticCalculationMeta(repairedIndicator, normalizeIndicatorCalculation(repairedIndicator)));
@@ -473,6 +566,19 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     ? text(repairedIndicator.calculationReason)
     : '';
   const evidenceFields = evidenceVerificationFields(repairedIndicator);
+  const displayFormula = meta.basisKey === 'policy_anniversary_basic_amount'
+    ? normalizePolicyAnniversaryBasicAmountText(repairedIndicator.formulaText)
+    : text(repairedIndicator.formulaText);
+  const displayPayoutSummary = meta.basisKey === 'policy_anniversary_basic_amount'
+    ? normalizePolicyAnniversaryBasicAmountText(firstNonEmpty(
+      repairedIndicator.payoutSummary,
+      displayFormula,
+      repairedIndicator.basis,
+    ))
+    : firstNonEmpty(repairedIndicator.payoutSummary, repairedIndicator.formulaText, repairedIndicator.basis);
+  const displayCustomerSummary = meta.basisKey === 'policy_anniversary_basic_amount'
+    ? normalizePolicyAnniversaryBasicAmountText(repairedIndicator.customerSummary)
+    : text(repairedIndicator.customerSummary);
   const normalized = {
     id: text(repairedIndicator.id),
     company: firstNonEmpty(repairedIndicator.company, policy.company),
@@ -482,13 +588,13 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     indicatorName: text(repairedIndicator.indicatorName),
     category: categoryFromIndicator(repairedIndicator, sourceExcerpt),
     triggerCondition: firstNonEmpty(repairedIndicator.triggerCondition, repairedIndicator.condition),
-    payoutSummary: firstNonEmpty(repairedIndicator.payoutSummary, repairedIndicator.formulaText, repairedIndicator.basis),
-    customerSummary: text(repairedIndicator.customerSummary),
+    payoutSummary: displayPayoutSummary,
+    customerSummary: displayCustomerSummary,
     importantLimits: Array.isArray(repairedIndicator.importantLimits)
       ? repairedIndicator.importantLimits.map(text).filter(Boolean)
       : [],
     basis: text(repairedIndicator.basis),
-    formulaText: text(repairedIndicator.formulaText),
+    formulaText: displayFormula,
     ...structuredFormulaFields(repairedIndicator),
     value: meta.value ?? repairedIndicator.value ?? null,
     valueText: text(repairedIndicator.valueText),
@@ -550,9 +656,13 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     ...selectionFields,
   };
 
-  return {
+  const projected = {
     ...normalized,
     calculationStatus: calculationStatusFor(normalized),
+  };
+  return {
+    ...projected,
+    ...approvedArtifactSemanticProjection(repairedIndicator),
   };
 }
 
@@ -1007,7 +1117,8 @@ function isAggregateLiabilityName(value = '') {
 }
 
 function shouldCreateIndicatorCard(indicator = {}, { responsibility = null, hasKnowledgeResponsibilities = false } = {}) {
-  if (indicator.responsibilityKind !== 'waiting_period_refund' && isInvalidResponsibilityTitle(indicator.liability)) return false;
+  const responsibilityKind = firstNonEmpty(indicator.responsibilityKind, responsibility?.responsibilityKind);
+  if (responsibilityKind !== 'waiting_period_refund' && isInvalidResponsibilityTitle(indicator.liability)) return false;
   if (isWeakLiabilityName(indicator.liability)) return false;
   if (isSentenceFragmentTitle(indicator.liability)) return false;
   if (isRuleParameterText(joinedText(indicator.coverageType, indicator.liability))) return false;
@@ -1110,6 +1221,12 @@ function cardStatus(indicators = []) {
   const reviewedStatuses = indicators.map((indicator) => text(indicator.reviewedCalculationStatus)).filter(Boolean);
   if (reviewedStatuses.length === 1) return reviewedStatuses[0];
   if (indicators.some(needsTableForCalculation)) return 'needs_table';
+  if (indicators.some((indicator) => (
+    indicator.calculationStatus === 'needs_review'
+    && indicator.basisKey === 'effective_insured_amount'
+    && indicator.cashflowTreatment === 'scheduled_cashflow'
+    && /(?:\d+(?:\.\d+)?\s*[%％]|有效保险金额)/u.test(`${indicator.formulaText} ${indicator.sourceExcerpt}`)
+  ))) return 'calculable';
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'scheduled_cashflow')) {
     return 'calculable';
   }
@@ -1732,7 +1849,7 @@ export function buildResponsibilityCardsForPolicy({
       && !isWeakLiabilityName(responsibility.title)
       && !isSentenceFragmentTitle(responsibility.title)
     ));
-  const normalizedIndicators = sortIndicatorsByReviewedOrder(objectRows(coverageIndicators)
+  const normalizedIndicators = sortIndicatorsByReviewedOrder(removeSupersededDiseaseDisabilityAliases(objectRows(coverageIndicators))
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }))
     .filter(isFormalResponsibilityEvidence));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
@@ -1741,7 +1858,11 @@ export function buildResponsibilityCardsForPolicy({
   const cards = [];
 
   normalizedIndicators.forEach((indicator) => {
-    const responsibility = normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
+    const exactResponsibilityId = compact(indicator.responsibilityId);
+    const responsibility = (exactResponsibilityId
+      ? normalizedResponsibilities.find((candidate) => compact(candidate.responsibilityId) === exactResponsibilityId)
+      : null)
+      || normalizedResponsibilities.find((candidate) => responsibilityMatchesIndicator(candidate, indicator));
     if (authoritativeOnly && !responsibility) return;
     const shouldCreateCard = shouldCreateIndicatorCard(indicator, {
       responsibility,

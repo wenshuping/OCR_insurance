@@ -6,6 +6,7 @@ import {
   buildResponsibilitySummaryReportFromCards,
   isGeneratedResponsibilityCountReport,
   mergeCoverageTableWithCheckedRows,
+  normalizePolicyAnniversaryBasicAmountText,
   responsibilityRowsFromCards,
   standardizeResponsibilityIndicator,
 } from '../server/responsibility-card-standardizer.mjs';
@@ -44,6 +45,112 @@ test('standardizeResponsibilityIndicator keeps first basic responsibility premiu
   assert.equal(result.calculationEligible, true);
   assert.equal(result.cashflowTreatment, 'scheduled_cashflow');
   assert.equal(result.calculationReason, '');
+});
+
+test('standardizeResponsibilityIndicator blocks a policy-anniversary amount from using the initial basic amount', () => {
+  const result = standardizeResponsibilityIndicator({
+    id: 'ind_survival_dynamic_amount',
+    company: '新华保险',
+    productName: '尊享人生年金保险（分红型）',
+    coverageType: '现金流',
+    liability: '生存保险金',
+    value: 9,
+    valueText: '9',
+    unit: '%',
+    basis: '基本责任保险金额',
+    formulaText: '生存保险金 = 基本责任保险金额 × 9%',
+    calculationMetadataVersion: 'reviewed-legacy',
+    basisKey: 'basic_amount',
+    calculationKey: 'percent_of_basic_amount',
+    calculationEligible: true,
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+    sourceExcerpt: '生存保险金被保险人生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+  }, { policy: basePolicy });
+
+  assert.equal(result.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(result.calculationKey, 'schedule_or_policy_table');
+  assert.equal(result.calculationEligible, false);
+  assert.equal(result.calculationStatus, 'needs_table');
+  assert.equal(result.formulaText, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.match(result.calculationReason, /增额红利/u);
+});
+
+test('policy-anniversary basic amount normalization is single-pass and idempotent', () => {
+  const full = '生存保险金 = 该保单生效对应日基本责任的保险金额 × 9%';
+  const normalized = normalizePolicyAnniversaryBasicAmountText(full);
+  assert.equal(normalized, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.equal(normalizePolicyAnniversaryBasicAmountText(normalized), normalized);
+  assert.equal(
+    normalizePolicyAnniversaryBasicAmountText('生存保险金 = 基本责任保险金额 × 9%'),
+    normalized,
+  );
+  assert.equal(
+    normalizePolicyAnniversaryBasicAmountText('生存保险金 = 保单生效对应日保单生效对应日基本责任保险金额 × 9%'),
+    normalized,
+  );
+  assert.equal(
+    normalizePolicyAnniversaryBasicAmountText('按该日基本责任保险金额的9%给付'),
+    '按该日基本责任保险金额的9%给付',
+  );
+});
+
+test('standardized anniversary formula, payout, and nested card indicator do not duplicate the phrase', () => {
+  const indicator = {
+    id: 'ind_anniversary_idempotent',
+    company: '新华保险',
+    productName: '尊享人生年金保险（分红型）',
+    coverageType: '现金流',
+    liability: '生存保险金',
+    basis: '该保单生效对应日基本责任的保险金额',
+    formulaText: '生存保险金 = 该保单生效对应日基本责任保险金额 × 9%',
+    payoutSummary: '生存保险金 = 该保单生效对应日基本责任保险金额 × 9%',
+    customerSummary: '按该保单生效对应日保单生效对应日基本责任保险金额的9%给付。',
+    basisKey: 'policy_anniversary_basic_amount',
+    calculationKey: 'schedule_or_policy_table',
+    calculationEligible: false,
+    calculationReason: '需要保单年度金额表；未来红利不作确定值。',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+    sourceExcerpt: '本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+  };
+  const result = standardizeResponsibilityIndicator(indicator, { policy: basePolicy });
+  assert.equal(result.formulaText, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.equal(result.payoutSummary, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.equal(result.customerSummary, '按保单生效对应日基本责任保险金额的9%给付。');
+  assert.equal(result.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(result.calculationKey, 'schedule_or_policy_table');
+  assert.equal(result.calculationEligible, false);
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: basePolicy,
+    responsibilities: [],
+    coverageIndicators: [indicator],
+  });
+  const card = cards[0];
+  assert.equal(card.payoutSummary, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
+  assert.equal(card.indicators[0].formulaText, card.payoutSummary);
+  assert.equal((card.plainSummary.match(/保单生效对应日/g) || []).length, 1);
+});
+
+test('standardizeResponsibilityIndicator preserves reviewed optional anniversary amounts as table-dependent', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '新华保险',
+    productName: '尊享人生年金保险（分红型）',
+    coverageType: '现金流',
+    liability: '祝寿金',
+    basis: '该保单生效对应日可选责任保险金额',
+    formulaText: '祝寿金 = 该保单生效对应日可选责任保险金额',
+    basisKey: 'schedule_or_policy_table',
+    calculationKey: 'schedule_or_policy_table',
+    calculationEligible: false,
+    calculationReason: '需确认可选责任已选并提供该周年日保额记录。',
+    calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunxiang.pdf',
+    sourceExcerpt: '被保险人于年满60周岁保单生效对应日生存，本公司按该保单生效对应日可选责任的保险金额给付祝寿金。',
+  }, { policy: basePolicy });
+
+  assert.equal(result.basisKey, 'schedule_or_policy_table');
+  assert.equal(result.calculationKey, 'schedule_or_policy_table');
+  assert.equal(result.calculationEligible, false);
+  assert.equal(result.calculationStatus, 'needs_table');
 });
 
 test('standardizeResponsibilityIndicator corrects a formula leaked from the next official responsibility', () => {
@@ -1422,7 +1529,19 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
       company: '新华保险',
       productName,
       coverageType: '人寿保障',
+      id: 'legacy_disease_disability',
       liability: '疾病全残',
+      value: 1.05,
+      unit: '倍',
+      basis: '现金价值',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+      sourceExcerpt: '身故或身体全残保险金 被保险人在祝寿金约定领取日之前身故或身体全残，本公司按约定给付身故或身体全残保险金，本合同可选责任终止。',
+    }, {
+      company: '新华保险',
+      productName,
+      coverageType: '人寿保障',
+      id: 'canonical_death_disability',
+      liability: '身故或身体全残保险金',
       value: 1.05,
       unit: '倍',
       basis: '现金价值',
@@ -1437,6 +1556,10 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
   assert.equal(cards.some((card) => card.title === '疾病全残'), false);
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.selectionStatus, 'unknown');
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.responsibilityScope, 'optional');
+  assert.deepEqual(
+    cards.find((card) => card.title === '身故或身体全残保险金')?.indicators.map((indicator) => indicator.id),
+    ['canonical_death_disability'],
+  );
 });
 
 test('buildResponsibilityCardsForPolicy does not over-derive clauses when structured indicators are already rich', () => {
@@ -1590,6 +1713,52 @@ test('buildResponsibilityCardsForPolicy keeps waiting-period risk-premium refund
 
   assert.deepEqual(cards.map((card) => card.title), ['等待期内重大疾病退还风险保险费']);
   assert.equal(cards[0].cashflowTreatment, 'claim_contingent');
+});
+
+test('buildResponsibilityCardsForPolicy prefers an exact responsibility id over its parent id', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '光大永明人寿保险有限公司',
+      name: '光大永明爱多多重大疾病保险',
+    },
+    responsibilities: [
+      {
+        responsibilityId: 'mild_illness_parent',
+        responsibilityKind: 'benefit',
+        liability: '轻症疾病保险金',
+      },
+      {
+        responsibilityId: 'mild_illness_waiting_refund',
+        responsibilityKind: 'waiting_period_refund',
+        liability: '等待期轻症疾病返还保险金',
+      },
+    ],
+    coverageIndicators: [{
+      company: '光大永明人寿保险有限公司',
+      productName: '光大永明爱多多重大疾病保险',
+      responsibilityId: 'mild_illness_parent',
+      responsibilityKind: 'benefit',
+      coverageType: '疾病保障',
+      liability: '轻症疾病保险金',
+      formulaText: '基本保险金额',
+      sourceUrl: 'https://official.example-life.test/aiduoduo.pdf',
+      sourceExcerpt: '确诊轻症疾病，按基本保险金额给付。',
+    }, {
+      company: '光大永明人寿保险有限公司',
+      productName: '光大永明爱多多重大疾病保险',
+      responsibilityId: 'mild_illness_waiting_refund',
+      parentResponsibilityId: 'mild_illness_parent',
+      responsibilityKind: 'waiting_period_refund',
+      coverageType: '疾病保障',
+      liability: '等待期轻症疾病返还保险金',
+      formulaText: '已交保险费',
+      sourceUrl: 'https://official.example-life.test/aiduoduo.pdf',
+      sourceExcerpt: '等待期内确诊轻症疾病，按已交保险费给付。',
+    }],
+    knowledgeResponsibilityMode: 'authoritative_only',
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['轻症疾病保险金', '等待期轻症疾病返还保险金']);
 });
 
 test('buildResponsibilityCardsForPolicy keeps higher education insurance cashflow', () => {

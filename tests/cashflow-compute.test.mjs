@@ -986,7 +986,7 @@ test('computePolicyCashflow: responsibility text path produces entries when no t
   assert.equal(entries[0].liability, '生存保险金');
 });
 
-test('computePolicyCashflow: keeps OCR-spaced staged survival benefits alongside maturity', () => {
+test('computePolicyCashflow: does not manufacture staged survival cashflow from policy-anniversary amounts', () => {
   const policy = {
     id: 516634,
     name: '尊尚人生两全保险（分红型）',
@@ -1010,15 +1010,7 @@ test('computePolicyCashflow: keeps OCR-spaced staged survival benefits alongside
   const entries = computePolicyCashflow(policy, null, []);
   const survival = entries.filter((entry) => entry.liability === '生存保险金');
 
-  assert.equal(survival.length, 42);
-  assert.deepEqual(survival.slice(0, 2).map(({ year, amount }) => [year, amount]), [
-    [2027, 4494],
-    [2028, 4494],
-  ]);
-  assert.deepEqual(survival.slice(-2).map(({ year, amount }) => [year, amount]), [
-    [2067, 8988],
-    [2068, 8988],
-  ]);
+  assert.equal(survival.length, 0);
   assert.deepEqual(entries.filter((entry) => /满期/.test(entry.liability)).map(({ year, amount }) => [year, amount]), [
     [2068, 89877],
   ]);

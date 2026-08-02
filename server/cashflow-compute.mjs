@@ -550,10 +550,18 @@ function sectionUsesEffectiveInsuranceAmount(section = {}) {
   ].join(' ')));
 }
 
+function sectionUsesPolicyAnniversaryBasicAmount(section = {}) {
+  return /保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(normalizeCashflowLookupText([
+    section.name,
+    section.content,
+  ].join(' ')));
+}
+
 /** Parse a single benefit section into yearly items. */
 function parseBenefitSection(sec, ctx) {
   const { effectiveYear, birthYear, coverageEndYear, pensionStartAge, amount, policy } = ctx;
   if (!isDeterministicWealthBenefitSection(sec)) return [];
+  if (sectionUsesPolicyAnniversaryBasicAmount(sec)) return [];
   const text = sec.content;
   const compactText = normalizeCashflowLookupText(text);
   const name = sec.name;
@@ -1668,6 +1676,11 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
       scopedPolicy,
     );
     if (result?.partial && !result?.isMinimumEstimate) {
+      const baseAmount = Number(indicatorCalculationInputs(scopedPolicy).baseAmount || 0);
+      const calculationText = String(result.calculationText || '');
+      const pendingCalculationText = baseAmount > 0 && /基本责任保险金额|基本保险金额|基本保额/u.test(String(indicator.formulaText || ''))
+        ? `条款公式：${calculationText.replace(/=\s*[\d,]+(?=\s*[×*])/u, `= 基本保险金额${baseAmount.toLocaleString('zh-CN')}元`)}`
+        : calculationText;
       return [{
         indicatorId: String(indicator.id || ''),
         liability: String(indicator.liability || indicator.coverageType || '').trim(),
@@ -1675,7 +1688,7 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
         isMinimumEstimate: false,
         isPending: true,
         hasBranchScenarios: result.hasBranchScenarios === true,
-        calculationText: String(result.calculationText || ''),
+        calculationText: pendingCalculationText,
         uncertaintyNote: String(result.uncertaintyNote || ''),
       }];
     }
