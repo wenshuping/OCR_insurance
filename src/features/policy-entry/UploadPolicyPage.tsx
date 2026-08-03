@@ -19,6 +19,9 @@ import {
   Sparkles,
   Trash2,
   Users,
+  X,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react';
 import type { FamilyMember, FamilyProfile } from '../../api/contracts/family';
 import type {
@@ -212,12 +215,18 @@ function UploadPageCard(props: {
   badge: string;
   disabled?: boolean;
   onDelete: () => void;
+  onPreview: () => void;
   onReplace: () => void;
 }) {
-  const { badge, disabled = false, item, onDelete, onReplace, title } = props;
+  const { badge, disabled = false, item, onDelete, onPreview, onReplace, title } = props;
   return (
     <article className="grid w-[118px] shrink-0 grid-rows-[88px_auto_auto] gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.45)]">
-      <div className="relative overflow-hidden rounded-md bg-slate-100">
+      <button
+        type="button"
+        onClick={onPreview}
+        aria-label={`查看${title}`}
+        className="relative overflow-hidden rounded-md bg-slate-100 text-left"
+      >
         {item.dataUrl ? (
           <img src={item.dataUrl} alt={title} className="h-full w-full object-cover" />
         ) : (
@@ -228,7 +237,7 @@ function UploadPageCard(props: {
         <span className="absolute left-1.5 top-1.5 rounded-full bg-white/95 px-2 py-0.5 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">
           {badge}
         </span>
-      </div>
+      </button>
       <p className="truncate text-[11px] font-black leading-4 text-slate-700" title={item.name}>{item.name}</p>
       <div className="grid grid-cols-2 gap-1">
         <button
@@ -266,9 +275,16 @@ function UploadedPageStrip(props: {
   onReplaceSupplement: (index: number) => void;
 }) {
   const supplementItems = Array.isArray(props.supplementItems) ? props.supplementItems : [];
+  const [previewItem, setPreviewItem] = useState<{ item: UploadItem; title: string } | null>(null);
+  const [previewZoom, setPreviewZoom] = useState(1);
+  function openPreview(item: UploadItem, title: string) {
+    setPreviewZoom(1);
+    setPreviewItem({ item, title });
+  }
   if (!props.baseItem && !supplementItems.length) return null;
   return (
-    <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="已上传保单页面">
+    <>
+      <section className="mt-3 rounded-lg border border-slate-200 bg-white p-3" aria-label="已上传保单页面">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-xs font-black text-slate-700">已上传页面</h3>
         <span className="shrink-0 rounded-full bg-slate-50 px-2 py-1 text-[11px] font-black text-slate-500 ring-1 ring-slate-100">
@@ -283,6 +299,7 @@ function UploadedPageStrip(props: {
             badge="基本页"
             disabled={props.disabled}
             onDelete={props.onDeleteBase}
+            onPreview={() => openPreview(props.baseItem!, '保单基本页')}
             onReplace={props.onReplaceBase}
           />
         ) : null}
@@ -294,11 +311,66 @@ function UploadedPageStrip(props: {
             badge={`补充${index + 1}`}
             disabled={props.disabled || !props.baseItem}
             onDelete={() => props.onDeleteSupplement(index)}
+            onPreview={() => openPreview(item, `补充页${index + 1}`)}
             onReplace={() => props.onReplaceSupplement(index)}
           />
         ))}
       </div>
-    </section>
+      </section>
+      {previewItem ? (
+        <div
+          className="fixed inset-0 z-[90] overflow-auto bg-slate-950/80 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`查看${previewItem.title}`}
+          onClick={() => setPreviewItem(null)}
+        >
+          <button
+            type="button"
+            onClick={() => setPreviewItem(null)}
+            className="absolute right-4 top-4 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-700 shadow-xl"
+            aria-label="关闭图片预览"
+          >
+            <X size={22} />
+          </button>
+          <div
+            className="fixed left-1/2 top-4 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-white/95 p-1.5 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              aria-label="缩小图片"
+              disabled={previewZoom <= 1}
+              onClick={() => setPreviewZoom((current) => Math.max(1, current - 0.5))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+            >
+              <ZoomOut size={20} />
+            </button>
+            <span className="min-w-12 text-center text-xs font-black text-slate-600">{Math.round(previewZoom * 100)}%</span>
+            <button
+              type="button"
+              aria-label="放大图片"
+              disabled={previewZoom >= 3}
+              onClick={() => setPreviewZoom((current) => Math.min(3, current + 0.5))}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-slate-700 hover:bg-slate-100 disabled:opacity-35"
+            >
+              <ZoomIn size={20} />
+            </button>
+          </div>
+          <div className="flex min-h-full min-w-full items-center justify-center pt-12">
+            <img
+              src={previewItem.item.dataUrl}
+              alt={previewItem.title}
+              className="rounded-xl bg-white object-contain shadow-2xl"
+              style={previewZoom === 1
+                ? { maxHeight: '84vh', maxWidth: '94vw' }
+                : { width: `${previewZoom * 90}vw`, maxWidth: 'none' }}
+              onClick={(event) => event.stopPropagation()}
+            />
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -585,7 +657,13 @@ export function UploadPolicyPage(props: {
     const samePerson = participantsAreSamePerson();
     const sharesCoreControl = samePerson && kind === 'insured';
     const relation = participantRelation(kind);
-    const isCore = relation === '本人';
+    const participantMember = findFamilyMemberByName(String(formData[nameKey] || ''));
+    const existingCoreMemberId = Number(selectedFamily?.coreMemberId || 0);
+    const isExistingCore = Boolean(existingCoreMemberId && Number(participantMember?.id || 0) === existingCoreMemberId);
+    const hasOtherCore = Boolean(existingCoreMemberId && !isExistingCore);
+    const existingCoreMember = selectedFamilyMembers.find((member) => Number(member.id) === existingCoreMemberId) || null;
+    const isCore = isExistingCore || relation === '本人';
+    const visibleRelation = relation;
     return (
       <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-3 shadow-[0_12px_28px_-24px_rgba(15,23,42,0.5)]">
         <div className="flex items-center justify-between gap-3">
@@ -612,7 +690,7 @@ export function UploadPolicyPage(props: {
           <div>
             {requiredFieldLabel('与顶梁柱的关系')}
             <div className={`flex h-11 items-center rounded-xl border px-4 text-sm font-black ${isCore ? 'border-blue-100 bg-blue-50 text-blue-700' : 'border-slate-200 bg-slate-50 text-slate-600'}`}>
-              {relation}
+              {visibleRelation}
             </div>
             <p className="mt-2 text-xs font-medium text-slate-500">与投保人为同一人，顶梁柱身份和关系随上方同步。</p>
           </div>
@@ -624,14 +702,21 @@ export function UploadPolicyPage(props: {
             </div>
           </div>
         ) : (
-          <SelectField
-            label="与顶梁柱的关系"
-            value={relation}
-            onChange={(value) => updateParticipantRelation(kind, value)}
-            options={nonCoreRelationOptions(relation)}
-            placeholder="请选择关系"
-            required
-          />
+          <div>
+            <SelectField
+              label="与顶梁柱的关系"
+              value={visibleRelation}
+              onChange={(value) => updateParticipantRelation(kind, value)}
+              options={nonCoreRelationOptions(visibleRelation)}
+              placeholder="请选择关系"
+              required
+            />
+            {hasOtherCore ? (
+              <p className="mt-2 text-xs font-medium text-slate-500">
+                当前家庭顶梁柱：{existingCoreMember?.name || '已设置成员'}。勾选后保存将更换顶梁柱。
+              </p>
+            ) : null}
+          </div>
         )}
       </div>
     );

@@ -453,7 +453,11 @@ export function PolicyDetailSheet({
               正在生成客户可读保险责任摘要...
             </article>
           ) : customerSummary ? (
-            <CustomerResponsibilitySummaryCard summary={customerSummary} />
+            <CustomerResponsibilitySummaryCard
+              summary={customerSummary}
+              baseAmount={policy.amount}
+              firstPremium={policy.firstPremium}
+            />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
               {customerSummaryMessage || (reportGenerating ? '正在生成客户可读保险责任摘要，请稍后。' : '暂无客户版保险责任摘要。')}

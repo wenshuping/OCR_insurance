@@ -127,6 +127,29 @@ function sourceExcerptFor(responsibility = {}) {
     .join('\n');
 }
 
+function sourceDigestForProduct(product = {}) {
+  return text(product.sourceDigest || product.productIdentity?.sourceDigest);
+}
+
+function productIdentityKey(product = {}) {
+  return `${text(product.company)}\u001f${text(product.productName)}`;
+}
+
+function artifactIdentityIssues(product = {}) {
+  if (!sourceDigestForProduct(product) || !Object.hasOwn(product, 'responsibilities')) return [];
+  return rows(product.responsibilities)
+    .map((responsibility, index) => {
+      const liability = responsibilityLiability(responsibility);
+      const cardTitle = text(responsibility.card?.title);
+      const hasExplicitSemanticContract = text(responsibility.responsibilityKind)
+        && text(responsibility.coverageAggregation);
+      if (hasExplicitSemanticContract) return null;
+      if (!liability || !cardTitle || liabilityKey(liability) === liabilityKey(cardTitle)) return null;
+      return `artifact_card_title_mismatch:${index}:${liability}->${cardTitle}`;
+    })
+    .filter(Boolean);
+}
+
 function normalizeUnifiedProduct(product = {}) {
   if (!Object.hasOwn(product, 'responsibilities')) return product;
   const sourceUrl = text(product.sourceUrl || product.productIdentity?.sourceUrl);
@@ -135,6 +158,7 @@ function normalizeUnifiedProduct(product = {}) {
     ...responsibility,
     liability: text(responsibility.card?.title) || responsibilityLiability(responsibility),
     customerSummary: text(responsibility.customerSummary || responsibility.card?.customerSummary),
+    selectionStatus: normalizedSelectionStatus(responsibility.selectionStatus || 'accepted'),
     sourceUrl: text(responsibility.sourceUrl || sourceUrl),
     sourceExcerpt: sourceExcerptFor(responsibility),
     responsibilitySourceDigest: text(responsibility.responsibilitySourceDigest || sourceDigest),
@@ -358,6 +382,18 @@ function validateProduct(product = {}, {
   const issues = [];
   if (!text(product.company)) issues.push('missing_company');
   if (!text(product.productName)) issues.push('missing_productName');
+  const acceptedResponsibilities = rows(product.acceptedResponsibilities);
+  if (!acceptedResponsibilities.length) issues.push('empty_responsibilities');
+  const seenIds = new Set();
+  for (const responsibility of acceptedResponsibilities) {
+    const responsibilityId = text(responsibility.responsibilityId);
+    if (!responsibilityId) continue;
+    if (seenIds.has(responsibilityId)) {
+      issues.push(`duplicate_responsibility_id:${responsibilityId}`);
+    } else {
+      seenIds.add(responsibilityId);
+    }
+  }
   if (
     unifiedResponsibilities
     && expectedResponsibilityCount !== null
@@ -365,11 +401,18 @@ function validateProduct(product = {}, {
   ) {
     issues.push(`responsibility_count_mismatch:expected=${expectedResponsibilityCount}:actual=${unifiedResponsibilities.length}`);
   }
-  for (const responsibility of rows(product.acceptedResponsibilities)) {
+  for (const responsibility of acceptedResponsibilities) {
     const liability = responsibilityLiability(responsibility);
-    if (!liability) issues.push('accepted_missing_liability');
+    if (!liability) issues.push('accepted_missing_title');
     if (!text(responsibility.sourceUrl)) issues.push(`accepted_missing_sourceUrl:${liability}`);
     if (!text(responsibility.sourceExcerpt)) issues.push(`accepted_missing_sourceExcerpt:${liability}`);
+    const check = findInternalCheck(product, responsibility);
+    if (
+      text(check.calculationKey) === 'manual_formula'
+      && !rows(check.requiredInputs).map(text).filter(Boolean).length
+    ) {
+      issues.push(`manual_formula_missing_requiredInputs:${liability}`);
+    }
   }
   return issues;
 }
@@ -629,8 +672,35 @@ export function importReviewedResponsibilityArtifacts({
   const productsForMaterialize = new Map();
   const productsByKey = new Map();
   const indicatorIdsByProduct = new Map();
+  const versionConflicts = [];
+  const conflictedProductKeys = new Set();
+
+  const entriesByProductKey = new Map();
+  for (const entry of productEntries) {
+    const key = productIdentityKey(entry.product);
+    const digest = sourceDigestForProduct(entry.product);
+    if (!key || !digest) continue;
+    if (!entriesByProductKey.has(key)) entriesByProductKey.set(key, []);
+    entriesByProductKey.get(key).push(digest);
+  }
+  for (const [key, digestsForProduct] of entriesByProductKey.entries()) {
+    const sourceDigests = [...new Set(digestsForProduct)];
+    if (sourceDigests.length <= 1) continue;
+    conflictedProductKeys.add(key);
+    versionConflicts.push({ productKey: key, sourceDigests });
+  }
 
   for (const entry of productEntries) {
+    const entryProductKey = productIdentityKey(entry.product);
+    if (conflictedProductKeys.has(entryProductKey)) {
+      const conflict = versionConflicts.find((item) => item.productKey === entryProductKey);
+      validationFailures.push({
+        company: text(entry.product.company),
+        productName: text(entry.product.productName),
+        issues: [`version_conflict:${conflict?.sourceDigests.join(',')}`],
+      });
+      continue;
+    }
     const unifiedResponsibilities = Object.hasOwn(entry.product, 'responsibilities')
       ? rows(entry.product.responsibilities)
       : null;
@@ -639,10 +709,13 @@ export function importReviewedResponsibilityArtifacts({
     if (productBlockers.length) {
       blockers.push({ company: product.company, productName: product.productName, blockers: productBlockers });
     }
-    const issues = validateProduct(product, {
-      unifiedResponsibilities,
-      expectedResponsibilityCount: entry.expectedResponsibilityCount,
-    });
+    const issues = [
+      ...artifactIdentityIssues(entry.product),
+      ...validateProduct(product, {
+        unifiedResponsibilities,
+        expectedResponsibilityCount: entry.expectedResponsibilityCount,
+      }),
+    ];
     if (issues.length) {
       validationFailures.push({ company: product.company, productName: product.productName, issues });
       continue;
@@ -832,6 +905,7 @@ export function importReviewedResponsibilityArtifacts({
     productsWithAcceptedResponsibilities: productsForMaterialize.size,
     acceptedResponsibilities: indicators.length,
     validationFailures,
+    versionConflicts,
     blockerProducts: blockers,
     materializedProducts: Number(materializeResult?.productsWithCards || 0),
     materializedCards: Number(materializeResult?.insertedRows || 0),

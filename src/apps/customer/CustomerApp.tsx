@@ -3303,7 +3303,7 @@ export function CustomerApp() {
       const insuredRelationForSubmit = submitBaseData.insuredRelationLabel || submitBaseData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
-      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+      if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭顶梁柱只能选择一个');
         return;
       }
@@ -3352,6 +3352,7 @@ export function CustomerApp() {
       }
       const shouldPersistAsCore = (member: FamilyMember, relationLabel: string) => (
         relationLabel === '本人'
+        && (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
       );
       const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
         if (shouldPersistAsCore(member, relationLabel)) return '本人';

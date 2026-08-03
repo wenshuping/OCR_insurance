@@ -1121,7 +1121,7 @@ function isAggregateLiabilityName(value = '') {
 function shouldCreateIndicatorCard(indicator = {}, { responsibility = null, hasKnowledgeResponsibilities = false } = {}) {
   const responsibilityKind = firstNonEmpty(indicator.responsibilityKind, responsibility?.responsibilityKind);
   if (responsibilityKind !== 'waiting_period_refund' && isInvalidResponsibilityTitle(indicator.liability)) return false;
-  if (isWeakLiabilityName(indicator.liability)) return false;
+  if (!responsibility && isWeakLiabilityName(indicator.liability)) return false;
   if (isSentenceFragmentTitle(indicator.liability)) return false;
   if (isRuleParameterText(joinedText(indicator.coverageType, indicator.liability))) return false;
   if (isDisplayOnlyMetricTitle(indicator.liability)) return false;
@@ -1727,6 +1727,9 @@ function createIndicatorCard({ indicator, responsibility, knowledge, policy, ind
     plainSummary: firstNonEmpty(indicator.customerSummary, responsibility?.customerSummary, plainSummaryFor({ title, triggerCondition, payoutSummary })),
     triggerCondition,
     payoutSummary,
+    importantLimits: Array.isArray(indicator.importantLimits)
+      ? indicator.importantLimits.map(text).filter(Boolean)
+      : [],
     ...source,
     confidence: source.sourceUrl && source.sourceExcerpt ? 'high' : 'medium',
     calculationStatus: cardStatus(indicators),
@@ -1848,7 +1851,7 @@ export function buildResponsibilityCardsForPolicy({
     .map(normalizeResponsibility)
     .filter((responsibility) => (
       (responsibility.responsibilityKind === 'waiting_period_refund' || !isInvalidResponsibilityTitle(responsibility.title))
-      && !isWeakLiabilityName(responsibility.title)
+      && (!isWeakLiabilityName(responsibility.title) || (authoritativeOnly && responsibility.responsibilityId))
       && !isSentenceFragmentTitle(responsibility.title)
     ));
   const normalizedIndicators = sortIndicatorsByReviewedOrder(removeSupersededDiseaseDisabilityAliases(objectRows(coverageIndicators))
