@@ -8,7 +8,10 @@ import {
   indicatorCalculationPayloadFields,
   requiredCalculationInputsForMeta,
 } from '../src/indicator-calculation.mjs';
-import { materializeProductResponsibilityCards } from './materialize-product-responsibility-cards.mjs';
+import {
+  buildResponsibilityCardsForPolicy,
+  indicatorCheckForResponsibilityCard,
+} from '../server/responsibility-card-standardizer.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -53,7 +56,7 @@ function readJsonl(filePath) {
     const parsed = JSON.parse(content);
     return Array.isArray(parsed) ? parsed : [parsed];
   } catch {
-    // Fall through to line-oriented JSONL parsing.
+    // Fall back to newline-delimited reviewed product records.
   }
   return content
     .split('\n')
@@ -78,13 +81,12 @@ function readArtifactProducts(filePath) {
     ) {
       const nestedPath = path.resolve(path.dirname(resolvedPath), text(record.artifactPath));
       const nestedProduct = JSON.parse(fs.readFileSync(nestedPath, 'utf8'));
-      const product = {
-        ...nestedProduct,
-        ...(text(record.company) ? { company: text(record.company) } : {}),
-        ...(text(record.productName) ? { productName: text(record.productName) } : {}),
-      };
       return {
-        product,
+        product: {
+          ...nestedProduct,
+          ...(text(record.company) ? { company: text(record.company) } : {}),
+          ...(text(record.productName) ? { productName: text(record.productName) } : {}),
+        },
         expectedResponsibilityCount: Number.isInteger(record.responsibilityCount)
           ? record.responsibilityCount
           : null,
@@ -120,75 +122,43 @@ function sourceExcerptFor(responsibility = {}) {
   const direct = text(responsibility.sourceExcerpt);
   if (direct) return direct;
   return rows(responsibility.evidenceSegments)
-    .map((segment) => text(segment?.sourceExcerpt))
+    .map((segment) => text(segment?.sourceExcerpt || segment?.text || segment?.excerpt))
     .filter(Boolean)
     .join('\n');
-}
-
-function sourceDigestForProduct(product = {}) {
-  return text(product.sourceDigest || product.productIdentity?.sourceDigest);
-}
-
-function productIdentityKey(product = {}) {
-  return `${text(product.company)}\u001f${text(product.productName)}`;
-}
-
-function artifactIdentityIssues(product = {}) {
-  if (!sourceDigestForProduct(product) || !Object.hasOwn(product, 'responsibilities')) return [];
-  return rows(product.responsibilities)
-    .map((responsibility, index) => {
-      const liability = responsibilityLiability(responsibility);
-      const cardTitle = text(responsibility.card?.title);
-      if (!liability || !cardTitle || liabilityKey(liability) === liabilityKey(cardTitle)) return null;
-      return `artifact_card_title_mismatch:${index}:${liability}->${cardTitle}`;
-    })
-    .filter(Boolean);
 }
 
 function normalizeUnifiedProduct(product = {}) {
   if (!Object.hasOwn(product, 'responsibilities')) return product;
   const sourceUrl = text(product.sourceUrl || product.productIdentity?.sourceUrl);
+  const sourceDigest = text(product.sourceDigest || product.productIdentity?.sourceDigest);
   const acceptedResponsibilities = rows(product.responsibilities).map((responsibility) => ({
     ...responsibility,
     liability: text(responsibility.card?.title) || responsibilityLiability(responsibility),
     customerSummary: text(responsibility.customerSummary || responsibility.card?.customerSummary),
     sourceUrl: text(responsibility.sourceUrl || sourceUrl),
     sourceExcerpt: sourceExcerptFor(responsibility),
+    responsibilitySourceDigest: text(responsibility.responsibilitySourceDigest || sourceDigest),
   }));
-  const internalIndicatorChecks = acceptedResponsibilities.map((responsibility, index) => {
-    const indicator = rows(product.responsibilities[index]?.indicators)[0] || {};
-    return {
+  const internalIndicatorChecks = acceptedResponsibilities.flatMap((responsibility, responsibilityIndex) => {
+    const sourceIndicators = rows(product.responsibilities[responsibilityIndex]?.indicators);
+    if (!sourceIndicators.length) {
+      return [{
+        liability: responsibilityLiability(responsibility),
+        indicatorCheckStatus: 'accepted_unified_pipeline',
+      }];
+    }
+    return sourceIndicators.map((indicator) => ({
       ...indicator,
       liability: responsibilityLiability(responsibility),
       indicatorCheckStatus: text(indicator.indicatorCheckStatus || 'accepted_unified_pipeline'),
-    };
-  });
-  const productWithChecks = {
-    ...product,
-    acceptedResponsibilities,
-    internalIndicatorChecks,
-  };
-  const compatibleIndicatorChecks = acceptedResponsibilities.map((responsibility, index) => {
-    const check = internalIndicatorChecks[index];
-    const derived = indicatorFrom(productWithChecks, responsibility);
-    return {
-      ...check,
-      basisKey: text(check.basisKey) || derived.basisKey,
-      calculationKey: text(check.calculationKey) || derived.calculationKey,
-      calculationEligible: typeof check.calculationEligible === 'boolean'
-        ? check.calculationEligible
-        : derived.calculationEligible,
-      calculationStatus: text(check.calculationStatus) || derived.calculationStatus,
-      calculationReason: text(check.calculationReason) || derived.calculationReason,
-      requiredInputs: rows(check.requiredInputs).length
-        ? check.requiredInputs
-        : derived.requiredInputs,
-    };
+      responsibilityId: text(indicator.responsibilityId || responsibility.responsibilityId),
+      responsibilitySourceDigest: text(indicator.responsibilitySourceDigest || sourceDigest),
+    }));
   });
   return {
     ...product,
     acceptedResponsibilities,
-    internalIndicatorChecks: compatibleIndicatorChecks,
+    internalIndicatorChecks,
   };
 }
 
@@ -255,8 +225,54 @@ function formulaFor(responsibility = {}, check = {}) {
   return text(responsibility.sourceExcerpt).slice(0, 500);
 }
 
+function structuredFormulaFields(responsibility = {}, check = {}) {
+  const normalizedFormula = text(check.normalizedFormula || responsibility.normalizedFormula);
+  const operands = Array.isArray(check.operands)
+    ? check.operands
+    : (Array.isArray(responsibility.operands) ? responsibility.operands : null);
+  const branches = Array.isArray(check.branches)
+    ? check.branches
+    : (Array.isArray(responsibility.branches) ? responsibility.branches : null);
+  const branchSemanticContract = text(
+    check.branchSemanticContract || responsibility.branchSemanticContract,
+  );
+  return {
+    ...(normalizedFormula ? { normalizedFormula } : {}),
+    ...(operands ? { operands } : {}),
+    ...(branches ? { branches } : {}),
+    ...(branchSemanticContract ? { branchSemanticContract } : {}),
+  };
+}
+
+function structuredIndicatorFields(product = {}, responsibility = {}, check = {}) {
+  const evidenceTokens = Array.isArray(check.evidenceTokens)
+    ? check.evidenceTokens
+    : (Array.isArray(responsibility.evidenceTokens) ? responsibility.evidenceTokens : null);
+  const ruleRefs = Array.isArray(check.ruleRefs)
+    ? check.ruleRefs
+    : (Array.isArray(responsibility.ruleRefs) ? responsibility.ruleRefs : null);
+  return {
+    ...(text(check.indicatorName) ? { indicatorName: text(check.indicatorName) } : {}),
+    ...(text(responsibility.responsibilityId || check.responsibilityId) ? { responsibilityId: text(responsibility.responsibilityId || check.responsibilityId) } : {}),
+    ...(text(check.parentResponsibilityId || responsibility.parentResponsibilityId) ? { parentResponsibilityId: text(check.parentResponsibilityId || responsibility.parentResponsibilityId) } : {}),
+    ...(text(check.branchId || responsibility.branchId) ? { branchId: text(check.branchId || responsibility.branchId) } : {}),
+    ...(text(check.payout || responsibility.payout) ? { payout: text(check.payout || responsibility.payout) } : {}),
+    ...(text(check.mutuallyExclusiveGroup || responsibility.mutuallyExclusiveGroup) ? { mutuallyExclusiveGroup: text(check.mutuallyExclusiveGroup || responsibility.mutuallyExclusiveGroup) } : {}),
+    ...(text(check.responsibilityKind || responsibility.responsibilityKind) ? { responsibilityKind: text(check.responsibilityKind || responsibility.responsibilityKind) } : {}),
+    ...(text(check.coverageAggregation || responsibility.coverageAggregation) ? { coverageAggregation: text(check.coverageAggregation || responsibility.coverageAggregation) } : {}),
+    ...(evidenceTokens ? { evidenceTokens: evidenceTokens.map(text).filter(Boolean) } : {}),
+    ...(ruleRefs ? { ruleRefs: ruleRefs.map(text).filter(Boolean) } : {}),
+    ...(text(responsibility.customerSummary || check.customerSummary) ? { customerSummary: text(responsibility.customerSummary || check.customerSummary) } : {}),
+    ...(rows(responsibility.importantLimits).length ? { importantLimits: rows(responsibility.importantLimits).map(text).filter(Boolean) } : {}),
+    ...(check.provenance && typeof check.provenance === 'object' && !Array.isArray(check.provenance) ? { provenance: { ...check.provenance } } : {}),
+    ...(text(check.sourceDigest || responsibility.sourceDigest || product.sourceDigest || product.productIdentity?.sourceDigest) ? { sourceDigest: text(check.sourceDigest || responsibility.sourceDigest || product.sourceDigest || product.productIdentity?.sourceDigest) } : {}),
+    ...(text(check.responsibilitySourceDigest || responsibility.responsibilitySourceDigest || product.productIdentity?.sourceDigest || product.sourceDigest) ? { responsibilitySourceDigest: text(check.responsibilitySourceDigest || responsibility.responsibilitySourceDigest || product.productIdentity?.sourceDigest || product.sourceDigest) } : {}),
+  };
+}
+
 function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISOString(), {
   checkOverride = null,
+  responsibilityIndex = 0,
   indicatorIndex = 0,
 } = {}) {
   const company = text(product.company);
@@ -267,13 +283,13 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     ...findInternalCheck(product, responsibility),
     ...(checkOverride || {}),
   };
-  const sourceUrl = text(responsibility.sourceUrl || sourceRecord.sourceUrl);
-  const sourceExcerpt = text(responsibility.sourceExcerpt);
+  const sourceUrl = text(check.sourceUrl || responsibility.sourceUrl || sourceRecord.sourceUrl || product.productIdentity?.sourceUrl);
+  const sourceExcerpt = text(check.sourceExcerpt || responsibility.sourceExcerpt);
   const sourceRecordId = text(responsibility.sourceRecordId || sourceRecord.sourceRecordId);
   const sourceTitle = text(responsibility.sourceTitle || sourceRecord.sourceTitle || sourceRecord.title);
   const responsibilityKey = [
     text(responsibility.responsibilityId) || liability,
-    text(check.indicatorName) || text(check.id) || String(indicatorIndex),
+    text(check.indicatorName) || text(check.branchId) || text(check.id) || String(indicatorIndex),
   ].join('\u001f');
   const base = {
     id: `ind_manual_review_${sha1([company, productName, responsibilityKey, sourceRecordId, sourceUrl, VERSION].join('\u001f')).slice(0, 20)}`,
@@ -285,12 +301,9 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     condition: text(responsibility.triggerCondition || check.triggerCondition),
     basis: basisFor(responsibility, check),
     formulaText: formulaFor(responsibility, check),
-    normalizedFormula: text(check.normalizedFormula),
-    branches: rows(check.branches),
-    operands: rows(check.operands),
+    ...structuredFormulaFields(responsibility, check),
+    ...structuredIndicatorFields(product, responsibility, check),
     payoutSummary: text(responsibility.insurerObligation || check.payoutSummary || responsibility.sourceExcerpt).slice(0, 500),
-    customerSummary: text(responsibility.customerSummary),
-    importantLimits: rows(responsibility.importantLimits).map(text).filter(Boolean),
     value: Number.isFinite(Number(check.value)) ? Number(check.value) : null,
     valueText: text(check.valueText),
     unit: text(check.unit || (text(check.basisKey) === 'fixed_amount' ? '元' : '公式')),
@@ -300,7 +313,7 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     indicatorCheckStatus: text(check.indicatorCheckStatus || 'accepted_manual_review'),
     indicatorCheckSummary: text(check.indicatorCheckSummary),
     responsibilityScope: text(responsibility.responsibilityScope || check.responsibilityScope || 'basic_or_unspecified'),
-    selectionStatus: normalizedSelectionStatus(responsibility.selectionStatus),
+    selectionStatus: normalizedSelectionStatus(responsibility.selectionStatus || 'accepted'),
     selectionEvidence: text(responsibility.selectionEvidence || 'manual_skill_review'),
     reviewedResponsibilityIndex: responsibilityIndex,
     reviewedIndicatorIndex: indicatorIndex,
@@ -314,21 +327,22 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     responsibilityArtifactId: text(product.artifactId),
     responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
     reviewVersion: VERSION,
-    responsibilityArtifactId: text(product.artifactId),
-    responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
-    responsibilitySourceDigest: text(product.productIdentity?.sourceDigest || product.sourceDigest),
     updatedAt: now,
   };
   const calculatedFields = indicatorCalculationPayloadFields(base);
   const basisKey = text(check.basisKey) || calculatedFields.basisKey;
   const calculationKey = text(check.calculationKey) || calculatedFields.calculationKey;
-  const explicitRequiredInputs = rows(check.requiredInputs).map(text).filter(Boolean);
+  const hasExplicitRequiredInputs = Array.isArray(check.requiredInputs)
+    || Array.isArray(responsibility.requiredInputs);
+  const explicitRequiredInputs = rows(
+    Array.isArray(check.requiredInputs) ? check.requiredInputs : responsibility.requiredInputs,
+  ).map(text).filter(Boolean);
   return {
     ...base,
     ...calculatedFields,
     basisKey,
     calculationKey,
-    requiredInputs: explicitRequiredInputs.length
+    requiredInputs: hasExplicitRequiredInputs
       ? explicitRequiredInputs
       : requiredCalculationInputsForMeta({ basisKey, calculationKey }),
     calculationEligible: typeof check.calculationEligible === 'boolean' ? check.calculationEligible : calculatedFields.calculationEligible,
@@ -344,53 +358,18 @@ function validateProduct(product = {}, {
   const issues = [];
   if (!text(product.company)) issues.push('missing_company');
   if (!text(product.productName)) issues.push('missing_productName');
-  const acceptedResponsibilities = rows(product.acceptedResponsibilities);
-  if (!acceptedResponsibilities.length) issues.push('empty_responsibilities');
-  const seenIds = new Set();
-  for (const responsibility of acceptedResponsibilities) {
-    const responsibilityId = text(responsibility.responsibilityId);
-    if (!responsibilityId) {
-      if (unifiedResponsibilities) {
-        issues.push('responsibility_missing_id');
-      }
-    } else if (seenIds.has(responsibilityId)) {
-      issues.push(`duplicate_responsibility_id:${responsibilityId}`);
-    } else {
-      seenIds.add(responsibilityId);
-    }
+  if (
+    unifiedResponsibilities
+    && expectedResponsibilityCount !== null
+    && expectedResponsibilityCount !== unifiedResponsibilities.length
+  ) {
+    issues.push(`responsibility_count_mismatch:expected=${expectedResponsibilityCount}:actual=${unifiedResponsibilities.length}`);
   }
-  if (unifiedResponsibilities) {
-    if (
-      expectedResponsibilityCount !== null
-      && expectedResponsibilityCount !== unifiedResponsibilities.length
-    ) {
-      issues.push(
-        `responsibility_count_mismatch:expected=${expectedResponsibilityCount}:actual=${unifiedResponsibilities.length}`,
-      );
-    }
-  }
-  for (const responsibility of acceptedResponsibilities) {
+  for (const responsibility of rows(product.acceptedResponsibilities)) {
     const liability = responsibilityLiability(responsibility);
-    if (!liability) issues.push('accepted_missing_title');
-    if (!text(responsibility.customerSummary)) issues.push(`accepted_missing_customerSummary:${liability}`);
-    if (!text(responsibility.triggerCondition)) issues.push(`accepted_missing_triggerCondition:${liability}`);
-    if (!text(responsibility.insurerObligation)) issues.push(`accepted_missing_insurerObligation:${liability}`);
+    if (!liability) issues.push('accepted_missing_liability');
     if (!text(responsibility.sourceUrl)) issues.push(`accepted_missing_sourceUrl:${liability}`);
     if (!text(responsibility.sourceExcerpt)) issues.push(`accepted_missing_sourceExcerpt:${liability}`);
-    const check = findInternalCheck(product, responsibility);
-    if (!Object.keys(check).length) {
-      issues.push(`accepted_missing_internalIndicatorCheck:${liability}`);
-      continue;
-    }
-    if (!text(check.basisKey)) issues.push(`indicator_missing_basisKey:${liability}`);
-    if (!text(check.calculationKey)) issues.push(`indicator_missing_calculationKey:${liability}`);
-    if (typeof check.calculationEligible !== 'boolean') issues.push(`indicator_missing_calculationEligible:${liability}`);
-    if (!text(check.calculationStatus)) issues.push(`indicator_missing_calculationStatus:${liability}`);
-    if (!text(check.calculationReason)) issues.push(`indicator_missing_calculationReason:${liability}`);
-    if (!text(check.indicatorCheckStatus)) issues.push(`indicator_missing_indicatorCheckStatus:${liability}`);
-    if (text(check.calculationKey) === 'manual_formula' && !rows(check.requiredInputs).map(text).filter(Boolean).length) {
-      issues.push(`manual_formula_missing_requiredInputs:${liability}`);
-    }
   }
   return issues;
 }
@@ -570,6 +549,8 @@ function ensureSingleProductWriteTables(db) {
 }
 
 function targetKnowledgeRows(db, product = {}) {
+  const table = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_records'").get();
+  if (!table) return [];
   return db.prepare(`
     SELECT id, company, product_name, url, payload
       FROM knowledge_records
@@ -648,33 +629,8 @@ export function importReviewedResponsibilityArtifacts({
   const productsForMaterialize = new Map();
   const productsByKey = new Map();
   const indicatorIdsByProduct = new Map();
-  const versionConflicts = [];
-  const conflictedProductKeys = new Set();
-
-  const entriesByProductKey = new Map();
-  for (const [entryIndex, entry] of productEntries.entries()) {
-    const key = productIdentityKey(entry.product);
-    if (!key || !sourceDigestForProduct(entry.product)) continue;
-    if (!entriesByProductKey.has(key)) entriesByProductKey.set(key, []);
-    entriesByProductKey.get(key).push({ entryIndex, digest: sourceDigestForProduct(entry.product) });
-  }
-  for (const [key, entries] of entriesByProductKey.entries()) {
-    const digests = [...new Set(entries.map((entry) => entry.digest))];
-    if (digests.length <= 1) continue;
-    conflictedProductKeys.add(key);
-    versionConflicts.push({ productKey: key, sourceDigests: digests });
-  }
 
   for (const entry of productEntries) {
-    const productKey = productIdentityKey(entry.product);
-    if (conflictedProductKeys.has(productKey)) {
-      validationFailures.push({
-        company: text(entry.product.company),
-        productName: text(entry.product.productName),
-        issues: [`version_conflict:${versionConflicts.find((item) => item.productKey === productKey)?.sourceDigests.join(',')}`],
-      });
-      continue;
-    }
     const unifiedResponsibilities = Object.hasOwn(entry.product, 'responsibilities')
       ? rows(entry.product.responsibilities)
       : null;
@@ -683,43 +639,40 @@ export function importReviewedResponsibilityArtifacts({
     if (productBlockers.length) {
       blockers.push({ company: product.company, productName: product.productName, blockers: productBlockers });
     }
-    const issues = [
-      ...artifactIdentityIssues(entry.product),
-      ...validateProduct(product, {
+    const issues = validateProduct(product, {
       unifiedResponsibilities,
       expectedResponsibilityCount: entry.expectedResponsibilityCount,
-      }),
-    ];
+    });
     if (issues.length) {
       validationFailures.push({ company: product.company, productName: product.productName, issues });
       continue;
     }
     const accepted = rows(product.acceptedResponsibilities);
+    const productKey = `${text(product.company)}\u001f${text(product.productName)}`;
     for (const [responsibilityIndex, responsibility] of accepted.entries()) {
       const sourceIndicators = unifiedResponsibilities
         ? rows(unifiedResponsibilities[responsibilityIndex]?.indicators)
-        : [];
+        : rows(responsibility.indicators);
       const checks = sourceIndicators.length ? sourceIndicators : [null];
-      const key = productIdentityKey(product);
-      if (!indicatorIdsByProduct.has(key)) indicatorIdsByProduct.set(key, new Set());
+      if (!indicatorIdsByProduct.has(productKey)) indicatorIdsByProduct.set(productKey, new Set());
       for (const [indicatorIndex, check] of checks.entries()) {
         const indicator = indicatorFrom(product, responsibility, now, {
           checkOverride: check,
+          responsibilityIndex,
           indicatorIndex,
         });
         indicators.push(indicator);
-        indicatorIdsByProduct.get(key).add(indicator.id);
+        indicatorIdsByProduct.get(productKey).add(indicator.id);
       }
     }
-    if (accepted.length) productsForMaterialize.set(productIdentityKey(product), {
+    if (accepted.length) productsForMaterialize.set(productKey, {
       company: text(product.company),
       productName: text(product.productName),
-      sourceDigest: sourceDigestForProduct(product),
       acceptedCount: accepted.length,
       responsibilityMode: unifiedResponsibilities ? 'authoritative_only' : 'auto',
       authoritativeResponsibilities: accepted,
     });
-    if (accepted.length) productsByKey.set(productIdentityKey(product), product);
+    if (accepted.length) productsByKey.set(productKey, product);
     if (samples.length < sampleLimit) {
       samples.push({
         company: product.company,
@@ -862,25 +815,11 @@ export function importReviewedResponsibilityArtifacts({
     } finally {
       db.close();
     }
-    for (const product of productsForMaterialize.values()) {
-      const reviewedProduct = productsByKey.get(productIdentityKey(product)) || product;
-      indicatorPruneResults.push({
-        company: product.company,
-        productName: product.productName,
-        ...pruneIndicatorsToAcceptedResponsibilities(
-          dbPath,
-          reviewedProduct,
-          indicatorIdsByProduct.get(productIdentityKey(product)),
-        ),
-      });
-    }
-    materializeResult = materializeProductResponsibilityCards({
-      dbPath,
-      write: true,
-      productList: [...productsForMaterialize.values()],
-      sampleLimit,
-      now,
-    });
+    materializeResult = {
+      productsWithCards: artifactWriteResults.filter((result) => result.after.cards > 0).length,
+      insertedRows: artifactWriteResults.reduce((sum, result) => sum + result.after.cards, 0),
+      deletedRows: artifactWriteResults.reduce((sum, result) => sum + result.before.cards, 0),
+    };
   }
 
   return {
@@ -893,13 +832,13 @@ export function importReviewedResponsibilityArtifacts({
     productsWithAcceptedResponsibilities: productsForMaterialize.size,
     acceptedResponsibilities: indicators.length,
     validationFailures,
-    versionConflicts,
     blockerProducts: blockers,
     materializedProducts: Number(materializeResult?.productsWithCards || 0),
     materializedCards: Number(materializeResult?.insertedRows || 0),
     prunedCards: Number(materializeResult?.deletedRows || 0),
     prunedIndicators: indicatorPruneResults.reduce((sum, result) => sum + Number(result.deletedIndicators || 0), 0),
     indicatorPruneResults: indicatorPruneResults.slice(0, sampleLimit),
+    artifactWriteResults,
     pruneResults: [],
     samples,
   };

@@ -1673,6 +1673,8 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   nowIso = () => new Date().toISOString(),
   logger = console,
   privateSourceRecords = [],
+  requireApprovedPipelineArtifact = false,
+  enqueueProductResponsibilityPipeline,
 } = {}) {
   const company = text(input.company).slice(0, 80);
   const inputProductName = text(input.name || input.productName).slice(0, 160);

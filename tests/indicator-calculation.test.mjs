@@ -181,8 +181,8 @@ test('normalizeIndicatorCalculation blocks conditional early or late payout form
   });
 
   assert.equal(meta.calculationEligible, false);
-  assert.equal(meta.calculationKey, 'manual_formula');
-  assert.match(meta.calculationReason, /条件化给付/u);
+  assert.equal(meta.calculationKey, 'claim_event_facts');
+  assert.match(meta.calculationReason, /出险原因和出险日期/u);
 });
 
 test('normalizeIndicatorCalculation treats basic-amount day-count benefits as daily allowance dependent', () => {

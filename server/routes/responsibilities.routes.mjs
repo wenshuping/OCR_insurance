@@ -1004,7 +1004,7 @@ export function createResponsibilityRoutes(context) {
       }),
     });
     if (usesPrivateSource && result?.ok) result.source = 'customer_upload';
-    if (!usesPrivateSource && result?.source !== 'database' && result?.ok && result?.summary
+    if (!usesPrivateSource && result?.ok && result?.summary
       && typeof retrieveCustomerResponsibilityMaterials === 'function'
       && typeof enrichCustomerResponsibilitySummaryWithMaterials === 'function') {
       try {

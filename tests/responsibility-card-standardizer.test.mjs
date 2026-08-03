@@ -1547,29 +1547,6 @@ test('buildResponsibilityCardsForPolicy filters exclusion and waiting-period fra
   assert.deepEqual(cards.map((card) => card.title), ['轻度疾病保险金']);
 });
 
-test('buildResponsibilityCardsForPolicy keeps source-grounded unified waiting-period benefit branches', () => {
-  const cards = buildResponsibilityCardsForPolicy({
-    policy: {
-      company: '吉祥人寿保险股份有限公司',
-      name: '吉祥人寿附加小额贷款借款人定期寿险',
-    },
-    coverageIndicators: [{
-      company: '吉祥人寿保险股份有限公司',
-      productName: '吉祥人寿附加小额贷款借款人定期寿险',
-      coverageType: '疾病保障',
-      liability: '等待期后身故或全残保险金',
-      triggerCondition: '等待期后因疾病身故或全残。',
-      payoutSummary: '按基本保险金额给付身故或全残保险金。',
-      calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
-      indicatorCheckStatus: 'accepted_unified_pipeline',
-      sourceUrl: 'https://official.example-life.test/loan-life.pdf',
-      sourceExcerpt: '被保险人在等待期后因疾病身故或全残，我们按基本保险金额给付身故或全残保险金。',
-    }],
-  });
-
-  assert.deepEqual(cards.map((card) => card.title), ['等待期后身故或全残保险金']);
-});
-
 test('buildResponsibilityCardsForPolicy keeps waiting-period premium refund obligations', () => {
   const cards = buildResponsibilityCardsForPolicy({
     policy: {

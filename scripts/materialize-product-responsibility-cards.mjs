@@ -154,13 +154,8 @@ function loadProductCounts(db, tableName) {
   `).all().map((row) => [productMapKey(row.company, row.product_name), Number(row.count || 0)]));
 }
 
-function loadProductListFilter(productListPath = '', productList = []) {
-  if (Array.isArray(productList) && productList.length) {
-    return new Set(productList.map((row) => productMapKey(
-      row.company,
-      row.productName || row.product_name,
-    )).filter((key) => key !== '\u001f'));
-  }
+function loadProductListRows(productListPath = '', productList = []) {
+  if (Array.isArray(productList) && productList.length) return productList;
   const resolvedPath = text(productListPath);
   if (!resolvedPath) return [];
   const rows = JSON.parse(fs.readFileSync(path.resolve(resolvedPath), 'utf8'));
@@ -242,7 +237,6 @@ function materializedCardRow({ card, product, productKey, index, now }) {
     payload: {
       ...card,
       productKey,
-      sourceDigest: text(product.sourceDigest),
       generatedAt: now,
       sourceCardId: text(card.id),
       sourceGate: card.sourceUrl ? 'source_url_present' : 'missing_source_url',
@@ -337,7 +331,9 @@ export function materializeProductResponsibilityCards({
     const indicatorsByProduct = groupByProduct(sourceRows.indicatorRows);
     const optionalByProduct = groupByProduct(sourceRows.optionalRows);
     const cardCountsByProduct = onlyMissingCards ? loadProductCounts(db, 'product_responsibility_cards') : new Map();
-    const productListFilter = loadProductListFilter(productListPath, productList);
+    const productListRows = loadProductListRows(productListPath, productList);
+    const productListFilter = loadProductListFilter(productListRows);
+    const productListInputs = productListByProductKey(productListRows);
     const products = selectProducts(sourceRows, { company, productName, limit })
       .filter((product) => !productListFilter || productListFilter.has(productMapKey(product.company, product.productName)))
       .filter((product) => !onlyMissingCards || !cardCountsByProduct.get(productMapKey(product.company, product.productName)))
@@ -411,7 +407,6 @@ export function materializeProductResponsibilityCards({
         productKey,
         company: product.company,
         productName: product.productName,
-        sourceDigest: text(product.sourceDigest),
         rows,
       };
     });
