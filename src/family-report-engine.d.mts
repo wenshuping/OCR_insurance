@@ -90,7 +90,7 @@ export type FamilyProtectionRow = {
   amount: number;
   amountText: string;
   countText: string;
-  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'legacy_reference' | 'unknown';
+  status: 'covered' | 'partial' | 'missing' | 'formula' | 'inactive' | 'unknown';
   conditionText: string;
   sourcePolicies: FamilyProtectionSourcePolicy[];
 };
@@ -115,6 +115,8 @@ export type FamilyWealthPolicyCashflowRow = {
   cumulative: number;
   liability: string;
   calculationText?: string;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
   policyId: number;
   productName: string;
 };
@@ -168,6 +170,14 @@ export type FamilyWealthPolicyReport = {
   cashValueRows: FamilyWealthPolicyCashValueRow[];
   excludedCashflowRows: FamilyWealthPolicyCashflowRow[];
   excludedCashValueRows: FamilyWealthPolicyCashValueRow[];
+  minimumEstimateCashflowRows: FamilyWealthPolicyCashflowRow[];
+  uncomputedCashflowItems: Array<{
+    policyId?: number | string | null;
+    productName: string;
+    liability: string;
+    missingInputs: string[];
+    calculationText: string;
+  }>;
   annualCashflowRows: FamilyWealthPolicyAnnualCashflowRow[];
   uncertaintyItems: FamilyWealthUncertaintyItem[];
   uncertaintyNote: string;

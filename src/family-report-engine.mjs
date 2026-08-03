@@ -1,5 +1,9 @@
 import { resolvePolicyValidityStatus } from './policy-validity.mjs';
-import { resolveIndicatorAmountFromCalculation } from './indicator-calculation.mjs';
+import {
+  formulaVariablesFromIndicators,
+  resolveIndicatorAmountForCurrentContext,
+  resolveIndicatorAmountFromCalculation,
+} from './indicator-calculation.mjs';
 
 function asNumber(value) {
   const number = Number(value);
@@ -17,21 +21,17 @@ function normalizedProjectionTitle(value) {
 }
 
 function hasResponsibilityDetailProjection(policy = {}) {
-  return Object.prototype.hasOwnProperty.call(policy, 'responsibilityCalculations')
-    || (Array.isArray(policy?.scenarioEntries) && policy.scenarioEntries.length > 0)
-    || (Array.isArray(policy?.responsibilityCards) && policy.responsibilityCards.some((card) => !indicatorIsReferenceOnly(card)));
+  return Object.prototype.hasOwnProperty.call(policy, 'responsibilityCalculations');
 }
 
 function detailProjectionForIndicator(policy = {}, indicator = {}) {
   if (!hasResponsibilityDetailProjection(policy)) return null;
   const indicatorId = String(indicator?.id || '').trim();
-  const liability = normalizedProjectionTitle(indicator?.liability || indicator?.title || indicator?.coverageType);
+  const liability = normalizedProjectionTitle(indicator?.liability || indicator?.coverageType);
   const scenarios = Array.isArray(policy?.scenarioEntries) ? policy.scenarioEntries : [];
   const calculations = Array.isArray(policy?.responsibilityCalculations) ? policy.responsibilityCalculations : [];
   const scenario = scenarios.find((entry) => (
-    liability
-      && normalizedProjectionTitle(entry?.scenario) === liability
-      && projectionProductMatchesResponsibility(indicator, entry)
+    liability && normalizedProjectionTitle(entry?.scenario) === liability
   ));
   if (scenario && finiteNumber(scenario.amount) !== null) {
     return {
@@ -45,11 +45,7 @@ function detailProjectionForIndicator(policy = {}, indicator = {}) {
   }
   const calculation = calculations.find((entry) => (
     (indicatorId && String(entry?.indicatorId || '').trim() === indicatorId)
-    || (
-      liability
-      && normalizedProjectionTitle(entry?.liability) === liability
-      && projectionProductMatchesResponsibility(indicator, entry)
-    )
+    || (liability && normalizedProjectionTitle(entry?.liability) === liability)
   ));
   if (calculation) {
     return {
@@ -62,22 +58,6 @@ function detailProjectionForIndicator(policy = {}, indicator = {}) {
     };
   }
   return { matched: false };
-}
-
-function projectionProductMatchesResponsibility(responsibility, projection) {
-  const responsibilityCanonicalProductId = String(responsibility?.canonicalProductId || '').trim();
-  const projectionCanonicalProductId = String(projection?.canonicalProductId || '').trim();
-  if (responsibilityCanonicalProductId && projectionCanonicalProductId) {
-    return responsibilityCanonicalProductId === projectionCanonicalProductId;
-  }
-  const projectionProductName = normalizeProductName(
-    projection?.productName || projection?.matchedProductName || projection?.planName,
-  );
-  if (!projectionProductName) return true;
-  const responsibilityProductName = normalizeProductName(
-    responsibility?.productName || responsibility?.matchedProductName || responsibility?.planName,
-  );
-  return !responsibilityProductName || responsibilityProductName === projectionProductName;
 }
 
 function parseDateParts(value) {
@@ -473,100 +453,8 @@ function selectedCoverageIndicators(indicators = []) {
   return (Array.isArray(indicators) ? indicators : []).filter(isSelectedCoverageIndicator);
 }
 
-function exactPlanForResponsibility(policy = {}, item = {}) {
-  const plans = Array.isArray(policy?.plans) ? policy.plans : [];
-  const itemCanonicalProductId = String(item?.canonicalProductId || '').trim();
-  if (itemCanonicalProductId) {
-    const canonicalMatch = plans.find((plan) => (
-      String(plan?.canonicalProductId || '').trim() === itemCanonicalProductId
-    ));
-    return canonicalMatch || null;
-  }
-
-  const itemProductNames = [
-    item?.productName,
-    item?.matchedProductName,
-    item?.sourceProductName,
-    item?.planName,
-  ].map(normalizeProductName).filter(Boolean);
-  if (!itemProductNames.length) return null;
-  return plans.find((plan) => [plan?.matchedProductName, plan?.productName, plan?.name]
-    .map(normalizeProductName)
-    .some((planName) => planName && itemProductNames.includes(planName))) || null;
-}
-
-function familyResponsibilityItem(policy, item, sourceKind) {
-  const exactPlan = exactPlanForResponsibility(policy, item);
-  return {
-    ...item,
-    productName: String(exactPlan?.matchedProductName || exactPlan?.productName || exactPlan?.name || item?.productName || policy?.name || '').trim(),
-    __familyReportSourceKind: sourceKind,
-    __familyReportPlanName: String(exactPlan?.matchedProductName || exactPlan?.productName || exactPlan?.name || '').trim(),
-    __familyReportHasExplicitProductName: Boolean(item?.productName || item?.matchedProductName || item?.sourceProductName || item?.planName || item?.canonicalProductId),
-  };
-}
-
-function familyReportResponsibilityItems(policy = {}) {
-  const cards = (Array.isArray(policy?.responsibilityCards) ? policy.responsibilityCards : [])
-    .filter((card) => !indicatorIsReferenceOnly(card));
-  if (cards.length) {
-    return cards.flatMap((card) => {
-      const cardIndicators = Array.isArray(card?.indicators) ? card.indicators : [];
-      const items = cardIndicators.length
-        ? cardIndicators.map((indicator) => familyResponsibilityItem(policy, {
-          ...card,
-          ...indicator,
-          title: indicator?.title || card?.title,
-          liability: indicator?.liability || card?.title,
-          coverageType: indicator?.coverageType || card?.category,
-          formulaText: indicator?.formulaText || card?.payoutSummary,
-          condition: indicator?.condition || card?.triggerCondition,
-          sourceExcerpt: indicator?.sourceExcerpt || card?.sourceExcerpt,
-        }, 'responsibility_card'))
-        : [familyResponsibilityItem(policy, {
-          ...card,
-          liability: card?.title,
-          coverageType: card?.category,
-          formulaText: card?.payoutSummary,
-          condition: card?.triggerCondition,
-        }, 'responsibility_card')];
-      return items.filter(isSelectedCoverageIndicator);
-    });
-  }
-
-  const legacyItems = selectedCoverageIndicators(policy?.coverageIndicators)
-    .map((indicator) => familyResponsibilityItem(policy, indicator, 'legacy_indicator_reference'));
-  const legacyResponsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : [])
-    .filter((responsibility) => !indicatorIsReferenceOnly(responsibility))
-    .map((responsibility) => familyResponsibilityItem(policy, {
-      ...responsibility,
-      liability: responsibility?.liability
-        || responsibility?.name
-        || responsibility?.title
-        || responsibility?.scenario
-        || responsibility?.coverageType,
-      formulaText: responsibility?.formulaText || responsibility?.payout,
-      condition: responsibility?.condition || responsibility?.scenario || responsibility?.note,
-      __familyReportLegacyText: [responsibility?.note, responsibility?.scenario, responsibility?.payout]
-        .filter(Boolean)
-        .join(' '),
-    }, 'legacy_responsibility_reference'));
-  const seen = new Set();
-  return [...legacyItems, ...legacyResponsibilities].filter((item) => {
-    const key = `${normalizedProjectionTitle(item?.liability || item?.title)}\u001f${normalizedProjectionTitle(item?.scenario || '')}\u001f${normalizeProductName(item?.productName)}`;
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function hasFamilyReportResponsibilityCards(policy = {}) {
-  return (Array.isArray(policy?.responsibilityCards) ? policy.responsibilityCards : [])
-    .some((card) => !indicatorIsReferenceOnly(card));
-}
-
 function policyTypeLabel(policy) {
-  const indicatorType = uniqueJoinedText(familyReportResponsibilityItems(policy).map((indicator) => indicator?.productType));
+  const indicatorType = uniqueJoinedText(selectedCoverageIndicators(policy?.coverageIndicators).map((indicator) => indicator?.productType));
   if (indicatorType) return indicatorType;
 
   const policyType = uniqueJoinedText([policy?.productType, policy?.type]);
@@ -612,7 +500,7 @@ function planTypeLabel(policy, plan) {
   }
 
   const names = [planDisplayName(plan), planMatchedProductName(plan)].filter(Boolean);
-  const indicatorTypes = familyReportResponsibilityItems(policy)
+  const indicatorTypes = selectedCoverageIndicators(policy?.coverageIndicators)
     .filter((indicator) => {
       const matchedPlan = findPlanForIndicator(policy, indicator);
       if (matchedPlan === plan) return true;
@@ -803,13 +691,7 @@ function productNameMatchesIndicator(planName, indicatorProductName) {
 }
 
 function findPlanForIndicator(policy, indicator) {
-  if (indicator?.__familyReportSourceKind === 'responsibility_card') return exactPlanForResponsibility(policy, indicator);
-  const exactLegacyPlan = indicator?.__familyReportSourceKind
-    && indicator?.__familyReportHasExplicitProductName
-    ? exactPlanForResponsibility(policy, indicator)
-    : null;
-  if (exactLegacyPlan) return exactLegacyPlan;
-  const productName = indicator?.__familyReportLegacyText || indicator?.productName;
+  const productName = indicator?.productName;
   const plans = Array.isArray(policy?.plans) ? policy.plans : [];
   if (!productName) return null;
 
@@ -847,9 +729,6 @@ function responsibilityPlanIsInactive(policy, responsibility) {
 }
 
 function indicatorSourceProductName(policy, indicator) {
-  if (indicator?.__familyReportSourceKind === 'responsibility_card') {
-    return String(indicator?.__familyReportPlanName || indicator?.productName || policy?.name || '').trim();
-  }
   const plan = findPlanForIndicator(policy, indicator);
   if (plan && typeof plan !== 'string') {
     const productName = String(plan?.matchedProductName || plan?.name || '').trim();
@@ -878,6 +757,9 @@ function indicatorCalculationInputs(indicator, policy) {
     baseAmount: indicatorBaseAmount(indicator, policy),
     firstPremium: premium,
     paymentYears,
+    policyYear: finiteNumber(policy?.policyYear) ?? undefined,
+    currentAge: ageFromBirthday(policy?.insuredBirthday),
+    formulaVariables: formulaVariablesFromIndicators(policy?.coverageIndicators),
   };
 }
 
@@ -945,7 +827,7 @@ function resolveIndicatorAmount(indicator, policy) {
   const explicitYuanLimit = value !== null
     && /^(?:元|圆)$/u.test(unit)
     && /(限额|保额|保险金额|医疗费用|费用|给付金|保险金)/u.test(text);
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  const structured = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(indicator, policy));
   if (structured.resolved) return structured.amount;
   if (structured.meta.calculationKey !== 'unknown' && structured.meta.calculationEligible === false && !explicitYuanLimit) return 0;
 
@@ -985,7 +867,9 @@ function resolveIndicatorAmount(indicator, policy) {
 }
 
 function indicatorAmountCalculationText(indicator, policy, amount) {
-  const structured = resolveIndicatorAmountFromCalculation(indicator, indicatorCalculationInputs(indicator, policy));
+  const detailProjection = detailProjectionForIndicator(policy, indicator);
+  if (detailProjection?.matched && detailProjection.calculationText) return detailProjection.calculationText;
+  const structured = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(indicator, policy));
   if (structured.resolved && Math.abs(structured.amount - asNumber(amount)) < 0.01) return structured.calculationText;
 
   const numericAmount = asNumber(amount);
@@ -1037,42 +921,6 @@ function indicatorAmountCalculationText(indicator, policy, amount) {
   const formulaText = String(indicator?.formulaText || '').trim();
   if (formulaText) return `${formulaText} = ${formatRadarMoney(numericAmount)}`;
   return `按识别责任金额合计 = ${formatRadarMoney(numericAmount)}`;
-}
-
-function responsibilityUsesLegacyReference(indicator, policy) {
-  return Boolean(
-    indicator?.__familyReportSourceKind?.startsWith('legacy_')
-      && !detailProjectionForIndicator(policy, indicator)?.matched,
-  );
-}
-
-function responsibilityCalculationText(indicator, policy, amount) {
-  const calculationText = indicatorAmountCalculationText(indicator, policy, amount);
-  return responsibilityUsesLegacyReference(indicator, policy)
-    ? `旧指标参考/待生成：${calculationText}`
-    : calculationText;
-}
-
-function responsibilityConditionText(indicator, policy, fallback = '') {
-  const projection = detailProjectionForIndicator(policy, indicator);
-  const conditionText = String(
-    projection?.matched && projection.calculationText
-      ? projection.calculationText
-      : fallback,
-  ).trim();
-  return responsibilityUsesLegacyReference(indicator, policy)
-    ? `旧指标参考/待生成${conditionText ? `：${conditionText}` : ''}`
-    : conditionText;
-}
-
-function responsibilityRowStatus(indicator, policy, amount) {
-  if (responsibilityUsesLegacyReference(indicator, policy)) return 'legacy_reference';
-  return amount > 0 ? 'covered' : 'formula';
-}
-
-function responsibilitySourceKey(indicator, policy) {
-  if (!indicator?.__familyReportSourceKind) return policySourceKey(policy);
-  return `${policySourceKey(policy)}:product:${normalizeProductName(indicatorSourceProductName(policy, indicator))}`;
 }
 
 function lifeRadarLiabilityLabel(indicator) {
@@ -1143,19 +991,15 @@ function applyIndicatorToRow(row, indicator, policy) {
   const formulaText = String(indicator?.formulaText || '').trim();
   const value = finiteNumber(indicator?.value);
   const unit = String(indicator?.unit || '').trim();
-  const conditionText = responsibilityConditionText(
-    indicator,
-    policy,
-    String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim(),
-  );
+  const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
 
   row.amount += amount;
   row.amountText = row.amount > 0 ? amountDisplay(row.amount) : amountDisplay(row.amount, formulaText || '待识别');
   row.countText = value !== null && unit ? `${formatNumberText(value)}${unit}` : formulaText || '-';
-  row.status = responsibilityRowStatus(indicator, policy, amount);
-  row.conditionText = conditionText || (responsibilityUsesLegacyReference(indicator, policy) ? '旧指标参考/待生成' : '按识别责任计算');
+  row.status = row.amount > 0 ? 'covered' : 'formula';
+  row.conditionText = conditionText || '按识别责任计算';
   addSourcePolicy(row, {
-    sourceKey: responsibilitySourceKey(indicator, policy),
+    sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     company: String(policy?.company || ''),
     productName: indicatorSourceProductName(policy, indicator),
@@ -1163,7 +1007,7 @@ function applyIndicatorToRow(row, indicator, policy) {
     formulaText,
     amount,
     amountText: formatRadarMoney(amount),
-    calculationText: responsibilityCalculationText(indicator, policy, amount),
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   });
   return amount;
 }
@@ -1269,7 +1113,7 @@ function markInactiveSourceOnRow(row, policy, liability, options = {}) {
 
 function markInactiveCriticalPolicies(rowMap, memberPolicies) {
   for (const policy of memberPolicies) {
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let matched = false;
     for (const indicator of indicators) {
       if (indicatorIsAccidentCoverage(indicator)) continue;
@@ -1283,7 +1127,7 @@ function markInactiveCriticalPolicies(rowMap, memberPolicies) {
         countText: indicatorCountText(indicator),
       });
     }
-    if (!matched && !hasFamilyReportResponsibilityCards(policy) && policyImpliesCriticalIllness(policy, { includeInactivePlans: true })) {
+    if (!matched && policyImpliesCriticalIllness(policy, { includeInactivePlans: true })) {
       markInactiveSourceOnRow(rowMap.get('critical_first'), policy, '重疾首次给付', {
         amount: asNumber(policy?.amount),
         countText: '基本保额',
@@ -1329,11 +1173,7 @@ function applyCriticalRowCorrections(rowMap, memberPolicies, corrections = []) {
     if (!selected || !criticalFirst) continue;
 
     criticalFirst.sourcePolicies = (criticalFirst.sourcePolicies || [])
-      .filter((source) => {
-        const sourceKey = sourcePolicyKey(source);
-        const policyKey = policySourceKey(policy);
-        return sourceKey !== policyKey && !sourceKey.startsWith(`${policyKey}:product:`);
-      });
+      .filter((source) => sourcePolicyKey(source) !== policySourceKey(policy));
 
     if (action === 'replace_amount') {
       const replacement = correctionSourceForCriticalRow(policy, selected);
@@ -1361,7 +1201,7 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = [], co
   const inactiveCriticalPolicies = new Set();
 
   for (const policy of memberPolicies) {
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     for (const indicator of indicators) {
       if (indicatorIsAccidentCoverage(indicator)) continue;
       const definition = classifyCriticalIndicator(indicator);
@@ -1399,7 +1239,6 @@ function buildMemberCriticalRows(memberPolicies, inactiveMemberPolicies = [], co
   for (const policy of memberPolicies) {
     if (
       policyImpliesCriticalIllness(policy)
-      && !hasFamilyReportResponsibilityCards(policy)
       && !hasResponsibilityDetailProjection(policy)
       && !usableCriticalFirstPolicies.has(policy)
       && !formulaCriticalFirstPolicies.has(policy)
@@ -1601,26 +1440,22 @@ function accidentCountText(definition, indicator) {
 function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
   const amount = resolveIndicatorAmount(indicator, policy);
   const formulaText = String(indicator?.formulaText || '').trim();
-  const conditionText = responsibilityConditionText(
-    indicator,
-    policy,
-    String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim(),
-  );
+  const conditionText = String(indicator?.condition || formulaText || indicator?.sourceExcerpt || '').trim();
   const countText = accidentCountText(definition, indicator);
 
   row.amount += amount;
   row.amountText = amountDisplay(row.amount, formulaText || '待识别');
   row.countText = row.countText === '-' || row.countText === countText ? countText : `${row.countText}/${countText}`;
-  row.status = responsibilityRowStatus(indicator, policy, amount);
+  row.status = row.amount > 0 ? 'covered' : 'formula';
   if (conditionText) {
     row.conditionText = row.conditionText === '未识别到该责任' || row.conditionText === conditionText
       ? conditionText
       : `${row.conditionText}；${conditionText}`;
   } else if (row.conditionText === '未识别到该责任') {
-    row.conditionText = responsibilityUsesLegacyReference(indicator, policy) ? '旧指标参考/待生成' : '按识别责任计算';
+    row.conditionText = '按识别责任计算';
   }
   addSourcePolicy(row, {
-    sourceKey: responsibilitySourceKey(indicator, policy),
+    sourceKey: policySourceKey(policy),
     policyId: policy?.id,
     company: String(policy?.company || ''),
     productName: indicatorSourceProductName(policy, indicator),
@@ -1628,8 +1463,32 @@ function applyAccidentIndicatorToRow(row, definition, indicator, policy) {
     formulaText,
     amount,
     amountText: formatRadarMoney(amount),
-    calculationText: responsibilityCalculationText(indicator, policy, amount),
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   });
+}
+
+function responsibilityToAccidentIndicator(responsibility, policy) {
+  if (typeof responsibility === 'string') {
+    return {
+      coverageType: '',
+      liability: responsibility,
+      formulaText: '',
+      productName: policy?.name,
+      sourceExcerpt: responsibility,
+    };
+  }
+
+  return {
+    coverageType: responsibility?.coverageType,
+    liability: responsibility?.liability || responsibility?.name || responsibility?.title || responsibility?.type,
+    scenario: responsibility?.scenario,
+    payout: responsibility?.payout,
+    formulaText: responsibility?.formulaText || responsibility?.payout || responsibility?.note || '',
+    condition: responsibility?.condition || responsibility?.note || '',
+    basis: responsibility?.basis,
+    productName: responsibility?.productName || responsibility?.matchedProductName || responsibility?.sourceProductName || responsibility?.planName || policy?.name,
+    sourceExcerpt: responsibility?.sourceExcerpt,
+  };
 }
 
 function fallbackPolicyIndicator(policy) {
@@ -1648,11 +1507,27 @@ function fallbackPolicyIndicator(policy) {
 
 function markInactiveAccidentPolicies(rowMap, memberPolicies) {
   for (const policy of memberPolicies) {
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
     let matched = false;
 
     for (const indicator of indicators) {
       if (indicatorCannotContributeRadarAmount(indicator)) continue;
+      if (!indicatorImpliesAccident(indicator)) continue;
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      if (!definitions.length) continue;
+      matched = true;
+      for (const definition of definitions) {
+        markInactiveSourceOnRow(rowMap.get(definition.key), policy, indicator?.liability || indicator?.scenario || definition.label, {
+          productName: indicatorSourceProductName(policy, indicator),
+          amount: indicatorAmountForPolicy(indicator, policy),
+          countText: accidentCountText(definition, indicator),
+        });
+      }
+    }
+
+    for (const responsibility of responsibilities) {
+      const indicator = responsibilityToAccidentIndicator(responsibility, policy);
       if (!indicatorImpliesAccident(indicator)) continue;
       const definitions = classifyAccidentIndicatorDefinitions(indicator);
       if (!definitions.length) continue;
@@ -1685,7 +1560,8 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
   const rowMap = new Map(ACCIDENT_ROWS.map((definition) => [definition.key, baseProtectionRow(definition)]));
 
   for (const policy of memberPolicies) {
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
+    const indicatorRowKeys = new Set();
 
     for (const indicator of indicators) {
       if (indicatorCannotContributeRadarAmount(indicator)) continue;
@@ -1703,13 +1579,33 @@ function buildMemberAccidentRows(memberPolicies, inactiveMemberPolicies = []) {
           continue;
         }
         applyAccidentIndicatorToRow(rowMap.get(definition.key), definition, indicator, policy);
+        indicatorRowKeys.add(definition.key);
       }
     }
 
-    if (!hasFamilyReportResponsibilityCards(policy)
-      && !hasResponsibilityDetailProjection(policy)
-      && indicators.length === 0
-      && textImpliesAccident(accidentPolicyText(policy))) {
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
+    for (const responsibility of responsibilities) {
+      const indicator = responsibilityToAccidentIndicator(responsibility, policy);
+      if (!indicatorImpliesAccident(indicator)) continue;
+
+      const definitions = classifyAccidentIndicatorDefinitions(indicator);
+      for (const definition of definitions) {
+        const row = rowMap.get(definition.key);
+        if (indicatorRowKeys.has(definition.key) && row.amount > 0) continue;
+        if (indicatorPlanIsInactive(policy, indicator)) {
+          markInactiveSourceOnRow(row, policy, indicator?.liability || indicator?.scenario || definition.label, {
+            productName: indicatorSourceProductName(policy, indicator),
+            reasonText: '历史识别到该责任，但对应险种已失效，未计入当前保障',
+            amount: indicatorAmountForPolicy(indicator, policy),
+            countText: accidentCountText(definition, indicator),
+          });
+          continue;
+        }
+        applyAccidentIndicatorToRow(row, definition, indicator, policy);
+      }
+    }
+
+    if (!hasResponsibilityDetailProjection(policy) && indicators.length === 0 && responsibilities.length === 0 && textImpliesAccident(accidentPolicyText(policy))) {
       const indicator = fallbackPolicyIndicator(policy);
       const definitions = classifyAccidentIndicatorDefinitions(indicator);
       const fallbackDefinitions = definitions.length ? definitions : [ACCIDENT_ROWS.find((item) => item.key === 'general_accident')];
@@ -1857,6 +1753,8 @@ function cashflowRows(policy) {
         cumulative: asNumber(row?.cumulative),
         liability: String(row?.liability || ''),
         calculationText: String(row?.calculationText || row?.calcText || ''),
+        isMinimumEstimate: Boolean(row?.isMinimumEstimate),
+        uncertaintyNote: String(row?.uncertaintyNote || ''),
         policyId: row?.policyId ?? policy?.id,
         productName: String(row?.productName || policy?.name || ''),
       };
@@ -1888,7 +1786,7 @@ function missingInputsForCashflowIndicator(indicator = {}, projection = {}) {
 
 function uncomputedCashflowItems(policy = {}) {
   const scheduledRows = cashflowRows(policy);
-  return familyReportResponsibilityItems(policy)
+  return selectedCoverageIndicators(policy?.coverageIndicators)
     .filter(isCashflowResponsibility)
     .flatMap((indicator) => {
       const projection = detailProjectionForIndicator(policy, indicator);
@@ -2104,13 +2002,19 @@ function wealthUncertaintyItems(policy) {
   return items;
 }
 
-function wealthUncertaintyAttentionText(items) {
+function wealthUncertaintyAttentionText(items, minimumEstimateCount = 0) {
   if (!items.length) return '';
+  if (minimumEstimateCount > 0) {
+    return `${items.map((item) => item.label).join('、')}存在不确定因素，${minimumEstimateCount}笔给付已按可确认最低值统计，未确定增量未计入`;
+  }
   return `${items.map((item) => item.label).join('、')}存在不确定因素，未进入财富统计`;
 }
 
-function wealthUncertaintyNote(items) {
+function wealthUncertaintyNote(items, minimumEstimateCount = 0) {
   if (!items.length) return '';
+  if (minimumEstimateCount > 0) {
+    return `${items.map((item) => item.reason).join('；')}。已按条款公式可确认最低值统计${minimumEstimateCount}笔给付，未确定增量未计入。`;
+  }
   return `${items.map((item) => item.reason).join('；')}。当前财富统计仅包含已识别的确定领取现金流，现金价值仅在保单明细展示。`;
 }
 
@@ -2179,7 +2083,8 @@ function buildWealthPolicyReport(policy) {
   const values = deterministicCashValueRows(policy);
   const excludedCashValueRows = excludedUncertainCashValueRows(policy);
   const uncertaintyItems = wealthUncertaintyItems(policy);
-  const uncertaintyAttention = wealthUncertaintyAttentionText(uncertaintyItems);
+  const minimumEstimateCashflowRows = payouts.filter((row) => row.isMinimumEstimate);
+  const uncertaintyAttention = wealthUncertaintyAttentionText(uncertaintyItems, minimumEstimateCashflowRows.length);
   const excludedStatisticRowsCount = excludedCashflowRows.length + excludedCashValueRows.length;
   const cashValueGapRanges = cashValuePolicyYearGapRanges(values);
   const annualRows = annualCashflowRows(policy, payouts, values);
@@ -2207,9 +2112,11 @@ function buildWealthPolicyReport(policy) {
     cashValueRows: values,
     excludedCashflowRows,
     excludedCashValueRows,
+    minimumEstimateCashflowRows,
+    uncomputedCashflowItems: uncomputedCashflowItems(policy),
     annualCashflowRows: annualRows,
     uncertaintyItems,
-    uncertaintyNote: wealthUncertaintyNote(uncertaintyItems),
+    uncertaintyNote: wealthUncertaintyNote(uncertaintyItems, minimumEstimateCashflowRows.length),
     hasUncertainWealthFactors: uncertaintyItems.length > 0,
     attentionItems,
     keyPoints: [
@@ -2697,9 +2604,7 @@ function radarAmountResult(amount, parts, fallbackNote = '') {
 function criticalRadarAmount(policies, corrections = []) {
   const { rows } = buildMemberCriticalRows(policies, [], corrections);
   const first = rows.find((row) => row.key === 'critical_first');
-  const formulaOnly = rows.some((row) => (
-    row.status === 'formula' || (row.status === 'legacy_reference' && asNumber(row.amount) <= 0)
-  ));
+  const formulaOnly = rows.some((row) => row.status === 'formula');
   const amount = asNumber(first?.amount);
   const sourceParts = amount > 0
     ? (first?.sourcePolicies || []).map((source) => ({
@@ -2751,7 +2656,7 @@ function accidentIndicatorRadarAmount(indicator, policy) {
     amount,
     effectiveAmount: amount * weight,
     weight,
-    calculationText: responsibilityCalculationText(indicator, policy, amount),
+    calculationText: indicatorAmountCalculationText(indicator, policy, amount),
   };
 }
 
@@ -2760,15 +2665,19 @@ function accidentRadarAmount(policies, corrections = []) {
 
   for (const policy of policies) {
     const candidates = [];
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     for (const indicator of indicators) {
       const part = accidentIndicatorRadarAmount(indicator, policy);
       if (part) candidates.push(part);
     }
 
-    if (!hasFamilyReportResponsibilityCards(policy)
-      && !indicators.length
-      && textImpliesAccident(accidentPolicyText(policy))) {
+    const responsibilities = (Array.isArray(policy?.responsibilities) ? policy.responsibilities : []).filter((item) => !indicatorIsReferenceOnly(item));
+    for (const responsibility of responsibilities) {
+      const part = accidentIndicatorRadarAmount(responsibilityToAccidentIndicator(responsibility, policy), policy);
+      if (part) candidates.push(part);
+    }
+
+    if (!indicators.length && !responsibilities.length && textImpliesAccident(accidentPolicyText(policy))) {
       const part = accidentIndicatorRadarAmount(fallbackPolicyIndicator(policy), policy);
       if (part) candidates.push(part);
     }
@@ -2798,7 +2707,7 @@ function medicalRadarAmount(policies, corrections = []) {
   for (const policy of policies) {
     const excludedByCorrection = correctionExcludesDimensionAmount(policy, 'medical', corrections);
     if (excludedByCorrection) hasExcludedCorrection = true;
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let hasMedicalIndicator = false;
     for (const indicator of indicators) {
       const text = indicatorText(indicator);
@@ -2824,16 +2733,12 @@ function medicalRadarAmount(policies, corrections = []) {
           productName: indicatorSourceProductName(policy, indicator),
           liability: String(indicator?.liability || ''),
           amount,
-          calculationText: responsibilityCalculationText(indicator, policy, amount),
+          calculationText: indicatorAmountCalculationText(indicator, policy, amount),
         });
       }
     }
     const sourceKey = policySourceKey(policy);
-    if (!hasFamilyReportResponsibilityCards(policy)
-      && !excludedByCorrection
-      && !hasMedicalIndicator
-      && !parts.some((part) => part.sourceKey === sourceKey)
-      && /(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(radarPolicyText(policy))) {
+    if (!excludedByCorrection && !hasMedicalIndicator && !parts.some((part) => part.sourceKey === sourceKey) && /(医疗|住院|门诊|报销|百万医疗|手术|医疗费用)/u.test(radarPolicyText(policy))) {
       const amount = asNumber(policy?.amount);
       if (amount > 0) {
         parts.push({
@@ -2863,7 +2768,7 @@ function lifeRadarAmount(policies, corrections = []) {
   let hasFormula = false;
   let hasUnquantifiableLife = false;
   for (const policy of policies) {
-    const indicators = familyReportResponsibilityItems(policy);
+    const indicators = selectedCoverageIndicators(policy?.coverageIndicators);
     let hasLifeIndicator = false;
     for (const indicator of indicators) {
       const text = indicatorText(indicator);
@@ -2903,11 +2808,7 @@ function lifeRadarAmount(policies, corrections = []) {
     }
     const text = radarPolicyText(policy);
     const sourceKey = policySourceKey(policy);
-    if (!hasFamilyReportResponsibilityCards(policy)
-      && !bestPartByPolicy.has(sourceKey)
-      && !hasLifeIndicator
-      && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text)
-      && !/(重疾|意外)/u.test(text)) {
+    if (!bestPartByPolicy.has(sourceKey) && !hasLifeIndicator && /(终身寿|人寿|寿险|身故|全残|护理)/u.test(text) && !/(重疾|意外)/u.test(text)) {
       const amount = asNumber(policy?.amount);
       if (amount > 0) {
         bestPartByPolicy.set(sourceKey, {

@@ -39,6 +39,25 @@ function isPolicyAnniversaryBasicAmount(value = '') {
   return /保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(normalizeText(value));
 }
 
+const MODEL_CALCULATION_PAIRS = new Set([
+  'basic_amount:basic_amount',
+  'basic_amount:percent_of_basic_amount',
+  'basic_amount:multiple_of_basic_amount',
+  'first_premium:first_premium',
+  'first_premium:percent_of_first_premium',
+  'first_premium:multiple_of_first_premium',
+  'first_basic_responsibility_premium:first_premium',
+  'first_basic_responsibility_premium:percent_of_first_premium',
+  'first_basic_responsibility_premium:multiple_of_first_premium',
+  'annual_premium:first_premium',
+  'annual_premium:percent_of_first_premium',
+  'annual_premium:multiple_of_first_premium',
+  'total_paid_premium:total_paid_premium',
+  'total_paid_premium:percent_of_total_paid_premium',
+  'total_paid_premium:multiple_of_total_paid_premium',
+  'unknown:fixed_amount',
+]);
+
 export const CALCULATION_INPUT_SCHEMA_VERSION = '2026-07-03-canonical-calculation-inputs';
 
 export function requiredCalculationInputsForMeta(meta = {}) {
@@ -48,6 +67,7 @@ export function requiredCalculationInputsForMeta(meta = {}) {
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
   }
+  if (basisKey === 'effective_insured_amount') return ['effectiveInsuranceAmount', 'policyYearOrAge'];
   if (
     ['first_premium', 'percent_of_first_premium', 'multiple_of_first_premium'].includes(calculationKey) ||
     ['first_premium', 'first_basic_responsibility_premium', 'annual_premium'].includes(basisKey)
@@ -86,7 +106,8 @@ function numericSpec(indicator = {}) {
   );
   if (ratioValues.size > 1) return { value: null, unit };
   const factor = text.match(/[×xX*]\s*(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
-    || text.match(/(?:基本保险金额|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u);
+    || text.match(/(?:基本保险金额|基本保险金|基本保额|保险金额|有效保险金额|保险费|保费)[^。；;，,]{0,24}?(\d+(?:\.\d+)?)\s*(%|％|倍)/u)
+    || text.match(/(\d+(?:\.\d+)?)\s*(%|％|倍)[^。；;，,]{0,12}?(?:基本保险金额|基本保险金|基本保额|保险金额|有效保险金额|保险费|保费)/u);
   if (factor) return { value: Number(factor[1]), unit: factor[2] === '％' ? '%' : factor[2] };
 
   const amount = text.match(/(\d+(?:\.\d+)?)\s*(万)?\s*(元|圆)/u);
@@ -137,7 +158,7 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   }
 
   let basisKey = '';
-  if (isPolicyAnniversaryBasicAmount(text)) {
+  if (isPolicyAnniversaryBasicAmount(formulaSignalText)) {
     basisKey = 'policy_anniversary_basic_amount';
   } else if (/现金价值|现价/u.test(formulaSignalText)) {
     basisKey = 'cash_value';
@@ -151,9 +172,9 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(formulaSignalText)) {
     basisKey = 'daily_allowance';
-  } else if (isPolicyAnniversaryBasicAmount(formulaSignalText)) {
-    basisKey = 'policy_anniversary_basic_amount';
-  } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(formulaSignalText)) {
+  } else if (/有效保险金额/u.test(formulaSignalText)) {
+    basisKey = 'effective_insured_amount';
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u.test(formulaSignalText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|保险单载明|保单载明|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(formulaSignalText || basis)) {
     basisKey = 'schedule_or_policy_table';
@@ -171,9 +192,11 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     basisKey = 'medical_expense';
   } else if (/给付天数|给付日数|住院天数|住院日数|实际日数|入住.{0,8}(?:天数|日数)|日津贴额|住院日额|保险单位数/u.test(basis || formulaText)) {
     basisKey = 'daily_allowance';
-  } else if (isPolicyAnniversaryBasicAmount(text)) {
+  } else if (isPolicyAnniversaryBasicAmount(basis || formulaText)) {
     basisKey = 'policy_anniversary_basic_amount';
-  } else if (/基本责任保险金额|基本保险金额|基本保额|有效保险金额|保险金额|保额/u.test(basis || formulaText)) {
+  } else if (/有效保险金额/u.test(basis || formulaText)) {
+    basisKey = 'effective_insured_amount';
+  } else if (/基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u.test(basis || formulaText)) {
     basisKey = 'basic_amount';
   } else if (/条款载明|条款表|约定领取比例|领取计划|领取频率|领取金额|给付比例|赔付比例|赔偿比例|伤残等级|比例表|领取年龄/u.test(text)) {
     basisKey = 'schedule_or_policy_table';
@@ -208,10 +231,12 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey = basisKey;
     calculationEligible = false;
     calculationReason = '依赖现金价值或账户价值，不能只靠指标和保单基础字段计算';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'policy_anniversary_basic_amount') {
     calculationKey = 'schedule_or_policy_table';
     calculationEligible = false;
     calculationReason = '给付基数为对应保单生效日的基本责任保险金额；分红型增额红利会使各年度金额变化，需按该年度保额/红利记录核算';
+    decisionSource = 'code_safety_rule';
   } else if (basisKey === 'schedule_or_policy_table') {
     calculationKey = 'schedule_or_policy_table';
     calculationEligible = false;
@@ -276,15 +301,409 @@ function formatMoney(value) {
   return roundMoney(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 });
 }
 
+const FORMULA_VARIABLE_LABELS = {
+  basic_amount: '基本保险金额',
+  basic_insured_amount: '基本保险金额',
+  basic_insurance_amount: '基本保险金额',
+  basic_sum_assured: '基本责任保险金额',
+  basic_responsibility_insured_amount: '基本责任保险金额',
+  initial_basic_insured_amount: '初始基本保险金额',
+  effective_insured_amount: '有效保险金额',
+  accumulated_dividend_insured_amount: '累计红利保险金额',
+  accumulated_dividend_amount: '累计红利保险金额',
+  first_premium: '首期保费',
+  annual_premium: '年交保费',
+  paid_premium: '已交保费',
+  total_paid_premium: '累计已交保费',
+  payment_years: '缴费年期',
+  policy_year: '保单年度',
+  cash_value: '现金价值',
+  account_value: '账户价值',
+};
+
+function formulaNumber(value) {
+  const number = finiteNumber(value);
+  return number === null ? null : number;
+}
+
+function formulaValueForVariable(name, inputs = {}) {
+  const values = inputs.formulaVariables && typeof inputs.formulaVariables === 'object'
+    ? inputs.formulaVariables
+    : {};
+  if (Object.prototype.hasOwnProperty.call(values, name)) return values[name];
+
+  if (['basic_amount', 'basic_insured_amount', 'basic_insurance_amount', 'basic_sum_assured', 'basic_responsibility_insured_amount', 'initial_basic_insured_amount'].includes(name)) return inputs.baseAmount;
+  if (['first_premium', 'annual_premium'].includes(name)) return inputs.firstPremium;
+  if (['total_paid_premium', 'paid_premium'].includes(name)) {
+    const premium = formulaNumber(inputs.firstPremium);
+    const years = formulaNumber(inputs.paymentYears);
+    return premium !== null && years !== null ? premium * years : undefined;
+  }
+  if (name === 'payment_years') return inputs.paymentYears;
+  if (name === 'policy_year' || name === 'n') return inputs.policyYear;
+  return undefined;
+}
+
+function formulaLabel(name) {
+  return FORMULA_VARIABLE_LABELS[name] || name.replace(/_/gu, ' ');
+}
+
+export function formulaVariablesFromIndicators(indicators = []) {
+  const variables = {};
+  for (const indicator of (Array.isArray(indicators) ? indicators : [])) {
+    const source = displayText(indicator?.normalizedFormula);
+    const match = source.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/u);
+    if (!match || /(?:\bmax\b|\bmin\b|\bif\b|[,;])/iu.test(match[2])) continue;
+    variables[match[1]] = match[2];
+  }
+  return variables;
+}
+
+function expandFormulaVariables(expression, inputs = {}, depth = 0) {
+  if (depth > 6) return expression;
+  return String(expression || '').replace(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu, (token, name) => {
+    if (name === 'sqrt') return name;
+    const value = formulaValueForVariable(name, inputs);
+    const numeric = formulaNumber(value);
+    if (numeric !== null) return String(numeric);
+    if (typeof value === 'string' && value.trim()) {
+      return `(${expandFormulaVariables(value, inputs, depth + 1)})`;
+    }
+    return name;
+  });
+}
+
+function tokenizeFormula(expression) {
+  const compact = String(expression || '')
+    .normalize('NFKC')
+    .replace(/[×xX*]/gu, '*')
+    .replace(/[÷]/gu, '/')
+    .replace(/[＋]/gu, '+')
+    .replace(/[－]/gu, '-')
+    .replace(/\s+/gu, '');
+  const tokens = [];
+  let index = 0;
+  while (index < compact.length) {
+    const rest = compact.slice(index);
+    const number = rest.match(/^(?:\d+(?:\.\d+)?|\.\d+)/u);
+    if (number) {
+      tokens.push({ type: 'number', value: Number(number[0]) });
+      index += number[0].length;
+      continue;
+    }
+    const identifier = rest.match(/^[A-Za-z_][A-Za-z0-9_]*/u);
+    if (identifier) {
+      tokens.push({ type: 'identifier', value: identifier[0] });
+      index += identifier[0].length;
+      continue;
+    }
+    if ('+-*/^()'.includes(rest[0])) {
+      tokens.push({ type: rest[0], value: rest[0] });
+      index += 1;
+      continue;
+    }
+    return null;
+  }
+  return tokens;
+}
+
+function parseFormulaExpression(expression) {
+  const tokens = tokenizeFormula(expression);
+  if (!tokens?.length) return null;
+  let index = 0;
+  const peek = () => tokens[index];
+  const take = (type) => peek()?.type === type ? tokens[index++] : null;
+
+  function primary() {
+    const number = take('number');
+    if (number) return { type: 'number', value: number.value };
+    const identifier = take('identifier');
+    if (identifier) {
+      if (identifier.value === 'sqrt' && take('(')) {
+        const argument = additive();
+        return argument && take(')') ? { type: 'sqrt', argument } : null;
+      }
+      return { type: 'variable', name: identifier.value };
+    }
+    if (take('(')) {
+      const node = additive();
+      return node && take(')') ? node : null;
+    }
+    return null;
+  }
+
+  function unary() {
+    if (take('+')) return unary();
+    if (take('-')) {
+      const argument = unary();
+      return argument ? { type: 'negate', argument } : null;
+    }
+    return primary();
+  }
+
+  function power() {
+    const left = unary();
+    if (!left) return null;
+    if (take('^')) {
+      const right = power();
+      return right ? { type: 'binary', operator: '^', left, right } : null;
+    }
+    return left;
+  }
+
+  function multiplicative() {
+    let node = power();
+    while (node && (peek()?.type === '*' || peek()?.type === '/')) {
+      const operator = tokens[index++].type;
+      const right = power();
+      if (!right) return null;
+      node = { type: 'binary', operator, left: node, right };
+    }
+    return node;
+  }
+
+  function additive() {
+    let node = multiplicative();
+    while (node && (peek()?.type === '+' || peek()?.type === '-')) {
+      const operator = tokens[index++].type;
+      const right = multiplicative();
+      if (!right) return null;
+      node = { type: 'binary', operator, left: node, right };
+    }
+    return node;
+  }
+
+  const root = additive();
+  return root && index === tokens.length ? root : null;
+}
+
+function evaluateFormulaAst(node) {
+  if (!node) return { known: false };
+  if (node.type === 'number') return { known: true, value: node.value };
+  if (node.type === 'variable') return { known: false };
+  if (node.type === 'negate') {
+    const argument = evaluateFormulaAst(node.argument);
+    return argument.known ? { known: true, value: -argument.value } : argument;
+  }
+  if (node.type === 'sqrt') {
+    const argument = evaluateFormulaAst(node.argument);
+    return argument.known && argument.value >= 0
+      ? { known: true, value: Math.sqrt(argument.value) }
+      : { known: false };
+  }
+  const left = evaluateFormulaAst(node.left);
+  const right = evaluateFormulaAst(node.right);
+  if (!left.known || !right.known) return { known: false };
+  if (node.operator === '+') return { known: true, value: left.value + right.value };
+  if (node.operator === '-') return { known: true, value: left.value - right.value };
+  if (node.operator === '*') return { known: true, value: left.value * right.value };
+  if (node.operator === '/') return right.value === 0 ? { known: false } : { known: true, value: left.value / right.value };
+  if (node.operator === '^') return { known: true, value: left.value ** right.value };
+  return { known: false };
+}
+
+// These variables are non-negative contract quantities. When a formula also
+// contains one of them but its current value is unavailable, retain the exact
+// lower bound from the known policy inputs instead of discarding the whole
+// indicator. The UI marks this result as a minimum estimate.
+const NON_NEGATIVE_FORMULA_VARIABLES = new Set([
+  'accumulated_dividend_insured_amount',
+  'accumulated_dividend_amount',
+  'cash_value',
+  'account_value',
+]);
+
+function formulaLowerBound(node) {
+  if (!node) return { lower: null, exact: false, nonNegative: false, unresolved: new Set() };
+  if (node.type === 'number') return { lower: node.value, exact: true, nonNegative: node.value >= 0, unresolved: new Set() };
+  if (node.type === 'variable') {
+    const safe = NON_NEGATIVE_FORMULA_VARIABLES.has(node.name);
+    return { lower: safe ? 0 : null, exact: false, nonNegative: safe, unresolved: new Set([node.name]) };
+  }
+  if (node.type === 'negate') return { lower: null, exact: false, nonNegative: false, unresolved: formulaLowerBound(node.argument).unresolved };
+  if (node.type === 'sqrt') {
+    const argument = formulaLowerBound(node.argument);
+    return argument.nonNegative && argument.lower !== null
+      ? { lower: Math.sqrt(argument.lower), exact: argument.exact, nonNegative: true, unresolved: argument.unresolved }
+      : { lower: null, exact: false, nonNegative: false, unresolved: argument.unresolved };
+  }
+
+  const left = formulaLowerBound(node.left);
+  const right = formulaLowerBound(node.right);
+  const unresolved = new Set([...left.unresolved, ...right.unresolved]);
+  if (node.operator === '+' && left.lower !== null && right.lower !== null) {
+    return { lower: left.lower + right.lower, exact: left.exact && right.exact, nonNegative: left.nonNegative && right.nonNegative, unresolved };
+  }
+  if (node.operator === '*' && left.lower !== null && right.lower !== null && left.nonNegative && right.nonNegative) {
+    return { lower: left.lower * right.lower, exact: left.exact && right.exact, nonNegative: true, unresolved };
+  }
+  if (node.operator === '/' && left.lower !== null && left.nonNegative && right.exact && right.lower > 0) {
+    return { lower: left.lower / right.lower, exact: left.exact, nonNegative: true, unresolved };
+  }
+  if (node.operator === '^' && left.lower !== null && left.nonNegative && right.exact && right.lower >= 0) {
+    return { lower: left.lower ** right.lower, exact: left.exact, nonNegative: true, unresolved };
+  }
+  return { lower: null, exact: false, nonNegative: false, unresolved };
+}
+
+function formulaExpressionFromBasisDefinition(definition = {}) {
+  const source = displayText(definition?.normalizedFormula || definition?.formulaText);
+  if (!source) return '';
+  const expression = source
+    .normalize('NFKC')
+    .replace(/基本责任保险金额|基本保险金额|基本保额/gu, 'basic_insured_amount')
+    .replace(/累计红利保险金额|累积红利保险金额/gu, 'accumulated_dividend_insured_amount')
+    .replace(/账户价值/gu, 'account_value')
+    .replace(/现金价值/gu, 'cash_value')
+    .replace(/两部分之和|之和/gu, '')
+    .replace(/与/gu, '+')
+    .replace(/×/gu, '*')
+    .replace(/÷/gu, '/')
+    .replace(/（/gu, '(')
+    .replace(/）/gu, ')')
+    .replace(/元/gu, '')
+    .trim();
+  return parseFormulaExpression(expression) ? expression : '';
+}
+
+function normalizedFormulaForIndicator(indicator = {}) {
+  const stored = displayText(indicator.normalizedFormula);
+  if (stored) return stored;
+  const basisExpression = formulaExpressionFromBasisDefinition(indicator.basisDefinition);
+  const value = finiteNumber(indicator.value);
+  const unit = displayText(indicator.unit);
+  if (!basisExpression) return '';
+  if (value !== null && /%/u.test(unit)) return `(${basisExpression}) * ${value / 100}`;
+  if (value !== null && /倍/u.test(unit)) return `(${basisExpression}) * ${value}`;
+
+  // Older imported indicators keep the factor only in the official formula
+  // text (for example “有效保险金额 × 100%”), with value/unit left empty.
+  // Accept only a direct numeric factor so this stays a formula projection,
+  // not a heuristic over the product name or arbitrary clause prose.
+  const formulaText = displayText(indicator.formulaText).normalize('NFKC');
+  const percentage = formulaText.match(/(?:×|\*)\s*(\d+(?:\.\d+)?)\s*%/u)
+    || formulaText.match(/(?:的|按)\s*(\d+(?:\.\d+)?)\s*%/u);
+  if (percentage) return `(${basisExpression}) * ${Number(percentage[1]) / 100}`;
+  const multiple = formulaText.match(/(?:×|\*)\s*(\d+(?:\.\d+)?)(?:\s*倍)?/u)
+    || formulaText.match(/(?:的|按)\s*(\d+(?:\.\d+)?)\s*倍/u);
+  if (multiple) return `(${basisExpression}) * ${Number(multiple[1])}`;
+  return '';
+}
+
+function displayFormulaExpression(expression) {
+  return String(expression || '')
+    .replace(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu, (token, name) => name === 'sqrt' ? token : formulaLabel(name))
+    .replace(/\b\d+(?:\.\d+)?\b/gu, (value) => Number(value).toLocaleString('zh-CN', { maximumFractionDigits: 8 }))
+    .replace(/\*/gu, ' × ')
+    .replace(/\//gu, ' ÷ ')
+    .replace(/\^/gu, ' ^ ')
+    .replace(/([+\-])/gu, ' $1 ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+}
+
+function partialFormulaExpression(expression) {
+  return String(expression || '').replace(/\b([A-Za-z_][A-Za-z0-9_]*)\b/gu, (token, name) => {
+    if (name === 'sqrt') return name;
+    return `${formulaLabel(name)}（待补充）`;
+  });
+}
+
+function resolveNormalizedFormula(indicator = {}, inputs = {}) {
+  const source = normalizedFormulaForIndicator(indicator);
+  if (!source || /(?:\bmax\b|\bmin\b|\bif\b|[,;])/iu.test(source)) return null;
+  const parts = source.split('=');
+  if (parts.length > 2) return null;
+  const expression = expandFormulaVariables(parts.length === 2 ? parts[1] : source, inputs);
+  const ast = parseFormulaExpression(expression);
+  if (!ast) return null;
+  const label = displayText(indicator.liability) || formulaLabel(parts.length === 2 ? parts[0].trim() : source);
+  const evaluated = evaluateFormulaAst(ast);
+  if (evaluated.known && Number.isFinite(evaluated.value)) {
+    const amount = roundMoney(evaluated.value);
+    return {
+      resolved: amount > 0,
+      partial: false,
+      amount,
+      calculationText: `${displayFormulaExpression(expression)} = ${formatMoney(amount)}元`,
+    };
+  }
+  const displayExpression = partialFormulaExpression(expression);
+  const lowerBound = formulaLowerBound(ast);
+  const minimumAmount = lowerBound.lower !== null && lowerBound.lower > 0
+    ? roundMoney(lowerBound.lower)
+    : 0;
+  const unresolvedLabels = [...lowerBound.unresolved].map(formulaLabel).join('、');
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    minimumAmount,
+    isMinimumEstimate: minimumAmount > 0,
+    calculationText: `${label} = ${displayFormulaExpression(displayExpression)}${minimumAmount > 0 ? `；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入${unresolvedLabels || '待补充金额'}）` : `；缺少${unresolvedLabels || '待补充输入'}，暂不计算`}`,
+  };
+}
+
+const POLICY_FORMULA_INPUTS = [
+  { pattern: /基本责任保险金额|基本保险金额|基本保险金|基本保额|保险金额|保额/u, label: '基本保险金额', value: (inputs) => inputs.baseAmount },
+  { pattern: /首期保费|首年保费|年交保费|年度保险费/u, label: '首期/首年保费', value: (inputs) => inputs.firstPremium },
+  { pattern: /累计已交保费|实际交纳保险费|实际交纳保费|已交保险费|已交保费|所交保费/u, label: '累计已交保费', value: (inputs) => {
+    const premium = formulaNumber(inputs.firstPremium);
+    const years = formulaNumber(inputs.paymentYears);
+    return premium !== null && years !== null ? premium * years : undefined;
+  } },
+];
+
+function formulaNeedsExternalOperand(formulaText = '') {
+  const text = displayText(formulaText);
+  if (!text) return false;
+  return /(?:给付|赔付|赔偿)比例|伤残(?:等级|程度)|残疾(?:等级|程度)|实际(?:医疗)?费用|免赔额|住院(?:天数|日数)|给付(?:天数|日数)|现金价值|账户价值|红利保险金额|比例表|领取计划/u.test(text)
+    && !/(?:给付|赔付|赔偿)比例[^。；;，,]{0,12}\d+(?:\.\d+)?\s*%/u.test(text);
+}
+
+function pendingFormulaProjection(indicator = {}, inputs = {}, meta = {}) {
+  const formulaText = displayText(indicator.formulaText || indicator.basis)
+    .replace(/现金价值不展示|现金价值不统计|现金价值不参与展示/gu, '')
+    .trim();
+  if (!formulaText) return null;
+  if (/(?:\bmax\b|\bmin\b|较大者|较小者|最大者|最小者)/iu.test(formulaText)) return null;
+  const substitutions = POLICY_FORMULA_INPUTS
+    .filter(({ pattern }) => pattern.test(formulaText))
+    .map(({ label, value }) => ({ label, value: formulaNumber(value(inputs)) }))
+    .filter(({ value }) => value !== null && value > 0);
+  const hasUnresolvedOperand = formulaNeedsExternalOperand(formulaText)
+    || meta.calculationEligible === false;
+  if (!substitutions.length || !hasUnresolvedOperand) return null;
+  const required = Array.isArray(indicator.requiredInputs)
+    ? indicator.requiredInputs.map(displayText).filter(Boolean)
+    : [];
+  const reason = displayText(meta.calculationReason)
+    || (required.length ? `缺少${required.join('、')}` : '仍缺少条款公式中的事件或表格变量');
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    calculationText: `条款公式：${formulaText}；已代入：${substitutions.map(({ label, value }) => `${label}${formatMoney(value)}元`).join('，')}；${reason}`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const meta = normalizeIndicatorCalculation(indicator);
-  if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
+  const normalizedFormulaResult = resolveNormalizedFormula(indicator, inputs);
+  if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
+  if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
 
   const baseAmount = Number(inputs.baseAmount || 0) || 0;
   const firstPremium = Number(inputs.firstPremium || 0) || 0;
   const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
   const totalPremium = firstPremium * paymentYears;
   const value = Number(meta.value || 0);
+
+  const pendingProjection = pendingFormulaProjection(indicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
+  if (pendingProjection) return pendingProjection;
+
+  if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
 
   let amount = 0;
   let calculationText = '';
@@ -336,6 +755,57 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
   amount = roundMoney(amount);
   if (amount <= 0) return { resolved: false, amount: 0, meta, calculationText };
   return { resolved: true, amount, meta, calculationText };
+}
+
+function currentAgeClause(indicator = {}, currentAge) {
+  if (!Number.isFinite(currentAge)) return null;
+  const text = normalizeText([
+    indicator.formulaText,
+    indicator.condition,
+    indicator.sourceExcerpt,
+  ].filter(Boolean).join(' '));
+  if (!text) return null;
+
+  const clauses = text
+    .split(/(?=若(?:被保险人)?(?:于)?)/u)
+    .map((item) => item.split(/[。；;]/u)[0].trim())
+    .filter(Boolean);
+  for (const clause of clauses) {
+    const ageMatch = clause.match(/(\d{1,3})周岁[^。；;]{0,40}?(之前|以前|前|以后|及以后|后)/u);
+    if (!ageMatch) continue;
+    const thresholdAge = Number(ageMatch[1]);
+    const direction = ageMatch[2];
+    const applies = /之前|以前|前/u.test(direction) ? currentAge < thresholdAge : currentAge >= thresholdAge;
+    if (applies) return { clause, thresholdAge, direction };
+  }
+  return null;
+}
+
+export function resolveIndicatorAmountForCurrentContext(indicator = {}, inputs = {}) {
+  const currentAge = finiteNumber(inputs.currentAge);
+  const conditional = currentAgeClause(indicator, currentAge);
+  if (conditional) {
+    const branchIndicator = {
+      ...indicator,
+      formulaText: conditional.clause,
+      sourceExcerpt: conditional.clause,
+      value: undefined,
+      valueText: '',
+      unit: '',
+      basisKey: '',
+      calculationKey: '',
+      calculationEligible: undefined,
+    };
+    const branchResult = resolveIndicatorAmountFromCalculation(branchIndicator, inputs);
+    if (branchResult.resolved) {
+      return {
+        ...branchResult,
+        formula: conditional.clause,
+        calculationText: `当前年龄${currentAge}周岁，适用“${conditional.clause}”：${branchResult.calculationText}`,
+      };
+    }
+  }
+  return resolveIndicatorAmountFromCalculation(indicator, inputs);
 }
 
 export function indicatorCalculationPayloadFields(indicator = {}) {

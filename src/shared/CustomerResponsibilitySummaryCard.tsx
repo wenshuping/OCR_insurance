@@ -6,6 +6,13 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import type { CustomerResponsibilitySummary } from '../api/contracts/responsibility';
+import type { CashflowEntry, ScenarioEntry } from '../api/contracts/cashflow';
+import { formatCurrency } from './formatters';
+import { hasQuantifiedCalculationSignal } from '../indicator-calculation.mjs';
+import {
+  mergeCalculatedResponsibilityTitles,
+  responsibilityTitlesMatch,
+} from './responsibility-calculation-match.mjs';
 
 function cleanStrings(values: string[] | undefined) {
   return Array.isArray(values) ? values.map((value) => String(value || '').trim()).filter(Boolean) : [];
@@ -25,8 +32,16 @@ function hostFromUrl(url: string) {
 
 export function CustomerResponsibilitySummaryCard({
   summary,
+  cashflowEntries = [],
+  scenarioEntries = [],
+  baseAmount = 0,
+  firstPremium = 0,
 }: {
   summary: CustomerResponsibilitySummary;
+  cashflowEntries?: CashflowEntry[];
+  scenarioEntries?: ScenarioEntry[];
+  baseAmount?: string | number;
+  firstPremium?: string | number;
 }) {
   const blocks = (Array.isArray(summary.contentBlocks) ? summary.contentBlocks : [])
     .map((block) => ({
@@ -120,6 +135,17 @@ export function CustomerResponsibilitySummaryCard({
             <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{responsibilities.length} 项</span>
           </div>
           {responsibilities.map((item, index) => {
+            const hasQuantifiedIndicator = hasQuantifiedCalculationSignal(item.howItPays);
+            const usesPolicyAmount = /(?:基本责任保险金额|基本保险金额|基本保险金|基本保额|有效保险金额|保险金额|保额)/u.test(item.howItPays);
+            const usesPolicyPremium = /(?:首期保费|首年保费|年交保费|已交保费|所交保费|保险费|保费)/u.test(item.howItPays);
+            const calculatedRows = cashflowEntries
+              .filter((entry) => item.title && responsibilityTitlesMatch(item.title, entry.liability))
+              .sort((left, right) => Number(left.year) - Number(right.year));
+            const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
+            const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
+            const calculatedScenario = scenarioEntries.find((entry) => (
+              responsibilityTitlesMatch(item.title, entry.scenario) && Number(entry.amount) > 0
+            ));
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
                 <div className="flex items-start gap-3">
@@ -130,8 +156,44 @@ export function CustomerResponsibilitySummaryCard({
                     <h4 className="break-words text-sm font-black leading-6 text-slate-950">{item.title || '保险责任'}</h4>
                     {item.plainText ? <p className="mt-1 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{item.plainText}</p> : null}
                     {item.triggerCondition ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-500">触发条件：{item.triggerCondition}</p> : null}
-                    {item.howItPays ? <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700 ring-1 ring-slate-100">{item.howItPays}</p> : null}
-                    {item.calculationStatus ? <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">calculationStatus: {item.calculationStatus}</p> : null}
+                    {item.howItPays ? (
+                      hasQuantifiedIndicator ? (
+                        <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
+                          <p className="text-[11px] font-black text-blue-700">量化指标</p>
+                          {usesPolicyAmount && Number(baseAmount) > 0 ? (
+                            <p className="mt-1 text-xs font-black text-cyan-800">本保单保险金额：{formatCurrency(Number(baseAmount))}</p>
+                          ) : null}
+                          {usesPolicyPremium && Number(firstPremium) > 0 ? (
+                            <p className="mt-1 text-xs font-black text-cyan-800">本保单首期保费：{formatCurrency(Number(firstPremium))}</p>
+                          ) : null}
+                          <p className="mt-1 break-words text-xs font-black leading-5 text-blue-700">{item.howItPays}</p>
+                        </div>
+                      ) : (
+                        <p className="mt-2 break-words rounded-xl bg-white px-3 py-2 text-xs font-black leading-5 text-blue-700 ring-1 ring-slate-100">{item.howItPays}</p>
+                      )
+                    ) : null}
+                    {calculatedRows.length ? (
+                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
+                        <p className="font-black">已按本保单指标计算</p>
+                        <p className="mt-1">
+                          {calculatedAmounts.length === 1 ? `每次 ${formatCurrency(calculatedAmounts[0])}，` : ''}
+                          共 {calculatedRows.length} 次，合同计划累计 {formatCurrency(calculatedTotal)}
+                          （{calculatedRows[0].year}—{calculatedRows[calculatedRows.length - 1].year}年）
+                        </p>
+                        <p className="mt-1 text-[11px] text-cyan-700">
+                          {calculatedRows[0].calculationText || calculatedRows[0].calcText || '按保险责任指标计算'}
+                        </p>
+                      </div>
+                    ) : calculatedScenario ? (
+                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
+                        <p className="font-black">已按本保单当前条件计算：{formatCurrency(calculatedScenario.amount)}</p>
+                        <p className="mt-1 text-[11px] text-cyan-700">{calculatedScenario.calculationText}</p>
+                      </div>
+                    ) : item.calculationStatus ? (
+                      <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">
+                        {item.calculationStatus === 'claim_contingent' ? '出险后按实际情况计算' : item.calculationStatus === 'scheduled_cashflow' ? '待结合保单信息计算' : item.calculationStatus}
+                      </p>
+                    ) : null}
                     {item.sourceRefs.length ? (
                       <div className="mt-2 flex flex-wrap gap-1.5">
                         {item.sourceRefs.map((sourceRef) => (
@@ -154,7 +216,7 @@ export function CustomerResponsibilitySummaryCard({
         </div>
       ) : null}
 
-      {requiredPolicyFields.length ? (
+      {requiredPolicyFields.length && !cashflowEntries.length && !scenarioEntries.length ? (
         <div className="mt-4 rounded-[16px] border border-amber-100 bg-amber-50 px-3 py-3">
           <div className="flex items-center gap-2 text-xs font-black text-amber-700">
             <ClipboardList size={16} />

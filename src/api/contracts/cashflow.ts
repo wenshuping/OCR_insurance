@@ -12,6 +12,8 @@ export type CashflowEntry = {
   calculationText: string;
   /** Alias used by the server DB store (calc_text column) */
   calcText?: string | null;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
   calculationDecisionSource?: string;
   cashValue?: number | null;
 };
@@ -43,6 +45,8 @@ export type ScenarioEntry = {
   productName: string;
   calculationText: string;
   calculationDecisionSource?: string;
+  isMinimumEstimate?: boolean;
+  uncertaintyNote?: string;
 };
 
 export type PolicyCashflowPlan = {

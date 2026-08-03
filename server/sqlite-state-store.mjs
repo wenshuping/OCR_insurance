@@ -7,6 +7,7 @@ import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs'
 import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from './agent-question-policy.service.mjs';
 import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
+import { ensureProductAgentTables } from './product-agent-store.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 import { normalizeAgentSemanticAuditPayload } from './agent-semantic-audit-contract.mjs';
 
