@@ -132,6 +132,19 @@
     ]
   },
   {
+    "name": "responsibility-projection",
+    "patterns": [
+      "server/policy-derived-results.service.mjs",
+      "server/responsibility-card-standardizer.mjs",
+      "tests/policy-derived-results.test.mjs",
+      "tests/responsibility-card-standardizer.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/policy-derived-results.test.mjs",
+      "node --test tests/responsibility-card-standardizer.test.mjs"
+    ]
+  },
+  {
     "name": "family-report",
     "patterns": [
       "src/family-report-engine.mjs",

@@ -1395,6 +1395,51 @@ test('computePolicyCashflow: dedupes synonymous maturity entries across responsi
   ]);
 });
 
+test('computePolicyCashflow: emits one standard maturity payment when legacy aliases use different indicator ids', () => {
+  const policy = {
+    id: 500752,
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    amount: 20000,
+    date: '2004-01-01',
+    insuredBirthday: '1976-01-01',
+    coveragePeriod: '至80岁',
+  };
+  const indicator = (id, liability, sourceExcerpt) => ({
+    id,
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    liability,
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: '基本保险金额 × 100%',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+    sourceExcerpt,
+  });
+
+  const entries = computePolicyCashflow(policy, null, [
+    indicator('official_maturity', '满期保险金', '被保险人生存至年满80周岁保单生效对应日零时，按基本保险金额给付满期保险金。'),
+    indicator('legacy_maturity', '满期', '满期时按基本保险金额给付。'),
+    indicator('generic_maturity', '满期金', '满期时按基本保险金额给付满期金。'),
+  ]);
+
+  assert.deepEqual(entries.map(({ year, age, amount, cumulative, liability }) => ({
+    year,
+    age,
+    amount,
+    cumulative,
+    liability,
+  })), [{
+    year: 2056,
+    age: 80,
+    amount: 20000,
+    cumulative: 20000,
+    liability: '满期保险金',
+  }]);
+});
+
 test('computePolicyCashflow: keeps same-year same-amount distinct liabilities separate', () => {
   const policy = {
     id: 16,

@@ -89,6 +89,68 @@ test('findPolicyCoverageIndicators matches legal insurer prefixes through the sh
   assert.deepEqual(indicators.map((item) => item.id), ['maturity_indicator']);
 });
 
+test('findPolicyCoverageIndicators dedupes standard maturity aliases for one official product version', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf';
+  const sourceDigest = 'sha256:zunshang';
+  const base = {
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: '基本保险金额 × 100%',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl,
+    sourceDigest,
+  };
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+  }, [{
+    ...base,
+    id: 'official_maturity',
+    liability: '满期保险金',
+    sourceExcerpt: '被保险人生存至年满80周岁保单生效对应日零时，按基本保险金额给付满期保险金。',
+  }, {
+    ...base,
+    id: 'legacy_maturity',
+    liability: '满期',
+    sourceExcerpt: '满期时按基本保险金额给付。',
+  }, {
+    ...base,
+    id: 'generic_maturity',
+    liability: '满期金',
+    sourceExcerpt: '满期时给付满期金。',
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['official_maturity']);
+  assert.equal(indicators[0].liability, '满期保险金');
+});
+
+test('findPolicyCoverageIndicators preserves competing standard maturity source digests', () => {
+  const base = {
+    company: '测试保险公司',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://official.example.test/terms.pdf',
+    sourceExcerpt: '生存至保险期间届满，按基本保险金额给付满期保险金。',
+  };
+  const indicators = findPolicyCoverageIndicators({
+    company: '测试保险公司',
+    name: '测试两全保险',
+  }, [
+    { ...base, id: 'version_a', liability: '满期保险金', sourceDigest: 'sha256:a' },
+    { ...base, id: 'version_b', liability: '满期金', sourceDigest: 'sha256:b' },
+  ]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['version_a', 'version_b']);
+});
+
 test('policy optional responsibility state overrides a legacy indicator that omitted its optional scope', () => {
   const indicators = findPolicyCoverageIndicators({
     company: '新华保险',

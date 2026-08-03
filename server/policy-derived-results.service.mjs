@@ -1,9 +1,12 @@
-import { attachPolicyCoverageIndicators } from './policy-ocr.domain.mjs';
+import {
+  attachPolicyCoverageIndicators,
+  dedupePolicyCoverageIndicators,
+} from './policy-ocr.domain.mjs';
 import { isPolicyOfficialSourceUrl } from './c-policy-analysis.service.mjs';
 import { findKnowledgeRecordsForPolicy, normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
 
-export const RESPONSIBILITY_PROJECTION_VERSION = '2026-07-31-claim-event-facts-required';
+export const RESPONSIBILITY_PROJECTION_VERSION = '2026-08-03-standard-maturity-deduped';
 
 export function isCurrentResponsibilityProjection(derived = {}) {
   return String(derived?.responsibilityProjectionVersion || '').trim() === RESPONSIBILITY_PROJECTION_VERSION;
@@ -175,11 +178,22 @@ export function mergePolicyDerivedResult(policy = {}, derived = null) {
       derivedStaleReason: 'missing',
     };
   }
+  const coverageIndicators = dedupePolicyCoverageIndicators(
+    Array.isArray(derived.coverageIndicators) ? derived.coverageIndicators : [],
+  );
+  const responsibilityCards = isCurrentResponsibilityProjection(derived)
+    ? (Array.isArray(derived.responsibilityCards) ? derived.responsibilityCards : [])
+    : buildResponsibilityCardsForPolicy({
+        policy: { ...policy, coverageIndicators },
+        responsibilities: policy.responsibilities,
+        coverageIndicators,
+        optionalResponsibilityRecords: derived.optionalResponsibilities,
+      });
   return {
     ...policy,
-    coverageIndicators: Array.isArray(derived.coverageIndicators) ? derived.coverageIndicators : [],
+    coverageIndicators,
     optionalResponsibilities: Array.isArray(derived.optionalResponsibilities) ? derived.optionalResponsibilities : [],
-    responsibilityCards: Array.isArray(derived.responsibilityCards) ? derived.responsibilityCards : [],
+    responsibilityCards,
     derivedStatus: String(derived.status || 'stale'),
     derivedStaleReason: String(derived.staleReason || ''),
     derivedGeneratedAt: String(derived.generatedAt || ''),

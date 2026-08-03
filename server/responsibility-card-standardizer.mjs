@@ -12,6 +12,7 @@ import {
   combinedDeathDisabilityTitleForLegacyAlias,
   removeSupersededDiseaseDisabilityAliases,
 } from './responsibility-indicator-aliases.mjs';
+import { dedupePolicyCoverageIndicators } from './policy-ocr.domain.mjs';
 
 const MISSING_OFFICIAL_EXCERPT_REASON = '缺少官方来源片段，不能进入计算';
 
@@ -135,6 +136,7 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   if (cleanedLiability && cleanedLiability !== liability) return cleanedLiability;
   const combinedDeathDisabilityTitle = combinedDeathDisabilityTitleForLegacyAlias(indicator);
   if (combinedDeathDisabilityTitle) return combinedDeathDisabilityTitle;
+  if (/^(?:满期|满期保险金|满期生存保险金|满期返还|满期金|期满保险金|期满金)$/u.test(name)) return '满期保险金';
   if (name === '满期返还' && excerpt.includes('满期保险金')) return '满期保险金';
   const concreteLiability = concreteScheduledLiabilityFromExcerptForAggregate(indicator, sourceExcerpt);
   if (concreteLiability) return concreteLiability;
@@ -1849,7 +1851,9 @@ export function buildResponsibilityCardsForPolicy({
       && !isWeakLiabilityName(responsibility.title)
       && !isSentenceFragmentTitle(responsibility.title)
     ));
-  const normalizedIndicators = sortIndicatorsByReviewedOrder(removeSupersededDiseaseDisabilityAliases(objectRows(coverageIndicators))
+  const normalizedIndicators = sortIndicatorsByReviewedOrder(removeSupersededDiseaseDisabilityAliases(
+    dedupePolicyCoverageIndicators(objectRows(coverageIndicators)),
+  )
     .map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }))
     .filter(isFormalResponsibilityEvidence));
   const knowledge = bestKnowledgeRecord(knowledgeRecords);
