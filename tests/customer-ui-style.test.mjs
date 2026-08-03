@@ -1438,6 +1438,9 @@ test('customer app exposes family report from family cards and policy dashboard'
   assert.match(normalizedCustomerAppSource, /正在重新生成家庭保障分析报告/);
   assert.match(normalizedCustomerAppSource, /DeepSeek质检已完成/);
   assert.match(normalizedCustomerAppSource, /当前为本地规则结果/);
+  assert.match(normalizedCustomerAppSource, /String\(savedFamilyReportRecord\?\.status \|\| ''\) === 'active'/);
+  assert.match(normalizedCustomerAppSource, /savedFamilyReportIsActive && savedFamilyReportRecord\?\.report[\s\S]*\? savedFamilyReportRecord\.report[\s\S]*: familyReport/);
+  assert.doesNotMatch(normalizedCustomerAppSource, /savedFamilyReportRecord\?\.report \|\| familyReport/);
   assert.match(normalizedCustomerAppSource, /onOpenReport=\{openFamilyReport\}/);
   assert.match(normalizedCustomerAppSource, /onClick=\{\(\) => selectedFamilyId \? void openFamilyReport\(selectedFamilyId\) : undefined\}/);
   assert.match(familySource, /onRegenerate/);
