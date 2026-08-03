@@ -772,7 +772,10 @@ export function CustomerApp() {
     () => buildFamilyReport(selectedFamilyPolicies, familyPlanningProfile, { familyId: selectedFamilyId }),
     [selectedFamilyPolicies, familyPlanningProfile, selectedFamilyId],
   );
-  const displayFamilyReport = savedFamilyReportRecord?.report || familyReport;
+  const savedFamilyReportIsActive = String(savedFamilyReportRecord?.status || '') === 'active';
+  const displayFamilyReport = savedFamilyReportIsActive && savedFamilyReportRecord?.report
+    ? savedFamilyReportRecord.report
+    : familyReport;
   const familySalesReviewFamily = useMemo(
     () => familyProfiles.find((family) => Number(family.id) === Number(familySalesReviewFamilyId)) || null,
     [familyProfiles, familySalesReviewFamilyId],
