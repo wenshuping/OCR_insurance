@@ -1016,6 +1016,70 @@ test('computePolicyCashflow: does not manufacture staged survival cashflow from 
   ]);
 });
 
+test('computePolicyCashflow: expands reviewed staged survival branches as minimum scheduled cashflows', () => {
+  const policy = {
+    id: 516634,
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    company: '新华保险',
+    amount: 20000,
+    firstPremium: 3120,
+    date: '2024-11-24',
+    insuredBirthday: '1988-12-16',
+    paymentPeriod: '10年交',
+    coveragePeriod: '至80岁',
+  };
+  const indicator = {
+    id: 'ind_manual_review_survival',
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '意外保障',
+    liability: '生存保险金',
+    cashflowTreatment: 'claim_contingent',
+    calculationStatus: 'display_only',
+    triggerCondition: '被保险人在每一保单生效对应日零时生存',
+    formulaText: '基本责任的保险金额×给付比例（5%或10%）',
+    normalizedFormula: 'basic_sum_assured * (0.05 or 0.10)',
+    basisKey: 'piecewise',
+    calculationKey: 'piecewise',
+    sourceDigest: 'sha256:3e68295dd2a8657d997352e03bc3d7767e8b03c219e003aabcf23a8c85315a2c',
+    sourceExcerpt: '被保险人于本合同生效满三年起至60周岁保单生效对应日之前（不含60周岁保单生效对应日），在每一保单生效对应日零时生存，本公司按该保单生效对应日基本责任的保险金额的5%给付生存保险金；被保险人于60周岁保单生效对应日起至80周岁保单生效对应日期间（含80周岁保单生效对应日），在每一保单生效对应日零时生存，本公司按该保单生效对应日基本责任的保险金额的10%给付生存保险金。',
+    branches: [{
+      branchId: 'surv_branch_1',
+      conditionText: '被保险人于本合同生效满三年起至60周岁保单生效对应日之前（不含60周岁保单生效对应日）',
+      formulaText: '基本责任的保险金额的5%',
+      basisKey: 'basic_sum_assured',
+      requiredInputs: ['policy.amount'],
+    }, {
+      branchId: 'surv_branch_2',
+      conditionText: '被保险人于60周岁保单生效对应日起至80周岁保单生效对应日期间（含80周岁保单生效对应日）',
+      formulaText: '基本责任的保险金额的10%',
+      basisKey: 'basic_sum_assured',
+      requiredInputs: ['policy.amount'],
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [indicator]);
+
+  assert.equal(entries.length, 43);
+  assert.deepEqual(entries.slice(0, 2).map(({ year, amount }) => [year, amount]), [
+    [2027, 1000],
+    [2028, 1000],
+  ]);
+  assert.deepEqual(entries.slice(21, 23).map(({ year, age, amount }) => [year, age, amount]), [
+    [2048, 59, 1000],
+    [2049, 60, 2000],
+  ]);
+  assert.deepEqual(entries.slice(-2).map(({ year, age, amount }) => [year, age, amount]), [
+    [2068, 79, 2000],
+    [2069, 80, 2000],
+  ]);
+  assert.equal(entries.every((entry) => entry.liability === '生存保险金'), true);
+  assert.equal(entries.every((entry) => entry.isMinimumEstimate === true), true);
+  assert.match(entries[0].calcText, /生效满三年起至60周岁.*20,000.*5%.*1,000元/u);
+  assert.match(entries.at(-1).calcText, /60周岁.*至80周岁.*20,000.*10%.*2,000元/u);
+  assert.match(entries[0].uncertaintyNote, /未来分红增加部分/u);
+});
+
 test('computePolicyCashflow: responsibility text path skips unselected optional rows', () => {
   const policy = {
     ...policyWithResponsibilities,

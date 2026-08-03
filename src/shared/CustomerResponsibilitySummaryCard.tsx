@@ -147,6 +147,11 @@ export function CustomerResponsibilitySummaryCard({
               .sort((left, right) => Number(left.year) - Number(right.year));
             const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
             const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
+            const calculationTexts = Array.from(new Set(
+              calculatedRows
+                .map((entry) => cleanText(entry.calculationText || entry.calcText))
+                .filter(Boolean),
+            ));
             const hasMinimumEstimate = calculatedRows.some((entry) => (
               entry.isMinimumEstimate || /最低可确认金额/u.test(cleanText(entry.calculationText || entry.calcText))
             ));
@@ -198,9 +203,15 @@ export function CustomerResponsibilitySummaryCard({
                           共 {calculatedRows.length} 次，合同计划累计 {formatCurrency(calculatedTotal)}
                           （{calculatedRows[0].year}—{calculatedRows[calculatedRows.length - 1].year}年）
                         </p>
-                        <p className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
-                          {calculatedRows[0].calculationText || calculatedRows[0].calcText || '按保险责任指标计算'}
-                        </p>
+                        {calculationTexts.length ? calculationTexts.map((text, calculationIndex) => (
+                          <p key={text} className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            {calculationTexts.length > 1 ? `分支 ${calculationIndex + 1}：` : ''}{text}
+                          </p>
+                        )) : (
+                          <p className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            按保险责任指标计算
+                          </p>
+                        )}
                         {uncertaintyNotes.map((note) => (
                           <p key={note} className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
                             备注：{note}

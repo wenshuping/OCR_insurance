@@ -206,6 +206,28 @@ test('normalizeIndicatorCalculation blocks conditional early or late payout form
   assert.match(meta.calculationReason, /出险原因和出险日期/u);
 });
 
+test('normalizeIndicatorCalculation does not classify scheduled survival branches as claim events', () => {
+  const meta = normalizeIndicatorCalculation({
+    coverageType: '意外保障',
+    liability: '生存保险金',
+    triggerCondition: '被保险人在每一保单生效对应日零时生存',
+    formulaText: '基本责任的保险金额×给付比例（5%或10%）',
+    sourceExcerpt: '被保险人于本合同生效满三年起至60周岁保单生效对应日之前，在每一保单生效对应日零时生存，按基本责任的保险金额的5%给付；被保险人于60周岁保单生效对应日起至80周岁期间，按基本责任的保险金额的10%给付。',
+    branches: [{
+      branchId: 'surv_branch_1',
+      conditionText: '本合同生效满三年起至60周岁保单生效对应日之前',
+      formulaText: '基本责任的保险金额的5%',
+    }, {
+      branchId: 'surv_branch_2',
+      conditionText: '60周岁保单生效对应日起至80周岁保单生效对应日期间',
+      formulaText: '基本责任的保险金额的10%',
+    }],
+  });
+
+  assert.notEqual(meta.calculationKey, 'claim_event_facts');
+  assert.doesNotMatch(meta.calculationReason, /出险原因|出险日期/u);
+});
+
 test('normalizeIndicatorCalculation treats basic-amount day-count benefits as daily allowance dependent', () => {
   const meta = normalizeIndicatorCalculation({
     coverageType: '医疗保障',
