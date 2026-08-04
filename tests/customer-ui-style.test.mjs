@@ -1441,12 +1441,10 @@ test('family report keeps verbose protection notes readable on mobile', () => {
 test('family report responsibility table reserves readable space for conditions and source policies', () => {
   const source = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
 
-  assert.match(source, /family-report-responsibility-table min-w-\[960px\] w-full table-fixed/);
-  assert.match(source, /<col className="w-\[14%\]" \/>/);
-  assert.match(source, /<col className="w-\[17%\]" \/>/);
-  assert.match(source, /<col className="w-\[8%\]" \/>/);
-  assert.match(source, /<col className="w-\[24%\]" \/>/);
-  assert.match(source, /<col className="w-\[20%\]" \/>/);
+  assert.match(source, /family-report-responsibility-table min-w-\[1215px\] table-fixed/);
+  for (const width of [210, 130, 125, 100, 350, 300]) {
+    assert.match(source, new RegExp(`<col className="w-\\[${width}px\\]" \\/>`));
+  }
   assert.match(source, /familyReportResponsibilityTdClassName = 'min-w-0 break-words whitespace-normal/);
   assert.match(source, /<td className=\{familyReportResponsibilityTdClassName\}>\{emptyText\(row\.amountText\)\}<\/td>/);
   assert.match(source, /<SourcePolicyList row=\{row\} \/>/);
