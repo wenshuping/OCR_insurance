@@ -1426,14 +1426,14 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
       </div>
       <div data-report-canvas-skip data-report-export-table className="hidden md:block">
         <TableWrap>
-        <table className="family-report-responsibility-table min-w-[960px] w-full table-fixed border-separate border-spacing-0 text-left">
+        <table className="family-report-responsibility-table min-w-[1215px] table-fixed border-separate border-spacing-0 text-left">
           <colgroup>
-            <col className="w-[14%]" />
-            <col className="w-[17%]" />
-            <col className="w-[17%]" />
-            <col className="w-[8%]" />
-            <col className="w-[24%]" />
-            <col className="w-[20%]" />
+            <col className="w-[210px]" />
+            <col className="w-[130px]" />
+            <col className="w-[125px]" />
+            <col className="w-[100px]" />
+            <col className="w-[350px]" />
+            <col className="w-[300px]" />
           </colgroup>
           <thead>
             <tr>
