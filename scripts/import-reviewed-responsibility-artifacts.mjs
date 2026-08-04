@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 import { indicatorCalculationPayloadFields } from '../src/indicator-calculation.mjs';
+import { standardizeResponsibilityIndicator } from '../server/responsibility-card-standardizer.mjs';
 import { materializeProductResponsibilityCards } from './materialize-product-responsibility-cards.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -165,6 +166,15 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     sourceUrl,
     sourceTitle,
     sourceExcerpt,
+    responsibilityId: text(responsibility.responsibilityId),
+    parentResponsibilityId: text(responsibility.parentResponsibilityId),
+    normalizedFormula: text(responsibility.normalizedFormula || check.normalizedFormula),
+    operands: Array.isArray(responsibility.operands) ? responsibility.operands : [],
+    branches: Array.isArray(responsibility.branches) ? responsibility.branches : [],
+    evidenceTokens: Array.isArray(responsibility.evidenceTokens) ? responsibility.evidenceTokens : [],
+    ruleRefs: Array.isArray(responsibility.ruleRefs) ? responsibility.ruleRefs : [],
+    sourceDigest: text(responsibility.sourceDigest || sourceRecord.sourceDigest),
+    sourceProvenance: responsibility.sourceProvenance || sourceRecord.sourceProvenance,
     sourceEvidenceLevel: sourceUrl ? 'official_excerpt' : 'missing_source_url',
     reviewVersion: VERSION,
     updatedAt: now,
@@ -179,6 +189,49 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     calculationReason: text(check.calculationReason) || calculatedFields.calculationReason,
     calculationMetadataVersion: base.calculationMetadataVersion,
   };
+}
+
+function sourceKeyForIndicator(indicator = {}) {
+  return text(indicator.sourceDigest || indicator.source_digest || indicator.sourceUrl || indicator.url);
+}
+
+function mergeArrayValues(left, right) {
+  const values = [...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])];
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function canonicalizeAndDeduplicateIndicators(indicators = []) {
+  const byKey = new Map();
+  for (const indicator of indicators) {
+    const standardized = standardizeResponsibilityIndicator(indicator, {
+      policy: { company: indicator.company, name: indicator.productName },
+    });
+    const canonical = {
+      ...indicator,
+      liability: standardized.liability,
+      coverageType: standardized.coverageType || indicator.coverageType,
+      branches: mergeArrayValues(indicator.branches, standardized.branches),
+      operands: mergeArrayValues(indicator.operands, standardized.operands),
+    };
+    const key = `${text(indicator.company)}\u001f${text(indicator.productName)}\u001f${sourceKeyForIndicator(indicator)}\u001f${text(canonical.liability)}`;
+    const previous = byKey.get(key);
+    if (!previous) {
+      byKey.set(key, canonical);
+      continue;
+    }
+    previous.branches = mergeArrayValues(previous.branches, canonical.branches);
+    previous.operands = mergeArrayValues(previous.operands, canonical.operands);
+    previous.evidenceTokens = mergeArrayValues(previous.evidenceTokens, canonical.evidenceTokens);
+    previous.ruleRefs = mergeArrayValues(previous.ruleRefs, canonical.ruleRefs);
+    if (text(canonical.liability) !== '疾病全残' && text(previous.liability) === '疾病全残') previous.liability = canonical.liability;
+  }
+  return [...byKey.values()];
 }
 
 function validateProduct(product = {}) {
@@ -365,13 +418,15 @@ export function importReviewedResponsibilityArtifacts({
     }
   }
 
+  const canonicalIndicators = canonicalizeAndDeduplicateIndicators(indicators);
+
   const materializeResults = [];
   const pruneResults = [];
   const indicatorPruneResults = [];
-  if (write && indicators.length) {
+  if (write && canonicalIndicators.length) {
     const db = new DatabaseSync(path.resolve(dbPath));
     try {
-      upsertIndicators(db, indicators, now);
+      upsertIndicators(db, canonicalIndicators, now);
     } finally {
       db.close();
     }
@@ -404,7 +459,8 @@ export function importReviewedResponsibilityArtifacts({
     artifacts: artifacts.map((artifact) => path.resolve(artifact)),
     productsReviewed: products.length,
     productsWithAcceptedResponsibilities: productsForMaterialize.size,
-    acceptedResponsibilities: indicators.length,
+    acceptedResponsibilities: canonicalIndicators.length,
+    rawAcceptedResponsibilities: indicators.length,
     validationFailures,
     blockerProducts: blockers,
     materializedProducts: materializeResults.length,

@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   RESPONSIBILITY_CARD_INDICATOR_CHECK_VERSION,
   buildResponsibilityCardsForPolicy,
+  canonicalizeResponsibilityIndicators,
   indicatorCheckForResponsibilityCard,
 } from '../server/responsibility-card-standardizer.mjs';
 
@@ -165,15 +166,17 @@ function loadProductListFilter(productListPath = '') {
   )).filter((key) => key !== '\u001f'));
 }
 
-function loadSourceRows(db) {
+function loadSourceRows(db, { company = '', productName = '' } = {}) {
+  const where = company && productName ? ' WHERE company = ? AND product_name = ?' : '';
+  const params = where ? [company, productName] : [];
   const knowledgeRows = tableExists(db, 'knowledge_records')
-    ? db.prepare('SELECT id, company, product_name, url, payload FROM knowledge_records ORDER BY id ASC').all().map(normalizeKnowledgeRow)
+    ? db.prepare(`SELECT id, company, product_name, url, payload FROM knowledge_records${where} ORDER BY id ASC`).all(...params).map(normalizeKnowledgeRow)
     : [];
   const indicatorRows = tableExists(db, 'insurance_indicator_records')
-    ? db.prepare('SELECT id, company, product_name, coverage_type, liability, payload FROM insurance_indicator_records ORDER BY product_name ASC, coverage_type ASC, liability ASC, id ASC').all().map(normalizeIndicatorRow)
+    ? db.prepare(`SELECT id, company, product_name, coverage_type, liability, payload FROM insurance_indicator_records${where} ORDER BY product_name ASC, coverage_type ASC, liability ASC, id ASC`).all(...params).map(normalizeIndicatorRow)
     : [];
   const optionalRows = tableExists(db, 'optional_responsibility_records')
-    ? db.prepare('SELECT id, company, product_name, liability, payload FROM optional_responsibility_records ORDER BY product_name ASC, liability ASC, id ASC').all().map(normalizeOptionalResponsibilityRow)
+    ? db.prepare(`SELECT id, company, product_name, liability, payload FROM optional_responsibility_records${where} ORDER BY product_name ASC, liability ASC, id ASC`).all(...params).map(normalizeOptionalResponsibilityRow)
     : [];
   return { knowledgeRows, indicatorRows, optionalRows };
 }
@@ -233,11 +236,11 @@ function materializedCardRow({ card, product, productKey, index, now }) {
   };
 }
 
-function insertRowsForProduct(db, { productKey, rows }) {
+function insertRowsForProduct(db, { productKey, product, rows }) {
   const existingCount = tableExists(db, 'product_responsibility_cards')
-    ? Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards WHERE product_key = ?').get(productKey)?.count || 0)
+    ? Number(db.prepare('SELECT COUNT(*) AS count FROM product_responsibility_cards WHERE company = ? AND product_name = ?').get(product.company, product.productName)?.count || 0)
     : 0;
-  db.prepare('DELETE FROM product_responsibility_cards WHERE product_key = ?').run(productKey);
+  db.prepare('DELETE FROM product_responsibility_cards WHERE company = ? AND product_name = ?').run(product.company, product.productName);
   const insert = db.prepare(`
     INSERT INTO product_responsibility_cards (
       id,
@@ -282,6 +285,26 @@ function insertRowsForProduct(db, { productKey, rows }) {
   };
 }
 
+function replaceIndicatorRowsForProduct(db, { product, indicators }) {
+  if (!tableExists(db, 'insurance_indicator_records')) return;
+  const deleteRows = db.prepare('DELETE FROM insurance_indicator_records WHERE company = ? AND product_name = ?');
+  const insert = db.prepare(`
+    INSERT INTO insurance_indicator_records (id, company, product_name, coverage_type, liability, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  deleteRows.run(product.company, product.productName);
+  for (const indicator of indicators) {
+    insert.run(
+      text(indicator.id),
+      text(indicator.company || product.company),
+      text(indicator.productName || product.productName),
+      text(indicator.coverageType),
+      text(indicator.liability),
+      JSON.stringify(indicator),
+    );
+  }
+}
+
 export function materializeProductResponsibilityCards({
   dbPath = DEFAULT_DB_PATH,
   write = false,
@@ -297,7 +320,7 @@ export function materializeProductResponsibilityCards({
   const resolvedDbPath = path.resolve(dbPath);
   const db = new DatabaseSync(resolvedDbPath);
   try {
-    const sourceRows = loadSourceRows(db);
+    const sourceRows = loadSourceRows(db, { company, productName });
     const knowledgeByProduct = groupByProduct(sourceRows.knowledgeRows);
     const indicatorsByProduct = groupByProduct(sourceRows.indicatorRows);
     const optionalByProduct = groupByProduct(sourceRows.optionalRows);
@@ -322,6 +345,13 @@ export function materializeProductResponsibilityCards({
       const key = productMapKey(product.company, product.productName);
       const knowledgeRecords = knowledgeByProduct.get(key) || [];
       const coverageIndicators = indicatorsByProduct.get(key) || [];
+      const canonicalIndicators = canonicalizeResponsibilityIndicators(coverageIndicators, {
+        policy: {
+          company: product.company,
+          productName: product.productName,
+          name: product.productName,
+        },
+      });
       const optionalResponsibilityRecords = optionalByProduct.get(key) || [];
       const productKey = productKeyFor(product.company, product.productName);
       const cards = buildResponsibilityCardsForPolicy({
@@ -331,7 +361,7 @@ export function materializeProductResponsibilityCards({
           name: product.productName,
         },
         knowledgeRecords,
-        coverageIndicators,
+        coverageIndicators: canonicalIndicators,
         optionalResponsibilityRecords,
       });
       const rows = cards.map((card, index) => materializedCardRow({ card, product, productKey, index, now }));
@@ -350,7 +380,8 @@ export function materializeProductResponsibilityCards({
           productName: product.productName,
           productKey,
           knowledgeRecords: knowledgeRecords.length,
-          indicators: coverageIndicators.length,
+          indicators: canonicalIndicators.length,
+          rawIndicators: coverageIndicators.length,
           optionalResponsibilities: optionalResponsibilityRecords.length,
           cardCount: rows.length,
           cards: rows.slice(0, 8).map((row) => ({
@@ -364,7 +395,7 @@ export function materializeProductResponsibilityCards({
           })),
         });
       }
-      return { productKey, rows };
+      return { productKey, product, indicators: canonicalIndicators, rows };
     });
 
     if (write) {
@@ -372,6 +403,7 @@ export function materializeProductResponsibilityCards({
       db.exec('BEGIN IMMEDIATE');
       try {
         for (const result of productResults) {
+          replaceIndicatorRowsForProduct(db, result);
           const writeResult = insertRowsForProduct(db, result);
           deletedRows += writeResult.deletedRows;
           insertedRows += writeResult.insertedRows;

@@ -631,6 +631,55 @@ test('reviewed artifact import honors explicit cashflow coverage for maturity be
   }
 });
 
+test('reviewed artifact import emits one canonical indicator for same-source disease branches', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'same-source.jsonl');
+    const sourceUrl = 'https://official.example.test/same-source.pdf';
+    const sourceDigest = 'sha256:same-source-digest';
+    const sourceExcerpt = '身故或身体全残保险金 被保险人因疾病导致身故或身体全残，本公司按基本保险金额给付。';
+    fs.writeFileSync(artifactPath, `${JSON.stringify({
+      company: '测试保险',
+      productName: '测试两全保险',
+      sourceRecords: [{ sourceRecordId: 'source-1', sourceUrl, sourceDigest }],
+      acceptedResponsibilities: [{
+        liability: '疾病全残',
+        coverageType: '人寿保障',
+        formulaText: '身故或身体全残保险金 = 基本保险金额',
+        responsibilityId: 'death-or-disability',
+        branches: [{ when: 'disease', formula: 'basic_amount' }],
+        sourceUrl, sourceDigest, sourceExcerpt,
+      }, {
+        liability: '身故或身体全残保险金',
+        coverageType: '人寿保障',
+        formulaText: '身故或身体全残保险金 = 基本保险金额',
+        responsibilityId: 'death-or-disability',
+        sourceUrl, sourceDigest, sourceExcerpt,
+      }],
+    })}\n`);
+
+    const result = importReviewedResponsibilityArtifacts({ artifacts: [artifactPath], dbPath, write: true });
+    assert.equal(result.rawAcceptedResponsibilities, 2);
+    assert.equal(result.acceptedResponsibilities, 1);
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      assert.equal(db.prepare('SELECT COUNT(*) AS count FROM insurance_indicator_records').get().count, 1);
+      const row = db.prepare('SELECT liability, payload FROM insurance_indicator_records').get();
+      assert.equal(row.liability, '身故或身体全残保险金');
+      const indicator = JSON.parse(row.payload);
+      assert.deepEqual(indicator.branches, [{ when: 'disease', formula: 'basic_amount' }]);
+      assert.equal(indicator.sourceDigest, sourceDigest);
+      const card = db.prepare('SELECT title, payload FROM product_responsibility_cards').get();
+      assert.equal(card.title, '身故或身体全残保险金');
+      assert.equal(JSON.parse(card.payload).indicators.length, 1);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('reviewed artifact import preserves reviewed daily allowance metadata', () => {
   const { dir, dbPath } = makeTempDb();
   try {
