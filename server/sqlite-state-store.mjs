@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import crypto, { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
@@ -10,8 +10,9 @@ import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 import { ensureProductAgentTables } from './product-agent-store.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 import { normalizeAgentSemanticAuditPayload } from './agent-semantic-audit-contract.mjs';
+import { applyFamilySalesMemoryAction, upsertFamilySalesMemories } from './family-sales-memory.service.mjs';
 
-const SCHEMA_VERSION = '4';
+const SCHEMA_VERSION = '6';
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -40,12 +41,16 @@ const DB_OWNED_KEYS = new Set([
   'familySalesChatThreads',
   'familySalesChatMessages',
   'familySalesMemories',
+  'familySalesMemoryEvents',
   'reportRefreshEvents',
   'membershipConfig',
   'membershipOrders',
   'memberships',
   'userWechatIdentities',
   'wechatOAuthStates',
+  'userDingtalkIdentities',
+  'dingtalkBindingChallenges',
+  'agentPolicyImportTasks',
   'nextId',
 ]);
 
@@ -168,6 +173,7 @@ function resolveNextId(state) {
     maxNumericId(state.familySalesChatThreads),
     maxNumericId(state.familySalesChatMessages),
     maxNumericId(state.familySalesMemories),
+    maxNumericId(state.familySalesMemoryEvents),
     maxNumericId(state.reportRefreshEvents),
     maxNumericId(state.membershipOrders),
   );
@@ -643,12 +649,169 @@ function ensureFamilySalesMemoryVersionSchema(db) {
   db.exec('ALTER TABLE family_sales_memories ADD COLUMN version INTEGER');
 }
 
-function createSchema(db) {
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA foreign_keys = ON;
-    PRAGMA busy_timeout = 5000;
+function allocateDurableFamilySalesMemoryId(db) {
+  const next = Math.max(
+    Number(getMeta(db, 'next_id') || 1),
+    Number(getMeta(db, 'family_sales_memory_next_id') || 1),
+    Number(db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM family_sales_memories').get().next),
+  );
+  setMeta(db, 'family_sales_memory_next_id', next + 1);
+  setMeta(db, 'next_id', next + 1);
+  return next;
+}
 
+function ensureColumn(db, table, column, definition) {
+  if (db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+const FAMILY_SALES_MEMORY_COLUMNS = [
+  'id', 'family_id', 'owner_user_id', 'owner_guest_id', 'kind', 'status', 'memory_key', 'content', 'confidence', 'version', 'recorded_at',
+  'valid_from', 'valid_to', 'invalidated_at', 'supersedes_memory_id', 'superseded_by_memory_id', 'subject_type', 'subject_id', 'risk_level',
+  'source_message_id', 'normalized_value_json', 'source_message_ids_json', 'source_type', 'confirmation_type', 'confirmed_by', 'confirmed_at',
+  'invalidation_reason', 'extractor_version', 'source_thread_id', 'created_at', 'updated_at', 'payload',
+];
+
+function bindFamilySalesMemory(memory = {}) {
+  const status = String(memory.status || 'candidate') === 'active' ? 'confirmed' : String(memory.status || 'candidate');
+  const version = Number(memory.version || 1);
+  const recordedAt = String(memory.recordedAt || memory.createdAt || memory.updatedAt || new Date(0).toISOString());
+  const sourceMessageIds = normalizeArray(memory.sourceMessageIds || memory.evidenceMessageIds).map(Number).filter((id) => Number.isSafeInteger(id) && id > 0);
+  const normalized = {
+    ...memory,
+    status,
+    version,
+    recordedAt,
+    memoryKey: String(memory.memoryKey || ''),
+    content: String(memory.content || ''),
+    confidence: Number(memory.confidence || 0),
+    sourceMessageIds,
+    sourceType: String(memory.sourceType || ''),
+    confirmationType: String(memory.confirmationType || ''),
+    confirmedBy: String(memory.confirmedBy || ''),
+    confirmedAt: String(memory.confirmedAt || ''),
+    invalidationReason: String(memory.invalidationReason || ''),
+    extractorVersion: String(memory.extractorVersion || ''),
+    validFrom: memory.validFrom || (status === 'confirmed' ? recordedAt : null),
+    validTo: memory.validTo || null,
+    invalidatedAt: memory.invalidatedAt || null,
+  };
+  const values = [
+    Number(normalized.id), Number(normalized.familyId || 0) || null, Number(normalized.ownerUserId || 0) || null,
+    Number(normalized.ownerUserId || 0) ? '' : String(normalized.ownerGuestId || ''), String(normalized.kind || ''), status,
+    String(normalized.memoryKey || ''), String(normalized.content || ''), Number(normalized.confidence || 0), version, recordedAt,
+    String(normalized.validFrom || ''), String(normalized.validTo || ''), String(normalized.invalidatedAt || ''),
+    Number(normalized.supersedesMemoryId || 0) || null, Number(normalized.supersededByMemoryId || 0) || null,
+    String(normalized.subjectType || ''), String(normalized.subjectId || ''), String(normalized.riskLevel || ''),
+    Number(normalized.sourceMessageId || sourceMessageIds[0] || 0) || null, JSON.stringify(normalized.normalizedValue ?? null), JSON.stringify(sourceMessageIds),
+    String(normalized.sourceType || ''), String(normalized.confirmationType || ''), String(normalized.confirmedBy || ''), String(normalized.confirmedAt || ''),
+    String(normalized.invalidationReason || ''), String(normalized.extractorVersion || ''), Number(normalized.sourceThreadId || 0) || null,
+    String(normalized.createdAt || recordedAt), String(normalized.updatedAt || recordedAt), jsonPayload(normalized),
+  ];
+  return { normalized, values };
+}
+
+function writeFamilySalesMemory(db, memory, { expectedVersion, insertOnly = false, migration = false } = {}) {
+  const { normalized, values } = bindFamilySalesMemory(memory);
+  if (migration) {
+    const assignments = FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = ?`).join(', ');
+    return { memory: normalized, changes: db.prepare(`UPDATE family_sales_memories SET ${assignments} WHERE id = ?`).run(...values.slice(1), values[0]).changes };
+  }
+  if (Number.isSafeInteger(expectedVersion)) {
+    const assignments = FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = ?`).join(', ');
+    return { memory: normalized, changes: db.prepare(`UPDATE family_sales_memories SET ${assignments}
+      WHERE id = ? AND COALESCE(version, CASE WHEN status = 'active' THEN 1 END) = ?`).run(...values.slice(1), values[0], expectedVersion).changes };
+  }
+  const placeholders = FAMILY_SALES_MEMORY_COLUMNS.map(() => '?').join(', ');
+  const conflict = insertOnly ? '' : ` ON CONFLICT(id) DO UPDATE SET ${FAMILY_SALES_MEMORY_COLUMNS.slice(1).map((column) => `${column} = excluded.${column}`).join(', ')}`;
+  return { memory: normalized, changes: db.prepare(`INSERT INTO family_sales_memories (${FAMILY_SALES_MEMORY_COLUMNS.join(', ')}) VALUES (${placeholders})${conflict}`).run(...values).changes };
+}
+
+function insertOrCompareFamilySalesMemory(db, memory) {
+  const { normalized } = bindFamilySalesMemory(memory);
+  const existing = db.prepare('SELECT payload FROM family_sales_memories WHERE id = ?').get(Number(normalized.id));
+  if (!existing) return writeFamilySalesMemory(db, normalized, { insertOnly: true });
+  if (existing.payload !== jsonPayload(normalized)) throw Object.assign(new Error('family sales memory restore conflict'), { code: 'RESTORE_CONFLICT' });
+  return { memory: normalized, changes: 0 };
+}
+
+function initialFamilySalesMemoryEvent(memory = {}) {
+  const { normalized } = bindFamilySalesMemory(memory);
+  const proposed = normalized.status === 'candidate' && ['system_inference', 'user_statement'].includes(String(normalized.sourceType || ''));
+  return {
+    id: `memory_event:${normalized.id}:${proposed ? 'proposed' : 'imported'}`, memoryId: normalized.id, familyId: normalized.familyId,
+    ownerUserId: normalized.ownerUserId, ownerGuestId: normalized.ownerGuestId, eventType: proposed ? 'proposed' : 'imported',
+    actor: { type: 'system', id: 1 }, sourceMessageId: normalized.sourceMessageId || normalized.evidenceMessageIds?.[0] || null,
+    previousStatus: String(memory.status || '') === 'active' ? 'active' : '', nextStatus: normalized.status,
+    reasonCode: proposed ? 'extracted' : 'legacy_import', createdAt: normalized.recordedAt, version: normalized.version,
+  };
+}
+
+function migrateFamilySalesMemoryHistory(db) {
+  try {
+    const rows = db.prepare('SELECT id, payload FROM family_sales_memories ORDER BY id').all();
+    for (const row of rows) {
+      const memory = parseJson(row.payload, null);
+      if (!memory || Number(memory.id) !== Number(row.id)) throw Object.assign(new Error('invalid legacy family sales memory payload'), { code: 'MEMORY_MIGRATION_FAILED' });
+      const ownerUserId = Number(memory.ownerUserId || 0) || null;
+      const ownerGuestId = ownerUserId ? '' : String(memory.ownerGuestId || '');
+      if (!Number(memory.familyId) || (!ownerUserId && !ownerGuestId)) throw Object.assign(new Error('legacy family sales memory scope is invalid'), { code: 'MEMORY_MIGRATION_FAILED' });
+      const migrated = writeFamilySalesMemory(db, memory, { migration: true });
+      if (migrated.changes !== 1) throw Object.assign(new Error('legacy family sales memory migration did not update exactly one row'), { code: 'MEMORY_MIGRATION_FAILED' });
+      const historyCount = db.prepare('SELECT COUNT(*) AS count FROM family_sales_memory_events WHERE memory_id = ?').get(row.id).count;
+      if (!historyCount) insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
+    }
+  } catch (error) {
+    if (!error.code) error.code = 'MEMORY_MIGRATION_FAILED';
+    throw error;
+  }
+}
+
+function migrateFamilySalesMemoryEventSchema(db) {
+  const sql = String(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'family_sales_memory_events'").get()?.sql || '');
+  if (!sql || (sql.includes("'reinforced'") && sql.includes("'conflicted'") && sql.includes("'archived'"))) return;
+  db.exec(`
+    DROP TRIGGER IF EXISTS family_sales_memories_validate_insert;
+    DROP TRIGGER IF EXISTS family_sales_memories_validate_update;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_no_update;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_no_delete;
+    DROP TRIGGER IF EXISTS family_sales_memory_events_scope_insert;
+    CREATE TABLE family_sales_memory_events_new (
+      id TEXT PRIMARY KEY, memory_id INTEGER NOT NULL, family_id INTEGER NOT NULL, owner_user_id INTEGER, owner_guest_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','reinforced','conflicted','archived','confirmed','rejected','superseded','completed','expired','restored')),
+      actor_type TEXT CHECK (actor_type IN ('system','advisor','service')), actor_id TEXT, source_message_id INTEGER,
+      previous_status TEXT CHECK (previous_status IN ('','active','candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      next_status TEXT NOT NULL CHECK (next_status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      reason_code TEXT, created_at TEXT NOT NULL, payload TEXT NOT NULL,
+      CHECK (memory_id > 0 AND family_id > 0),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '') OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (length(id) BETWEEN 1 AND 240 AND length(created_at) BETWEEN 10 AND 40),
+      FOREIGN KEY (memory_id) REFERENCES family_sales_memories(id)
+    );
+    INSERT INTO family_sales_memory_events_new SELECT * FROM family_sales_memory_events;
+    DROP TABLE family_sales_memory_events;
+    ALTER TABLE family_sales_memory_events_new RENAME TO family_sales_memory_events;
+    CREATE INDEX idx_family_sales_memory_events_memory ON family_sales_memory_events(memory_id, created_at, id);
+    CREATE INDEX idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
+    CREATE INDEX idx_family_sales_memory_events_owner_user ON family_sales_memory_events(owner_user_id, family_id, created_at);
+    CREATE INDEX idx_family_sales_memory_events_owner_guest ON family_sales_memory_events(owner_guest_id, family_id, created_at);
+    CREATE INDEX idx_family_sales_memory_events_scope_memory ON family_sales_memory_events(family_id, owner_user_id, owner_guest_id, memory_id, created_at, id);
+    CREATE UNIQUE INDEX idx_family_sales_memory_events_source ON family_sales_memory_events(memory_id, event_type, source_message_id) WHERE source_message_id IS NOT NULL;
+    CREATE TRIGGER family_sales_memory_events_no_update BEFORE UPDATE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER family_sales_memory_events_no_delete BEFORE DELETE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER family_sales_memory_events_scope_insert BEFORE INSERT ON family_sales_memory_events BEGIN
+      SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM family_sales_memories m WHERE m.id = NEW.memory_id AND m.family_id = NEW.family_id
+        AND COALESCE(m.owner_user_id, 0) = COALESCE(NEW.owner_user_id, 0) AND COALESCE(m.owner_guest_id, '') = COALESCE(NEW.owner_guest_id, ''))
+        THEN RAISE(ABORT, 'family sales memory event scope mismatch') END;
+    END;
+  `);
+}
+
+function createSchema(db) {
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  db.exec('SAVEPOINT temporal_memory_schema_migration');
+  try {
+  db.exec(`
     CREATE TABLE IF NOT EXISTS app_meta (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -1007,15 +1170,117 @@ function createSchema(db) {
       owner_guest_id TEXT,
       kind TEXT,
       status TEXT,
+      memory_key TEXT,
+      content TEXT,
+      confidence REAL,
+      version INTEGER,
+      recorded_at TEXT,
+      valid_from TEXT,
+      valid_to TEXT,
+      invalidated_at TEXT,
+      supersedes_memory_id INTEGER,
+      superseded_by_memory_id INTEGER,
+      subject_type TEXT,
+      subject_id TEXT,
+      risk_level TEXT,
+      source_message_id INTEGER,
+      normalized_value_json TEXT,
+      source_message_ids_json TEXT,
+      source_type TEXT,
+      confirmation_type TEXT,
+      confirmed_by TEXT,
+      confirmed_at TEXT,
+      invalidation_reason TEXT,
+      extractor_version TEXT,
       source_thread_id INTEGER,
       created_at TEXT,
       updated_at TEXT,
-      payload TEXT NOT NULL
+      payload TEXT NOT NULL,
+      CHECK (family_id > 0 AND version > 0),
+      CHECK (kind IN ('preference','objection','todo','correction','strategy','budget','health','income','debt','family_responsibility','purchase_intent')),
+      CHECK (status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '') OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (supersedes_memory_id IS NULL OR supersedes_memory_id <> id),
+      CHECK (superseded_by_memory_id IS NULL OR superseded_by_memory_id <> id)
     );
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_family_id ON family_sales_memories(family_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_user_id ON family_sales_memories(owner_user_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_owner_guest_id ON family_sales_memories(owner_guest_id);
     CREATE INDEX IF NOT EXISTS idx_family_sales_memories_updated_at ON family_sales_memories(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memories_scope_status ON family_sales_memories(family_id, owner_user_id, owner_guest_id, status, id);
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_insert
+      BEFORE INSERT ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy')
+        OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '')
+          OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id
+      BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_update
+      BEFORE UPDATE ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy')
+        OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '')
+          OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id
+      BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+
+    CREATE TABLE IF NOT EXISTS family_sales_memory_events (
+      id TEXT PRIMARY KEY,
+      memory_id INTEGER NOT NULL,
+      family_id INTEGER NOT NULL,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT,
+      event_type TEXT NOT NULL CHECK (event_type IN ('proposed','imported','reinforced','conflicted','archived','confirmed','rejected','superseded','completed','expired','restored')),
+      actor_type TEXT CHECK (actor_type IN ('system','advisor','service')),
+      actor_id TEXT,
+      source_message_id INTEGER,
+      previous_status TEXT CHECK (previous_status IN ('','active','candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      next_status TEXT NOT NULL CHECK (next_status IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')),
+      reason_code TEXT,
+      created_at TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      CHECK (memory_id > 0 AND family_id > 0),
+      CHECK ((owner_user_id IS NOT NULL AND owner_user_id > 0 AND COALESCE(owner_guest_id, '') = '')
+          OR (owner_user_id IS NULL AND length(owner_guest_id) BETWEEN 1 AND 128)),
+      CHECK (length(id) BETWEEN 1 AND 240 AND length(created_at) BETWEEN 10 AND 40),
+      FOREIGN KEY (memory_id) REFERENCES family_sales_memories(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_memory ON family_sales_memory_events(memory_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_family ON family_sales_memory_events(family_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_user ON family_sales_memory_events(owner_user_id, family_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_owner_guest ON family_sales_memory_events(owner_guest_id, family_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_family_sales_memory_events_scope_memory ON family_sales_memory_events(family_id, owner_user_id, owner_guest_id, memory_id, created_at, id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_family_sales_memory_events_source
+      ON family_sales_memory_events(memory_id, event_type, source_message_id)
+      WHERE source_message_id IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_no_update
+      BEFORE UPDATE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_no_delete
+      BEFORE DELETE ON family_sales_memory_events BEGIN SELECT RAISE(ABORT, 'family sales memory events are immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memory_events_scope_insert
+      BEFORE INSERT ON family_sales_memory_events BEGIN
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM family_sales_memories m WHERE m.id = NEW.memory_id AND m.family_id = NEW.family_id
+          AND COALESCE(m.owner_user_id, 0) = COALESCE(NEW.owner_user_id, 0) AND COALESCE(m.owner_guest_id, '') = COALESCE(NEW.owner_guest_id, ''))
+          THEN RAISE(ABORT, 'family sales memory event scope mismatch') END;
+      END;
+
+    CREATE TABLE IF NOT EXISTS memory_action_requests (
+      owner_scope_key TEXT NOT NULL,
+      family_id INTEGER NOT NULL,
+      memory_id INTEGER NOT NULL,
+      request_id TEXT NOT NULL,
+      input_hash TEXT NOT NULL,
+      confirmation_token_hash TEXT,
+      status TEXT NOT NULL CHECK (status IN ('pending','completed')),
+      result_json TEXT,
+      created_at TEXT NOT NULL,
+      completed_at TEXT,
+      PRIMARY KEY (owner_scope_key, memory_id, request_id),
+      UNIQUE (confirmation_token_hash),
+      CHECK (family_id > 0 AND memory_id > 0 AND length(request_id) BETWEEN 1 AND 160)
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_action_requests_scope ON memory_action_requests(owner_scope_key, family_id, memory_id, created_at);
 
     CREATE TABLE IF NOT EXISTS report_refresh_events (
       id INTEGER PRIMARY KEY,
@@ -1224,16 +1489,119 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_agent_conversation_entities_context
       ON agent_conversation_entities(conversation_id, role, ordinal);
 
+    CREATE TABLE IF NOT EXISTS user_dingtalk_identities (
+      corp_id TEXT NOT NULL,
+      ding_user_id TEXT NOT NULL,
+      user_id INTEGER,
+      status TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL,
+      PRIMARY KEY (corp_id, ding_user_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS dingtalk_binding_challenges (
+      token_hash TEXT PRIMARY KEY,
+      corp_id TEXT NOT NULL,
+      ding_user_id TEXT NOT NULL,
+      status TEXT,
+      expires_at TEXT,
+      updated_at TEXT,
+      payload TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_policy_import_tasks (
+      id INTEGER PRIMARY KEY,
+      family_id INTEGER NOT NULL,
+      owner_user_id INTEGER,
+      owner_guest_id TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL,
+      state_version INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_policy_import_tasks_family ON agent_policy_import_tasks(family_id, updated_at);
+
+    CREATE TABLE IF NOT EXISTS agent_policy_import_finalizations (
+      owner_user_id INTEGER NOT NULL,
+      task_id INTEGER NOT NULL,
+      request_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      formal_policy_id INTEGER,
+      completed_at TEXT NOT NULL DEFAULT '',
+      payload TEXT NOT NULL,
+      PRIMARY KEY (owner_user_id, task_id, request_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_policy_import_finalizations_task
+      ON agent_policy_import_finalizations(owner_user_id, task_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_policy_import_finalizations_active_task
+      ON agent_policy_import_finalizations(owner_user_id, task_id)
+      WHERE status IN ('reserved', 'failed_unknown');
+
     CREATE TABLE IF NOT EXISTS state_documents (
       key TEXT PRIMARY KEY,
       payload TEXT NOT NULL
     );
   `);
+  ensureFamilySalesMemoryVersionSchema(db);
+  migrateFamilySalesMemoryEventSchema(db);
+  ensureColumn(db, 'policies', 'source_policy_import_task_id', 'INTEGER');
+  ensureColumn(db, 'policies', 'source_policy_import_request_id', "TEXT NOT NULL DEFAULT ''");
+  for (const [column, definition] of [
+    ['memory_key', 'TEXT'], ['content', 'TEXT'], ['confidence', 'REAL'], ['version', 'INTEGER'], ['recorded_at', 'TEXT'], ['valid_from', 'TEXT'], ['valid_to', 'TEXT'],
+    ['invalidated_at', 'TEXT'], ['supersedes_memory_id', 'INTEGER'], ['superseded_by_memory_id', 'INTEGER'],
+    ['subject_type', 'TEXT'], ['subject_id', 'TEXT'], ['risk_level', 'TEXT'], ['source_message_id', 'INTEGER'],
+    ['normalized_value_json', 'TEXT'], ['source_message_ids_json', 'TEXT'], ['source_type', 'TEXT'],
+    ['confirmation_type', 'TEXT'], ['confirmed_by', 'TEXT'], ['confirmed_at', 'TEXT'], ['invalidation_reason', 'TEXT'], ['extractor_version', 'TEXT'],
+  ]) ensureColumn(db, 'family_sales_memories', column, definition);
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_insert
+      BEFORE INSERT ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy') OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '') OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+    CREATE TRIGGER IF NOT EXISTS family_sales_memories_validate_update
+      BEFORE UPDATE ON family_sales_memories WHEN NEW.id <= 0 OR NEW.family_id <= 0 OR COALESCE(NEW.version, 0) <= 0
+        OR NEW.kind NOT IN ('preference','objection','todo','correction','strategy') OR NEW.status NOT IN ('candidate','confirmed','conflicted','rejected','superseded','completed','expired','archived')
+        OR NOT ((NEW.owner_user_id IS NOT NULL AND NEW.owner_user_id > 0 AND COALESCE(NEW.owner_guest_id, '') = '') OR (NEW.owner_user_id IS NULL AND length(NEW.owner_guest_id) BETWEEN 1 AND 128))
+        OR NEW.supersedes_memory_id = NEW.id OR NEW.superseded_by_memory_id = NEW.id BEGIN SELECT RAISE(ABORT, 'invalid family sales memory row'); END;
+  `);
+  migrateFamilySalesMemoryHistory(db);
+  db.exec(`
+    UPDATE policies
+    SET source_policy_import_task_id = CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER),
+        source_policy_import_request_id = COALESCE(json_extract(payload, '$.sourcePolicyImportRequestId'), '')
+    WHERE source_policy_import_task_id IS NULL
+      AND CAST(json_extract(payload, '$.sourcePolicyImportTaskId') AS INTEGER) > 0;
+  `);
+  const duplicateSources = db.prepare(`
+    SELECT user_id, source_policy_import_task_id AS task_id, COUNT(*) AS count, GROUP_CONCAT(id, ',') AS ids
+    FROM policies
+    WHERE source_policy_import_task_id IS NOT NULL
+    GROUP BY user_id, source_policy_import_task_id
+    HAVING COUNT(*) > 1
+  `).all();
+  if (duplicateSources.length) {
+    const detail = duplicateSources.map((row) => `user=${row.user_id || 0},task=${row.task_id},count=${row.count},ids=${row.ids}`).join(';');
+    throw Object.assign(new Error(`检测到重复保单导入来源，请先处理后重试：${detail}`), { code: 'SQLITE_POLICY_IMPORT_SOURCE_DUPLICATE', duplicateCount: duplicateSources.length });
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_policies_policy_import_task
+      ON policies(user_id, source_policy_import_task_id)
+      WHERE source_policy_import_task_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_policies_policy_import_request
+      ON policies(user_id, source_policy_import_task_id, source_policy_import_request_id)
+      WHERE source_policy_import_task_id IS NOT NULL;
+  `);
+  db.exec('RELEASE temporal_memory_schema_migration');
+  } catch (error) {
+    db.exec('ROLLBACK TO temporal_memory_schema_migration');
+    db.exec('RELEASE temporal_memory_schema_migration');
+    throw error;
+  }
   ensureAgentRouteAuditSchema(db);
   ensureAgentSemanticAuditSchema(db);
   ensureAgentTransferOutboxLeaseSchema(db);
   ensureAgentQuestionPolicyRuntimeSettingsSchema(db);
-  ensureFamilySalesMemoryVersionSchema(db);
   ensureCashflowTable(db);
   ensureCashValueTable(db);
   ensureProductKnowledgeTables(db);
@@ -1292,8 +1660,8 @@ function insertRows(db, state) {
   }
 
   const insertPolicy = db.prepare(`
-    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const policy of normalizeArray(state.policies)) {
     insertPolicy.run(
@@ -1305,6 +1673,8 @@ function insertRows(db, state) {
       String(policy.insured || ''),
       String(policy.createdAt || ''),
       String(policy.updatedAt || ''),
+      Number(policy.sourcePolicyImportTaskId || 0) || null,
+      String(policy.sourcePolicyImportRequestId || ''),
       jsonPayload(policy),
     );
   }
@@ -1696,25 +2066,13 @@ function insertRows(db, state) {
     );
   }
 
-  const insertFamilySalesMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, version, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
   for (const memory of normalizeArray(state.familySalesMemories)) {
-    insertFamilySalesMemory.run(
-      Number(memory.id),
-      Number(memory.familyId || 0) || null,
-      Number(memory.ownerUserId || 0) || null,
-      String(memory.ownerGuestId || ''),
-      String(memory.kind || ''),
-      String(memory.status || ''),
-      Number(memory.sourceThreadId || 0) || null,
-      String(memory.createdAt || ''),
-      String(memory.updatedAt || ''),
-      Number(memory.version || 0) || 1,
-      jsonPayload(memory),
-    );
+    insertOrCompareFamilySalesMemory(db, memory);
   }
+  insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
+  insertFamilySalesMemoryEvents(db, normalizeArray(state.familySalesMemories)
+    .filter((memory) => !db.prepare('SELECT 1 AS found FROM family_sales_memory_events WHERE memory_id = ? LIMIT 1').get(Number(memory.id)))
+    .map((memory) => initialFamilySalesMemoryEvent(memory)), { ignoreDuplicates: true });
 
   const insertReportRefreshEvent = db.prepare(`
     INSERT INTO report_refresh_events (id, kind, family_id, report_id, owner_user_id, owner_guest_id, created_at, payload)
@@ -1799,6 +2157,21 @@ function insertRows(db, state) {
       String(oauthState.usedAt || ''),
       String(oauthState.createdAt || ''),
       jsonPayload(oauthState),
+    );
+  }
+
+  for (const identity of normalizeArray(state.userDingtalkIdentities)) upsertDingtalkIdentity(db, identity);
+  for (const challenge of normalizeArray(state.dingtalkBindingChallenges)) upsertDingtalkBindingChallenge(db, challenge);
+  const insertAgentPolicyImportTask = db.prepare(`
+    INSERT INTO agent_policy_import_tasks
+      (id, family_id, owner_user_id, owner_guest_id, status, state_version, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const task of normalizeArray(state.agentPolicyImportTasks)) {
+    insertAgentPolicyImportTask.run(
+      Number(task.id), Number(task.familyId), Number(task.ownerUserId || 0) || null,
+      String(task.ownerGuestId || ''), String(task.status || ''), Number(task.stateVersion),
+      String(task.updatedAt || ''), jsonPayload(task),
     );
   }
 
@@ -1905,8 +2278,8 @@ function upsertStateDocument(db, key, value) {
 
 function upsertPolicy(db, policy = {}) {
   db.prepare(`
-    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       user_id = excluded.user_id,
       guest_id = excluded.guest_id,
@@ -1915,6 +2288,8 @@ function upsertPolicy(db, policy = {}) {
       insured = excluded.insured,
       created_at = excluded.created_at,
       updated_at = excluded.updated_at,
+      source_policy_import_task_id = excluded.source_policy_import_task_id,
+      source_policy_import_request_id = excluded.source_policy_import_request_id,
       payload = excluded.payload
   `).run(
     Number(policy.id),
@@ -1925,7 +2300,20 @@ function upsertPolicy(db, policy = {}) {
     String(policy.insured || ''),
     String(policy.createdAt || ''),
     String(policy.updatedAt || ''),
+    Number(policy.sourcePolicyImportTaskId || 0) || null,
+    String(policy.sourcePolicyImportRequestId || ''),
     jsonPayload(policy),
+  );
+}
+
+function insertFinalizedPolicy(db, policy = {}) {
+  db.prepare(`
+    INSERT INTO policies (id, user_id, guest_id, company, name, insured, created_at, updated_at, source_policy_import_task_id, source_policy_import_request_id, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    Number(policy.id), Number(policy.userId || 0) || null, String(policy.guestId || ''), String(policy.company || ''),
+    String(policy.name || ''), String(policy.insured || ''), String(policy.createdAt || ''), String(policy.updatedAt || ''),
+    Number(policy.sourcePolicyImportTaskId || 0) || null, String(policy.sourcePolicyImportRequestId || ''), jsonPayload(policy),
   );
 }
 
@@ -2343,6 +2731,60 @@ function upsertWechatOAuthState(db, oauthState = {}) {
   );
 }
 
+const DINGTALK_SENSITIVE_PAYLOAD_KEYS = new Set([
+  'token',
+  'mobile',
+  'rawtoken',
+  'phone',
+  'accesstoken',
+  'downloadurl',
+]);
+
+function safeDingtalkPayload(value) {
+  if (Array.isArray(value)) return value.map((item) => safeDingtalkPayload(item));
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([key]) => !DINGTALK_SENSITIVE_PAYLOAD_KEYS.has(key.replaceAll('_', '').toLowerCase()))
+      .map(([key, item]) => [key, safeDingtalkPayload(item)]),
+  );
+}
+
+function upsertDingtalkIdentity(db, identity = {}) {
+  const safe = safeDingtalkPayload(identity);
+  const corpId = String(safe.corpId || safe.corp_id || '').trim();
+  const dingUserId = String(safe.dingUserId || safe.ding_user_id || '').trim();
+  if (!corpId || !dingUserId) return;
+  db.prepare(`
+    INSERT INTO user_dingtalk_identities (corp_id, ding_user_id, user_id, status, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(corp_id, ding_user_id) DO UPDATE SET
+      user_id = excluded.user_id,
+      status = excluded.status,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(corpId, dingUserId, Number(safe.userId || 0) || null, String(safe.status || ''), String(safe.updatedAt || ''), jsonPayload(safe));
+}
+
+function upsertDingtalkBindingChallenge(db, challenge = {}) {
+  const safe = safeDingtalkPayload(challenge);
+  const tokenHash = String(safe.tokenHash || safe.token_hash || '').trim();
+  const corpId = String(safe.corpId || safe.corp_id || '').trim();
+  const dingUserId = String(safe.dingUserId || safe.ding_user_id || '').trim();
+  if (!tokenHash || !corpId || !dingUserId) return;
+  db.prepare(`
+    INSERT INTO dingtalk_binding_challenges (token_hash, corp_id, ding_user_id, status, expires_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(token_hash) DO UPDATE SET
+      corp_id = excluded.corp_id,
+      ding_user_id = excluded.ding_user_id,
+      status = excluded.status,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `).run(tokenHash, corpId, dingUserId, String(safe.status || ''), String(safe.expiresAt || ''), String(safe.updatedAt || ''), jsonPayload(safe));
+}
+
 function replaceSourceRecordsForPolicy(db, state, policyId) {
   const id = Number(policyId);
   if (!Number.isFinite(id)) return;
@@ -2559,27 +3001,74 @@ function replaceFamilySalesChats(db, state) {
   }
 }
 
-function replaceFamilySalesMemories(db, state) {
-  db.prepare('DELETE FROM family_sales_memories').run();
-  const insertMemory = db.prepare(`
-    INSERT INTO family_sales_memories (id, family_id, owner_user_id, owner_guest_id, kind, status, source_thread_id, created_at, updated_at, version, payload)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+function safeMemoryEventPayload(event = {}) {
+  return {
+    action: String(event.action || event.eventType || ''),
+    version: Number(event.version || event.next?.version || 0) || null,
+    source: String(event.source || 'family_sales_memory'),
+  };
+}
+
+function memoryEventId(event = {}) {
+  return String(event.id || `memory_event:${event.memoryId}:${event.version || event.next?.version || 0}:${event.action || event.eventType}:${event.time || event.createdAt || ''}`);
+}
+
+function memoryEventType(event = {}) {
+  const type = String(event.eventType || event.action || '');
+  return ({ confirm: 'confirmed', reject: 'rejected', supersede: 'superseded', complete: 'completed', expire: 'expired', restore: 'restored' })[type] || type;
+}
+
+function insertFamilySalesMemoryEvents(db, events = [], { ignoreDuplicates = false } = {}) {
+  const insert = db.prepare(`
+    INSERT INTO family_sales_memory_events
+      (id, memory_id, family_id, owner_user_id, owner_guest_id, event_type, actor_type, actor_id, source_message_id, previous_status, next_status, reason_code, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  for (const memory of normalizeArray(state.familySalesMemories)) {
-    insertMemory.run(
-      Number(memory.id),
-      Number(memory.familyId || 0) || null,
-      Number(memory.ownerUserId || 0) || null,
-      String(memory.ownerGuestId || ''),
-      String(memory.kind || ''),
-      String(memory.status || ''),
-      Number(memory.sourceThreadId || 0) || null,
-      String(memory.createdAt || ''),
-      String(memory.updatedAt || ''),
-      Number(memory.version || 0) || 1,
-      jsonPayload(memory),
-    );
+  for (const event of normalizeArray(events)) {
+    const actor = event.actor || {};
+    const eventType = memoryEventType(event);
+    const memory = db.prepare('SELECT family_id, owner_user_id, owner_guest_id FROM family_sales_memories WHERE id = ?').get(Number(event.memoryId));
+    const actorType = String(actor.type || event.actorType || '');
+    const actorId = String(actor.id || event.actorId || '');
+    const createdAt = String(event.createdAt || event.time || '');
+    if (!memory || Number(memory.family_id) !== Number(event.familyId)
+      || Number(memory.owner_user_id || 0) !== Number(event.ownerUserId || 0)
+      || String(memory.owner_guest_id || '') !== String(event.ownerGuestId || '')) throw new Error('memory event scope mismatch or orphan');
+    if (!/^(proposed|imported|reinforced|conflicted|archived|confirmed|rejected|superseded|completed|expired|restored)$/u.test(eventType)
+      || !/^(system|advisor|service)$/u.test(actorType)
+      || !(/^\d+$/u.test(actorId) || /^sha256:[a-f0-9]{64}$/u.test(actorId))
+      || !Number.isFinite(Date.parse(createdAt))) throw new Error('invalid family sales memory event');
+    const values = [memoryEventId(event), Number(event.memoryId), Number(event.familyId), Number(event.ownerUserId || 0) || null,
+      String(event.ownerGuestId || ''), eventType, actorType,
+      actorId, Number(event.sourceMessageId || 0) || null,
+      String(event.previousStatus || event.previous?.status || ''), String(event.nextStatus || event.next?.status || ''),
+      String(event.reasonCode || event.reason || ''), createdAt, jsonPayload(safeMemoryEventPayload(event))];
+    if (ignoreDuplicates) {
+      const existing = db.prepare('SELECT * FROM family_sales_memory_events WHERE id = ?').get(values[0]);
+      if (existing) {
+        const actual = [existing.id, existing.memory_id, existing.family_id, existing.owner_user_id, existing.owner_guest_id, existing.event_type,
+          existing.actor_type, existing.actor_id, existing.source_message_id, existing.previous_status, existing.next_status, existing.reason_code, existing.created_at, existing.payload];
+        if (JSON.stringify(actual) !== JSON.stringify(values)) throw Object.assign(new Error('memory event restore conflict'), { code: 'RESTORE_CONFLICT' });
+        continue;
+      }
+      if (values[8] && db.prepare('SELECT 1 FROM family_sales_memory_events WHERE memory_id = ? AND event_type = ? AND source_message_id = ?').get(values[1], values[5], values[8])) {
+        throw Object.assign(new Error('memory event source restore conflict'), { code: 'RESTORE_CONFLICT' });
+      }
+    }
+    insert.run(...values);
   }
+}
+
+function replaceFamilySalesMemories(db, state) {
+  const existingIds = new Set(db.prepare('SELECT id FROM family_sales_memories').all().map((row) => String(row.id)));
+  for (const memory of normalizeArray(state.familySalesMemories)) {
+    insertOrCompareFamilySalesMemory(db, memory);
+  }
+  insertFamilySalesMemoryEvents(db, state.familySalesMemoryEvents, { ignoreDuplicates: true });
+  const proposedEvents = normalizeArray(state.familySalesMemories)
+    .filter((memory) => !existingIds.has(String(memory.id)))
+    .map((memory) => initialFamilySalesMemoryEvent(memory));
+  insertFamilySalesMemoryEvents(db, proposedEvents, { ignoreDuplicates: true });
 }
 
 function replaceReportRefreshEvents(db, state) {
@@ -2616,9 +3105,65 @@ function replacePendingScan(db, state, guestId) {
 
 function updateStateMeta(db, state, now) {
   const initializedAt = getMeta(db, 'state_initialized_at');
-  setMeta(db, 'next_id', String(resolveNextId(state)));
+  setMeta(db, 'next_id', String(Math.max(Number(getMeta(db, 'next_id') || 1), resolveNextId(state))));
   setMeta(db, 'state_initialized_at', initializedAt || now);
   setMeta(db, 'updated_at', now);
+}
+
+function durableFinalizeSnapshot(db, task, ownerUserId) {
+  const reject = (code, message, status = 409) => { throw Object.assign(new Error(message), { code, status }); };
+  if (Number(task?.ownerUserId) !== Number(ownerUserId) || !Number(task?.familyId)) reject('POLICY_IMPORT_NOT_FOUND', '保单录入任务不存在', 404);
+  if (task.status !== 'saving') reject('FINAL_CONFIRMATION_REQUIRED', '请先明确确认最终保单摘要');
+  const confirmationVersion = Number(task.stateVersion) - (task.finalizeRequestId ? 1 : 0);
+  if (!(task.events || []).some((event) => event.action === 'confirm' && Number(event.stateVersion) === confirmationVersion)) reject('FINAL_CONFIRMATION_REQUIRED', '缺少有效的最终确认动作');
+  if (!task.draft?.company || !task.draft?.name || !task.draft?.insured) reject('POLICY_IMPORT_INCOMPLETE', '保单信息尚未补充完整');
+  if (task.fieldConflicts?.length || !task.documents?.length || task.documents.some((document) => !['recognized', 'removed'].includes(document.status))) reject('POLICY_IMPORT_NOT_READY', '保单任务仍有冲突或待处理附件');
+  if (!['trusted_match', 'selected', 'manual_confirmed'].includes(task.productResolution)) reject('POLICY_IMPORT_PRODUCT_UNRESOLVED', '产品尚未确认');
+  const familyRow = db.prepare(`SELECT payload FROM family_profiles WHERE id = ? AND owner_user_id = ? AND status = 'active'`).get(task.familyId, ownerUserId);
+  const family = parseJson(familyRow?.payload, null);
+  if (!family) reject('POLICY_IMPORT_PERMISSION_CHANGED', '家庭权限已变更', 403);
+  const members = {};
+  for (const role of ['insured', 'applicant']) {
+    const memberId = Number(task.draft?.[`${role}MemberId`] || 0);
+    if (!memberId && (role === 'insured' || task.draft?.applicant)) reject('POLICY_IMPORT_MEMBER_UNRESOLVED', '家庭成员尚未确认');
+    if (!memberId) continue;
+    const memberRow = db.prepare(`SELECT payload FROM family_members WHERE id = ? AND family_id = ? AND status = 'active'`).get(memberId, task.familyId);
+    const member = parseJson(memberRow?.payload, null);
+    if (!member) reject('POLICY_IMPORT_PERMISSION_CHANGED', '家庭成员或权限已变更', 403);
+    members[role] = member;
+  }
+  let product = null;
+  if (task.productResolution !== 'manual_confirmed') {
+    product = loadPayloadRows(db, 'knowledge_records', 'id ASC').find((row) => String(row.canonicalProductId || row.productId || row.id) === String(task.draft.productId)) || null;
+    if (!product || String(product.productName || product.name || '').trim() !== String(task.draft.name).trim()) reject('POLICY_IMPORT_PRODUCT_CHANGED', '已确认产品不再可用');
+  }
+  const snapshot = { ownerUserId, familyId: task.familyId, draft: task.draft, productResolution: task.productResolution, documents: task.documents.map(({ documentId, sha256, status }) => ({ documentId, sha256, status })), family, members, product };
+  return crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
+}
+
+function durablePolicySaveEntitlement(db, ownerUserId, now, { excludeTaskId = 0 } = {}) {
+  const deny = (code, message, status) => { throw Object.assign(new Error(message), { code, status }); };
+  const user = parseJson(db.prepare('SELECT payload FROM users WHERE id = ?').get(ownerUserId)?.payload, null);
+  if (!user || String(user.status || 'active') !== 'active') deny('ADVISOR_ACCOUNT_INACTIVE', '用户账号不可用', 403);
+  const config = parseJson(db.prepare('SELECT payload FROM membership_config WHERE id = 1').get()?.payload, null) || {};
+  const freeQuota = Math.max(0, Math.floor(Number(config.registeredFreePolicyQuota ?? 3)));
+  const membershipRow = db.prepare('SELECT payload FROM memberships WHERE user_id = ?').get(ownerUserId);
+  const membership = parseJson(membershipRow?.payload, null);
+  const activeMembership = Boolean(membership?.status === 'active' && Date.parse(membership.expiresAt || '') > Date.parse(now));
+  const savedPolicyCount = Number(db.prepare('SELECT COUNT(*) AS count FROM policies WHERE user_id = ?').get(ownerUserId).count);
+  const activeReservationCount = Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM agent_policy_import_finalizations
+    WHERE owner_user_id = ? AND status IN ('reserved', 'failed_unknown') AND task_id <> ?
+  `).get(ownerUserId, Number(excludeTaskId || 0)).count);
+  if (!activeMembership && savedPolicyCount + activeReservationCount >= freeQuota) {
+    const error = new Error('免费保单额度已用完，请开通会员继续录入');
+    error.code = 'MEMBERSHIP_REQUIRED';
+    error.status = 402;
+    error.membership = { savedPolicyCount, freeQuota, annualPriceCents: 30000 };
+    throw error;
+  }
+  const snapshot = { ownerUserId, activeMembership, membershipExpiresAt: activeMembership ? membership.expiresAt : '', savedPolicyCount, activeReservationCount, freeQuota, configUpdatedAt: config.updatedAt || '' };
+  return { ...snapshot, hash: crypto.createHash('sha256').update(JSON.stringify(snapshot)).digest('hex') };
 }
 
 function clearDbOwnedTables(db) {
@@ -2626,7 +3171,6 @@ function clearDbOwnedTables(db) {
     DELETE FROM family_report_issues;
     DELETE FROM family_report_corrections;
     DELETE FROM family_reports;
-    DELETE FROM family_sales_memories;
     DELETE FROM family_sales_chat_messages;
     DELETE FROM family_sales_chat_threads;
     DELETE FROM family_sales_reviews;
@@ -2655,6 +3199,9 @@ function clearDbOwnedTables(db) {
     DELETE FROM memberships;
     DELETE FROM user_wechat_identities;
     DELETE FROM wechat_oauth_states;
+    DELETE FROM user_dingtalk_identities;
+    DELETE FROM dingtalk_binding_challenges;
+    DELETE FROM agent_policy_import_tasks;
     DELETE FROM state_documents;
   `);
 }
@@ -2684,6 +3231,33 @@ function createLazyArray(loader) {
       return Reflect.set(current, property, value, receiver);
     },
   });
+}
+
+function loadFamilySalesMemoryEvents(db) {
+  return db.prepare('SELECT * FROM family_sales_memory_events ORDER BY created_at DESC, rowid DESC LIMIT 100').all().reverse().map((row) => ({
+    id: row.id, memoryId: row.memory_id, familyId: row.family_id,
+    ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '', eventType: row.event_type,
+    actor: { type: row.actor_type || '', id: row.actor_id || '' }, sourceMessageId: row.source_message_id,
+    previousStatus: row.previous_status || '', nextStatus: row.next_status || '', reasonCode: row.reason_code || '',
+    createdAt: row.created_at, ...parseJson(row.payload, {}),
+  }));
+}
+
+function loadAllFamilySalesMemoryEventsPaged(db) {
+  const events = [];
+  let rowId = 0;
+  while (true) {
+    const rows = db.prepare('SELECT rowid AS _rowid, * FROM family_sales_memory_events WHERE rowid > ? ORDER BY rowid ASC LIMIT 500').all(rowId);
+    if (!rows.length) break;
+    for (const row of rows) events.push({
+      id: row.id, memoryId: row.memory_id, familyId: row.family_id, ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '',
+      eventType: row.event_type, actor: { type: row.actor_type || '', id: row.actor_id || '' }, sourceMessageId: row.source_message_id,
+      previousStatus: row.previous_status || '', nextStatus: row.next_status || '', reasonCode: row.reason_code || '', createdAt: row.created_at,
+      ...parseJson(row.payload, {}),
+    });
+    rowId = rows.at(-1)._rowid;
+  }
+  return events;
 }
 
 function loadProductCustomerSummaryGenerationRuns(db) {
@@ -2758,6 +3332,10 @@ function loadDbOwnedState(db, {
     memberships: deferLargeCollections ? [] : loadPayloadRows(db, 'memberships', 'user_id ASC'),
     userWechatIdentities: deferLargeCollections ? [] : loadPayloadRows(db, 'user_wechat_identities', 'user_id ASC, app_id ASC'),
     wechatOAuthStates: deferLargeCollections ? [] : loadPayloadRows(db, 'wechat_oauth_states', 'created_at ASC, state ASC'),
+    familySalesMemoryEvents: deferFamilyReports ? [] : loadFamilySalesMemoryEvents(db),
+    userDingtalkIdentities: deferLargeCollections ? [] : loadPayloadRows(db, 'user_dingtalk_identities', 'corp_id ASC, ding_user_id ASC'),
+    dingtalkBindingChallenges: deferLargeCollections ? [] : loadPayloadRows(db, 'dingtalk_binding_challenges', 'updated_at ASC, token_hash ASC'),
+    agentPolicyImportTasks: deferLargeCollections ? [] : loadPayloadRows(db, 'agent_policy_import_tasks', 'updated_at ASC, id ASC'),
   };
   state.knowledgeRecords = state.knowledgeRecords
     .map((record) => normalizeKnowledgeRecord(record))
@@ -2805,14 +3383,19 @@ export async function createSqliteStateStore({
   if (!dbPath) throw new Error('POLICY_OCR_APP_DB_PATH is required');
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
   const db = new DatabaseSync(dbPath);
-  db.exec('PRAGMA busy_timeout = 5000');
-  let schemaVersion = '';
   try {
-    schemaVersion = getMeta(db, 'schema_version');
-  } catch {
-    schemaVersion = '';
+    db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+    let schemaVersion = null;
+    try {
+      schemaVersion = getMeta(db, 'schema_version');
+    } catch {
+      // A new database does not have app_meta until createSchema runs.
+    }
+    if (schemaVersion !== SCHEMA_VERSION) createSchema(db);
+  } catch (error) {
+    db.close();
+    throw error;
   }
-  if (schemaVersion !== SCHEMA_VERSION) createSchema(db);
 
   async function loadSeedState() {
     const seed = seedStatePath ? await readJsonFile(seedStatePath, createInitialState()) : createInitialState();
@@ -2943,11 +3526,21 @@ export async function createSqliteStateStore({
     }
   }
 
-  async function persist(state) {
+  async function persist(state, { restore = false } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
     const now = new Date().toISOString();
     const initializedAt = getMeta(db, 'state_initialized_at');
+    if (restore) {
+      const storedMemoryIds = db.prepare('SELECT id FROM family_sales_memories ORDER BY id').all().map((row) => String(row.id)).sort();
+      const storedEventIds = db.prepare('SELECT id FROM family_sales_memory_events ORDER BY id').all().map((row) => String(row.id)).sort();
+      const incomingMemoryIds = normalizeArray(nextState.familySalesMemories).map((row) => String(row.id)).sort();
+      const incomingEventIds = normalizeArray(nextState.familySalesMemoryEvents).map((row) => String(row.id)).sort();
+      if ((storedMemoryIds.length || storedEventIds.length)
+        && (JSON.stringify(storedMemoryIds) !== JSON.stringify(incomingMemoryIds) || JSON.stringify(storedEventIds) !== JSON.stringify(incomingEventIds))) {
+        throw Object.assign(new Error('temporal memory restore requires an empty target or exact history'), { code: 'RESTORE_CONFLICT' });
+      }
+    }
     db.exec('BEGIN IMMEDIATE');
     try {
       db.exec('PRAGMA defer_foreign_keys = ON');
@@ -2964,6 +3557,178 @@ export async function createSqliteStateStore({
     }
   }
 
+  async function persistAgentPolicyImportTask({ state, task, expectedVersion = 0 } = {}) {
+    if (!task || !Number.isSafeInteger(task.id) || !Number.isSafeInteger(task.stateVersion)) {
+      throw Object.assign(new Error('保单录入任务无效'), { code: 'INVALID_TASK', status: 400 });
+    }
+    const nextState = { ...createInitialState(), ...state };
+    const now = String(task.updatedAt || new Date().toISOString());
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      let changed;
+      if (expectedVersion === 0) {
+        changed = db.prepare(`
+          INSERT OR IGNORE INTO agent_policy_import_tasks
+            (id, family_id, owner_user_id, owner_guest_id, status, state_version, updated_at, payload)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          task.id, task.familyId, Number(task.ownerUserId || 0) || null, String(task.ownerGuestId || ''),
+          String(task.status), task.stateVersion, now, jsonPayload(task),
+        ).changes;
+      } else {
+        changed = db.prepare(`
+          UPDATE agent_policy_import_tasks
+          SET family_id = ?, owner_user_id = ?, owner_guest_id = ?, status = ?, state_version = ?, updated_at = ?, payload = ?
+          WHERE id = ? AND state_version = ?
+        `).run(
+          task.familyId, Number(task.ownerUserId || 0) || null, String(task.ownerGuestId || ''),
+          String(task.status), task.stateVersion, now, jsonPayload(task), task.id, expectedVersion,
+        ).changes;
+      }
+      if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function findAgentPolicyImportTask(id) {
+    return parseJson(db.prepare('SELECT payload FROM agent_policy_import_tasks WHERE id = ?').get(Number(id))?.payload, null);
+  }
+
+  async function reserveAgentPolicyImportFinalization({ state, task, ownerUserId, requestId, expectedVersion, now, leaseUntil } = {}) {
+    const timestamp = String(now || new Date().toISOString());
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const completed = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`).get(ownerUserId, task.id);
+      if (completed) {
+        db.exec('COMMIT');
+        return { outcome: 'completed', record: parseJson(completed.payload, null) };
+      }
+      const active = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND status IN ('reserved', 'failed_unknown') LIMIT 1`).get(ownerUserId, task.id);
+      if (active) {
+        const record = parseJson(active.payload, null);
+        if (record?.status === 'reserved' && Number.isFinite(Date.parse(record.leaseUntil)) && Date.parse(record.leaseUntil) <= Date.parse(timestamp)) {
+          const unknown = { ...record, status: 'failed_unknown', updatedAt: timestamp };
+          db.prepare(`UPDATE agent_policy_import_finalizations SET status = 'failed_unknown', payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status = 'reserved'`).run(jsonPayload(unknown), ownerUserId, task.id, record.requestId);
+          db.exec('COMMIT');
+          return { outcome: 'unknown', record: unknown };
+        }
+        db.exec('COMMIT');
+        return { outcome: record?.status === 'failed_unknown' ? 'unknown' : 'in_progress', record };
+      }
+      const durableRow = db.prepare(`SELECT status, state_version, payload FROM agent_policy_import_tasks WHERE id = ?`).get(task.id);
+      if (!durableRow || Number(durableRow.state_version) !== Number(expectedVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      const durableTask = parseJson(durableRow.payload, null);
+      const validationHash = durableFinalizeSnapshot(db, durableTask, ownerUserId);
+      const entitlement = durablePolicySaveEntitlement(db, ownerUserId, timestamp);
+      const maxPolicyId = Number(db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM policies').get().id);
+      const reservedPolicyId = Math.max(maxPolicyId + 1, Number(getMeta(db, 'next_id') || 1));
+      const claimedTask = {
+        ...durableTask,
+        status: 'saving',
+        stateVersion: Number(expectedVersion) + 1,
+        finalizeRequestId: requestId,
+        finalizeLeaseUntil: String(leaseUntil || ''),
+        updatedAt: timestamp,
+        events: [...(durableTask.events || []), { action: 'finalize_reserved', status: 'saving', stateVersion: Number(expectedVersion) + 1, createdAt: timestamp }],
+      };
+      const changed = db.prepare(`UPDATE agent_policy_import_tasks SET status = 'saving', state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ? AND status = 'saving'`).run(
+        claimedTask.stateVersion, timestamp, jsonPayload(claimedTask), task.id, expectedVersion,
+      ).changes;
+      if (changed !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      const record = { ownerUserId, taskId: task.id, requestId, status: 'reserved', claimVersion: claimedTask.stateVersion, validationHash, entitlementHash: entitlement.hash, reservedPolicyId, leaseUntil: String(leaseUntil || ''), formalPolicyId: null, completedAt: '', createdAt: timestamp, updatedAt: timestamp };
+      db.prepare(`INSERT INTO agent_policy_import_finalizations (owner_user_id, task_id, request_id, status, formal_policy_id, completed_at, payload) VALUES (?, ?, ?, ?, NULL, '', ?)`).run(ownerUserId, task.id, requestId, record.status, jsonPayload(record));
+      setMeta(db, 'next_id', reservedPolicyId + 1);
+      updateStateMeta(db, { ...createInitialState(), ...state }, timestamp);
+      db.exec('COMMIT');
+      if (state && typeof state === 'object') state.nextId = Math.max(Number(state.nextId || 1), reservedPolicyId + 1);
+      return { outcome: 'acquired', record, task: claimedTask };
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function completeAgentPolicyImportFinalization({ state, task, record, policy } = {}) {
+    const now = String(record.completedAt || task.updatedAt || new Date().toISOString());
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.exec('PRAGMA defer_foreign_keys = ON');
+      const durableRecordRow = db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status IN ('reserved', 'failed_unknown')`).get(record.ownerUserId, record.taskId, record.requestId);
+      const durableRecord = parseJson(durableRecordRow?.payload, null);
+      if (!durableRecord || Number(durableRecord.claimVersion) !== Number(task.stateVersion) - 1) throw Object.assign(new Error('保存请求状态冲突'), { code: 'FINALIZATION_STATE_CONFLICT', status: 409 });
+      const claimedTask = parseJson(db.prepare(`SELECT payload FROM agent_policy_import_tasks WHERE id = ? AND state_version = ? AND status = 'saving'`).get(task.id, durableRecord.claimVersion)?.payload, null);
+      if (!claimedTask || durableFinalizeSnapshot(db, claimedTask, durableRecord.ownerUserId) !== durableRecord.validationHash) throw Object.assign(new Error('保存前验证快照已变化'), { code: 'FINALIZATION_VALIDATION_CHANGED', status: 409 });
+      durablePolicySaveEntitlement(db, durableRecord.ownerUserId, now, { excludeTaskId: durableRecord.taskId });
+      if (Number(policy.id) !== Number(durableRecord.reservedPolicyId) || Number(policy.userId) !== Number(durableRecord.ownerUserId) || Number(policy.sourcePolicyImportTaskId) !== Number(durableRecord.taskId) || String(policy.sourcePolicyImportRequestId) !== String(durableRecord.requestId)) throw Object.assign(new Error('正式保单来源标记不匹配'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+      const existingSource = db.prepare(`SELECT id, source_policy_import_request_id FROM policies WHERE user_id = ? AND source_policy_import_task_id = ?`).get(durableRecord.ownerUserId, durableRecord.taskId);
+      if (existingSource) {
+        if (Number(existingSource.id) !== Number(policy.id) || String(existingSource.source_policy_import_request_id) !== String(durableRecord.requestId)) throw Object.assign(new Error('正式保单来源记录冲突'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+      } else {
+        insertFinalizedPolicy(db, policy);
+      }
+      const changedTask = db.prepare(`UPDATE agent_policy_import_tasks SET status = ?, state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ?`).run(
+        task.status, task.stateVersion, task.updatedAt, jsonPayload(task), task.id, task.stateVersion - 1,
+      ).changes;
+      if (changedTask !== 1) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+      const changedRecord = db.prepare(`UPDATE agent_policy_import_finalizations SET status = 'completed', formal_policy_id = ?, completed_at = ?, payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ? AND status IN ('reserved', 'failed_unknown')`).run(
+        policy.id, now, jsonPayload({ ...record, reservedPolicyId: durableRecord.reservedPolicyId, validationHash: durableRecord.validationHash }), record.ownerUserId, record.taskId, record.requestId,
+      ).changes;
+      if (changedRecord !== 1) throw Object.assign(new Error('保存请求状态冲突'), { code: 'FINALIZATION_STATE_CONFLICT', status: 409 });
+      updateStateMeta(db, { ...createInitialState(), ...state }, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function findAgentPolicyImportFinalization({ ownerUserId, taskId, requestId = '' } = {}) {
+    const row = requestId
+      ? db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).get(ownerUserId, taskId, requestId)
+      : db.prepare(`SELECT payload FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND status = 'completed' ORDER BY completed_at DESC LIMIT 1`).get(ownerUserId, taskId);
+    return parseJson(row?.payload, null);
+  }
+
+  async function findPolicyByImportSource({ ownerUserId, taskId, requestId = '' } = {}) {
+    const row = db.prepare(`SELECT payload, source_policy_import_request_id FROM policies WHERE user_id = ? AND source_policy_import_task_id = ?`).get(ownerUserId, taskId);
+    if (!row) return null;
+    if (requestId && String(row.source_policy_import_request_id) !== String(requestId)) throw Object.assign(new Error('正式保单来源请求不匹配'), { code: 'FINALIZATION_SOURCE_MISMATCH', status: 409 });
+    return parseJson(row.payload, null);
+  }
+
+  async function failAgentPolicyImportFinalization({ state, record, unknown = true, now = new Date().toISOString() } = {}) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (!unknown) {
+        const row = db.prepare(`SELECT payload, state_version FROM agent_policy_import_tasks WHERE id = ?`).get(record.taskId);
+        const current = parseJson(row?.payload, null);
+        if (!current || Number(row.state_version) !== Number(record.claimVersion)) throw Object.assign(new Error('任务状态已更新，请刷新后重试'), { code: 'STALE_INTERACTION', status: 409 });
+        const retryTask = { ...current, status: 'final_confirmation', stateVersion: Number(current.stateVersion) + 1, updatedAt: String(now) };
+        delete retryTask.finalizeRequestId;
+        delete retryTask.finalizeLeaseUntil;
+        retryTask.events = [...(current.events || []), { action: 'finalize_precommit_failed', status: retryTask.status, stateVersion: retryTask.stateVersion, createdAt: String(now) }];
+        db.prepare(`UPDATE agent_policy_import_tasks SET status = ?, state_version = ?, updated_at = ?, payload = ? WHERE id = ? AND state_version = ?`).run(retryTask.status, retryTask.stateVersion, retryTask.updatedAt, jsonPayload(retryTask), retryTask.id, record.claimVersion);
+        db.prepare(`DELETE FROM agent_policy_import_finalizations WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(record.ownerUserId, record.taskId, record.requestId);
+        updateStateMeta(db, { ...createInitialState(), ...state }, String(now));
+        db.exec('COMMIT');
+        return retryTask;
+      }
+      const next = { ...record, status: 'failed_unknown', updatedAt: String(now) };
+      db.prepare(`UPDATE agent_policy_import_finalizations SET status = ?, payload = ? WHERE owner_user_id = ? AND task_id = ? AND request_id = ?`).run(
+        next.status, jsonPayload(next), record.ownerUserId, record.taskId, record.requestId,
+      );
+      db.exec('COMMIT');
+      return next;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistAdminSession({ state, session = null } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -2972,6 +3737,23 @@ export async function createSqliteStateStore({
     db.exec('BEGIN IMMEDIATE');
     try {
       upsertAdminSession(db, targetSession);
+      updateStateMeta(db, nextState, now);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  async function persistDingtalkIdentityState({ state, identity = null, challenge = null, challenges = [] } = {}) {
+    const nextState = { ...createInitialState(), ...state };
+    nextState.nextId = resolveNextId(nextState);
+    const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      if (identity) upsertDingtalkIdentity(db, identity);
+      if (challenge) upsertDingtalkBindingChallenge(db, challenge);
+      for (const changedChallenge of normalizeArray(challenges)) upsertDingtalkBindingChallenge(db, changedChallenge);
       updateStateMeta(db, nextState, now);
       db.exec('COMMIT');
     } catch (error) {
@@ -3239,6 +4021,140 @@ export async function createSqliteStateStore({
     }
   }
 
+  async function persistExtractedFamilySalesMemories({ state, familyId, owner = {}, sourceThreadId = 0, userMessage = null, extractedMemories = [], nowIso = () => new Date().toISOString() } = {}) {
+    const targetFamilyId = Number(familyId || 0);
+    const ownerUserId = Number(owner.ownerUserId || 0) || null;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    if (!targetFamilyId || (!ownerUserId && !ownerGuestId)) throw Object.assign(new Error('invalid memory extraction scope'), { code: 'INVALID_MEMORY_SCOPE' });
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = db.prepare(`SELECT payload FROM family_sales_memories WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ? ORDER BY id`)
+        .all(targetFamilyId, Number(ownerUserId || 0), ownerGuestId).map((row) => parseJson(row.payload, null)).filter(Boolean);
+      const working = { ...createInitialState(), familySalesMemories: existing, nextId: 1 };
+      const result = upsertFamilySalesMemories({
+        state: working, familyId: targetFamilyId, owner: { ownerUserId, ownerGuestId }, sourceThreadId,
+        userMessage, extractedMemories, allocateId: () => allocateDurableFamilySalesMemoryId(db), nowIso,
+      });
+      for (const change of result.changes) {
+        const memory = change.memory;
+        if (change.kind === 'new') {
+          writeFamilySalesMemory(db, memory, { insertOnly: true });
+          insertFamilySalesMemoryEvents(db, [initialFamilySalesMemoryEvent(memory)]);
+          continue;
+        }
+        const written = writeFamilySalesMemory(db, memory, { expectedVersion: change.expectedVersion });
+        if (written.changes !== 1) throw Object.assign(new Error('stale extracted memory version'), { code: 'STALE_INTERACTION', status: 409 });
+        insertFamilySalesMemoryEvents(db, [{
+          id: `memory_event:${memory.id}:${memory.version}:${change.kind}`, memoryId: memory.id, familyId: memory.familyId,
+          ownerUserId: memory.ownerUserId, ownerGuestId: memory.ownerGuestId, eventType: change.kind,
+          actor: { type: 'system', id: 1 }, sourceMessageId: change.kind === 'archived' ? null : change.eventSourceMessageId,
+          previousStatus: change.kind === 'archived' ? change.previousStatus : memory.status, nextStatus: memory.status,
+          reasonCode: change.kind === 'archived' ? 'memory_limit' : 'new_evidence', createdAt: memory.updatedAt, version: memory.version,
+        }]);
+      }
+      db.exec('COMMIT');
+      if (state) {
+        const changedIds = new Set(result.memories.map((memory) => String(memory.id)));
+        state.familySalesMemories = normalizeArray(state.familySalesMemories).filter((memory) => !changedIds.has(String(memory.id))).concat(result.memories);
+      }
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  function memoryActionRequestIdentity({ memoryId, familyId, owner = {}, action, reasonCode, replacement = null, expectedVersion, requestId } = {}) {
+    const ownerUserId = Number(owner.ownerUserId || 0) || null;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    return { ownerScopeKey: ownerUserId ? `u:${ownerUserId}` : `g:${ownerGuestId}`, ownerUserId, ownerGuestId,
+      inputHash: crypto.createHash('sha256').update(JSON.stringify({ familyId: Number(familyId), memoryId: Number(memoryId), action, reasonCode, replacement, expectedVersion })).digest('hex'), requestId };
+  }
+
+  function findFamilySalesMemoryActionResult(input = {}) {
+    const identity = memoryActionRequestIdentity(input);
+    const prior = db.prepare('SELECT input_hash, status, result_json FROM memory_action_requests WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?')
+      .get(identity.ownerScopeKey, Number(input.memoryId), identity.requestId);
+    if (!prior) return null;
+    if (prior.input_hash !== identity.inputHash) throw Object.assign(new Error('request id payload conflict'), { code: 'REQUEST_ID_CONFLICT', status: 409 });
+    if (prior.status !== 'completed' || !prior.result_json) throw Object.assign(new Error('memory action still pending'), { code: 'MEMORY_ACTION_PENDING', status: 409 });
+    const bundle = parseJson(prior.result_json, null);
+    if (!bundle) throw new Error('invalid idempotency result');
+    return { ...bundle, idempotent: true };
+  }
+
+  async function persistFamilySalesMemoryTransition({ state, memoryId, familyId, owner = {}, action, reasonCode, actor, replacement = null, expectedVersion, now, requestId, confirmationTokenHash = '' } = {}) {
+    if (!Number.isSafeInteger(Number(memoryId)) || Number(memoryId) <= 0 || !Number.isSafeInteger(Number(familyId)) || Number(familyId) <= 0
+      || !Number.isSafeInteger(expectedVersion) || expectedVersion < 1 || typeof requestId !== 'string' || requestId.length < 1 || requestId.length > 160) {
+      throw Object.assign(new Error('invalid family sales memory transition'), { code: 'INVALID_MEMORY_TRANSITION', status: 400 });
+    }
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const identity = memoryActionRequestIdentity({ memoryId, familyId, owner, action, reasonCode, replacement, expectedVersion, requestId });
+      const { ownerScopeKey, ownerUserId, ownerGuestId, inputHash } = identity;
+      const priorBundle = findFamilySalesMemoryActionResult({ memoryId, familyId, owner, action, reasonCode, replacement, expectedVersion, requestId });
+      if (priorBundle) {
+        db.exec('COMMIT');
+        return priorBundle;
+      }
+      if (confirmationTokenHash && db.prepare('SELECT 1 FROM memory_action_requests WHERE confirmation_token_hash = ?').get(confirmationTokenHash)) {
+        throw Object.assign(new Error('confirmation token replayed'), { code: 'CONFIRMATION_TOKEN_REPLAYED', status: 409 });
+      }
+      db.prepare(`INSERT INTO memory_action_requests
+        (owner_scope_key, family_id, memory_id, request_id, input_hash, confirmation_token_hash, status, result_json, created_at, completed_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', NULL, ?, NULL)`)
+        .run(ownerScopeKey, Number(familyId), Number(memoryId), requestId, inputHash, confirmationTokenHash || null, String(now || new Date().toISOString()));
+      const row = db.prepare('SELECT * FROM family_sales_memories WHERE id = ?').get(Number(memoryId));
+      const authoritative = parseJson(row?.payload, null);
+      const currentVersion = Number(row?.version || (authoritative?.status === 'active' ? 1 : authoritative?.version));
+      if (!authoritative || currentVersion !== expectedVersion) {
+        throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
+      }
+      if (Number(authoritative.familyId) !== Number(familyId)
+        || Number(authoritative.ownerUserId || 0) !== Number(ownerUserId || 0)
+        || String(authoritative.ownerGuestId || '') !== ownerGuestId) throw new Error('cross-scope memory transition');
+      const graphRows = db.prepare(`SELECT payload FROM family_sales_memories
+        WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ? ORDER BY id LIMIT 1002`)
+        .all(Number(familyId), Number(ownerUserId || 0), ownerGuestId);
+      if (graphRows.length > 1000) throw new Error('memory supersession graph exceeds limit');
+      const existingMemories = graphRows.map((item) => parseJson(item.payload, null));
+      if (existingMemories.some((memory) => !memory)) throw new Error('invalid memory graph payload');
+      if (replacement?.id !== undefined) throw new Error('replacement id is server allocated');
+      const safeReplacement = replacement ? { ...replacement, id: allocateDurableFamilySalesMemoryId(db) } : null;
+      const result = applyFamilySalesMemoryAction({ memory: authoritative, action, reasonCode, actor, replacement: safeReplacement, existingMemories, expectedVersion, now });
+      const memories = result.replacement ? [result.memory, result.replacement] : [result.memory];
+      const events = result.events;
+      const bundle = { memories, events };
+      const changedMemory = memories[0];
+      if (Number(changedMemory.version) !== expectedVersion + 1) throw new Error('non-monotonic memory version');
+      const changed = writeFamilySalesMemory(db, changedMemory, { expectedVersion }).changes;
+      if (changed !== 1) throw Object.assign(new Error('stale memory version'), { code: 'STALE_INTERACTION', status: 409 });
+      if (memories[1]) {
+        const replacement = memories[1];
+        if (Number(replacement.version) !== 1 || String(replacement.status) !== 'confirmed'
+          || String(replacement.supersedesMemoryId) !== String(changedMemory.id)
+          || Date.parse(replacement.validFrom) < Date.parse(authoritative.validFrom || 0)) throw new Error('invalid replacement memory chain');
+        writeFamilySalesMemory(db, replacement, { insertOnly: true });
+      }
+      const scopedEvents = events.map((event) => ({ ...event, familyId: authoritative.familyId, ownerUserId: authoritative.ownerUserId, ownerGuestId: authoritative.ownerGuestId }));
+      insertFamilySalesMemoryEvents(db, scopedEvents);
+      db.prepare(`UPDATE memory_action_requests SET status = 'completed', result_json = ?, completed_at = ?
+        WHERE owner_scope_key = ? AND memory_id = ? AND request_id = ?`)
+        .run(JSON.stringify(bundle), String(now || new Date().toISOString()), ownerScopeKey, Number(memoryId), requestId);
+      const nextState = { ...createInitialState(), ...state };
+      updateStateMeta(db, nextState, new Date().toISOString());
+      db.exec('COMMIT');
+      if (state) {
+        state.familySalesMemories = normalizeArray(state.familySalesMemories).filter((memory) => !memories.some((next) => String(next.id) === String(memory.id))).concat(memories);
+        state.familySalesMemoryEvents = normalizeArray(state.familySalesMemoryEvents).concat(scopedEvents);
+      }
+      return bundle;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
   async function persistFamilyReportState({ state } = {}) {
     const nextState = { ...createInitialState(), ...state };
     nextState.nextId = resolveNextId(nextState);
@@ -3253,6 +4169,31 @@ export async function createSqliteStateStore({
       db.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  function listFamilySalesMemoryEvents({ familyId, owner = {}, memoryId = null, cursor = '', limit = 50 } = {}) {
+    const pageSize = Math.min(100, Math.max(1, Number(limit) || 50));
+    const ownerUserId = Number(owner.ownerUserId || 0) || 0;
+    const ownerGuestId = ownerUserId ? '' : String(owner.ownerGuestId || '');
+    let cursorTime = '';
+    let cursorId = '';
+    if (cursor) {
+      try { [cursorTime, cursorId] = JSON.parse(Buffer.from(String(cursor), 'base64url').toString('utf8')); } catch { throw new Error('invalid memory event cursor'); }
+    }
+    const rows = db.prepare(`SELECT * FROM family_sales_memory_events
+      WHERE family_id = ? AND COALESCE(owner_user_id, 0) = ? AND COALESCE(owner_guest_id, '') = ?
+        AND (? IS NULL OR memory_id = ?)
+        AND (? = '' OR created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC LIMIT ?`).all(Number(familyId), ownerUserId, ownerGuestId,
+        memoryId == null ? null : Number(memoryId), memoryId == null ? null : Number(memoryId), cursorTime, cursorTime, cursorTime, cursorId, pageSize + 1);
+    const page = rows.slice(0, pageSize);
+    const items = page.map((row) => ({
+      id: row.id, memoryId: row.memory_id, familyId: row.family_id, ownerUserId: row.owner_user_id, ownerGuestId: row.owner_guest_id || '',
+      eventType: row.event_type, actor: { type: row.actor_type, id: row.actor_id }, sourceMessageId: row.source_message_id,
+      previousStatus: row.previous_status, nextStatus: row.next_status, reasonCode: row.reason_code, createdAt: row.created_at, ...parseJson(row.payload, {}),
+    }));
+    const last = page.at(-1);
+    return { items, nextCursor: rows.length > pageSize && last ? Buffer.from(JSON.stringify([last.created_at, last.id])).toString('base64url') : '' };
   }
 
   async function persistPolicyDerivedResult({ state, derivedResult = null } = {}) {
@@ -4355,6 +5296,14 @@ export async function createSqliteStateStore({
     };
   }
 
+  async function exportState() {
+    const state = createInitialState();
+    Object.assign(state, loadDbOwnedState(db));
+    state.familySalesMemoryEvents = loadAllFamilySalesMemoryEventsPaged(db);
+    state.nextId = resolveNextId({ ...state, nextId: Number(getMeta(db, 'next_id') || 1) });
+    return state;
+  }
+
   function close() {
     db.close();
   }
@@ -4370,8 +5319,10 @@ export async function createSqliteStateStore({
     loadOfficialDomainProfiles,
     listAuthorizedFamilyProfiles,
     loadAuthorizedFamilyState,
+    exportState,
     persist,
     persistAdminSession,
+    persistDingtalkIdentityState,
     persistMembershipConfig,
     persistStateDocument,
     persistOfficialDomainProfiles,
@@ -4384,7 +5335,18 @@ export async function createSqliteStateStore({
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistExtractedFamilySalesMemories,
+    persistFamilySalesMemoryTransition,
+    findFamilySalesMemoryActionResult,
+    listFamilySalesMemoryEvents,
     persistFamilyReportState,
+    persistAgentPolicyImportTask,
+    findAgentPolicyImportTask,
+    reserveAgentPolicyImportFinalization,
+    completeAgentPolicyImportFinalization,
+    findAgentPolicyImportFinalization,
+    findPolicyByImportSource,
+    failAgentPolicyImportFinalization,
     persistPolicyDerivedResult,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,

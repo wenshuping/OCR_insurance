@@ -32,6 +32,7 @@ import { createHermesAgentLoopClient } from './hermes-agent-loop-client.service.
 import { createAuthRoutes } from './routes/auth.routes.mjs';
 import { createCashflowRoutes } from './routes/cashflow.routes.mjs';
 import { createClientPerformanceRoutes } from './routes/client-performance.routes.mjs';
+import { createDingtalkIdentityRoutes } from './routes/dingtalk-identity.routes.mjs';
 import { createFamilyRoutes } from './routes/families.routes.mjs';
 import { createMembershipRoutes } from './routes/membership.routes.mjs';
 import { createPolicyRoutes } from './routes/policies.routes.mjs';
@@ -39,6 +40,12 @@ import { createProductKnowledgeRoutes } from './routes/product-knowledge.routes.
 import { createProductSlideReconstructionModel } from './product-slide-reconstruction-model.service.mjs';
 import { createResponsibilityRoutes } from './routes/responsibilities.routes.mjs';
 import { createWechatRoutes } from './routes/wechat.routes.mjs';
+import { createWukongMcpRoutes } from './routes/wukong-mcp.routes.mjs';
+import { createAdvisorMemoryConfirmationRoutes } from './routes/advisor-memory-confirmation.routes.mjs';
+import { createWukongMcpGateway } from './wukong-mcp-gateway.service.mjs';
+import { createFamilySalesMemoryApi } from './family-sales-memory-api.service.mjs';
+import { createAgentPolicyImportRuntime } from './agent-policy-import-runtime.service.mjs';
+import { createAgentPolicyImportFinalizer } from './agent-policy-import-finalize.service.mjs';
 import { buildFamilyReport } from '../src/family-report-engine.mjs';
 import {
   allocateId,
@@ -203,6 +210,12 @@ import {
 } from './wechat-pay.service.mjs';
 import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 import { evidenceVerificationFields } from './evidence-classification.service.mjs';
+import {
+  confirmAdvisorBinding,
+  createAdvisorBindingChallenge,
+  findAdvisorBindingCandidate,
+  revokeAdvisorBinding,
+} from './dingtalk-advisor-identity.service.mjs';
 
 const MAX_POLICY_UPLOAD_BYTES = 12 * 1024 * 1024;
 const JSON_BODY_LIMIT = '24mb';
@@ -2382,6 +2395,78 @@ function createAgentSemanticOffRouter(legacyRouter) {
 export function createPolicyOcrApp(options = {}) {
   const agentSemanticMode = resolveAgentSemanticMode(options);
   const state = options.state || createInitialState();
+  const persistAgentPolicyImportTask = options.persistAgentPolicyImportTask || (async () => {
+    throw Object.assign(new Error('保单录入任务持久化未配置'), { code: 'PERSISTENCE_NOT_CONFIGURED', status: 503 });
+  });
+  const finalizer = createAgentPolicyImportFinalizer({
+    state,
+    reserve: options.reserveAgentPolicyImportFinalization,
+    complete: options.completeAgentPolicyImportFinalization,
+    findRecord: options.findAgentPolicyImportFinalization,
+    failRecord: options.failAgentPolicyImportFinalization,
+    findPolicyBySource: options.findPolicyByImportSource,
+    loadTask: options.findAgentPolicyImportTask,
+    waitIntervalMs: options.policyImportFinalizeWaitIntervalMs,
+    waitTimeoutMs: options.policyImportFinalizeWaitTimeoutMs,
+    createPolicy: async ({ task, family, owner, reservedPolicyId }) => {
+      const user = (state.users || []).find((row) => Number(row.id) === Number(owner.userId));
+      assertUserCanSavePolicy(state, user);
+      const member = (id) => (state.familyMembers || []).find((row) => Number(row.id) === Number(id));
+      const insured = member(task.draft.insuredMemberId);
+      const applicant = member(task.draft.applicantMemberId);
+      return buildPolicyFromScan({
+        state,
+        userId: owner.userId,
+        scan: { data: { ...task.draft, canonicalProductId: task.draft.productId } },
+        analysis: null,
+        familyBinding: {
+          familyBindingSource: 'explicit', familyId: family.id,
+          insuredMemberId: insured?.id || null, insuredMemberName: insured?.name || '', insuredNameSnapshot: insured?.name || task.draft.insured,
+          applicantMemberId: applicant?.id || null, applicantMemberName: applicant?.name || '', applicantNameSnapshot: applicant?.name || task.draft.applicant,
+          participantReviewStatus: 'confirmed',
+        },
+        policyId: reservedPolicyId,
+      });
+    },
+  });
+  const policyImports = createAgentPolicyImportRuntime({
+    state,
+    allocateId,
+    persistTask: persistAgentPolicyImportTask,
+    loadTask: options.findAgentPolicyImportTask,
+    recognizePolicyInput: ({ body }) => recognizePolicyInput({ scanner: options.scanner || scanPolicyWithConfiguredRuntime, body, state }),
+    finalizeTask: finalizer,
+  });
+  const configuredMemoryCursorKey = String(options.familySalesMemoryCursorKey || process.env.FAMILY_SALES_MEMORY_CURSOR_KEY || '');
+  if (process.env.NODE_ENV === 'production' && configuredMemoryCursorKey.length < 32) {
+    throw new Error('FAMILY_SALES_MEMORY_CURSOR_KEY must be configured in production');
+  }
+  const familySalesMemoryApi = createFamilySalesMemoryApi({
+    state,
+    persistFamilySalesMemoryTransition: options.persistFamilySalesMemoryTransition
+      ? (input) => options.persistFamilySalesMemoryTransition({ state, ...input }) : null,
+    findFamilySalesMemoryActionResult: options.findFamilySalesMemoryActionResult,
+    listFamilySalesMemoryEvents: options.listFamilySalesMemoryEvents,
+    nowIso: options.nowIso,
+    cursorKey: configuredMemoryCursorKey || crypto.randomBytes(32).toString('hex'),
+    verifyAdvisorConfirmation: options.verifyAdvisorMemoryConfirmation,
+    logger: options.logger || console,
+  });
+  const wukongMcpGateway = options.wukongMcpGateway || createWukongMcpGateway({
+    state,
+    now: typeof options.wukongMcpNow === 'function' ? options.wukongMcpNow : Date.now,
+    replayTtlMs: options.wukongMcpReplayTtlMs,
+    replayMaxEntries: options.wukongMcpReplayMaxEntries,
+    rateLimit: options.wukongMcpRateLimit,
+    rateWindowMs: options.wukongMcpRateWindowMs,
+    rateMaxPrincipals: options.wukongMcpRateMaxPrincipals,
+    policyImports,
+    salesChampion: options.askSalesChampionTool,
+    salesChampionOptions: options.salesChampionToolOptions,
+    insuranceExpert: options.askInsuranceExpertTool,
+    insuranceExpertOptions: options.insuranceExpertToolOptions,
+    familySalesMemoryApi,
+  });
   const defaultWechatPayMode = resolveDefaultWechatPayMode(options);
   const runtimeInfo = {
     startedAt: String(options.runtimeStartedAt || new Date().toISOString()),
@@ -2413,6 +2498,8 @@ export function createPolicyOcrApp(options = {}) {
   if (!Array.isArray(state.membershipOrders)) state.membershipOrders = [];
   if (!Array.isArray(state.memberships)) state.memberships = [];
   if (!Array.isArray(state.userWechatIdentities)) state.userWechatIdentities = [];
+  if (!Array.isArray(state.userDingtalkIdentities)) state.userDingtalkIdentities = [];
+  if (!Array.isArray(state.dingtalkBindingChallenges)) state.dingtalkBindingChallenges = [];
   if (!Array.isArray(state.wechatOAuthStates)) state.wechatOAuthStates = [];
   if (!Number(state.nextId)) state.nextId = 1;
 
@@ -2478,10 +2565,17 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistFamilyState = typeof options.persistFamilyState === 'function'
     ? (input = {}) => options.persistFamilyState({ state, ...input })
+    : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
+  const persistExtractedFamilySalesMemories = typeof options.persistExtractedFamilySalesMemories === 'function'
+    ? (input = {}) => options.persistExtractedFamilySalesMemories({ state, ...input })
     : null;
+  const persistFamilySalesMemoryTransition = typeof options.persistFamilySalesMemoryTransition === 'function'
+    ? (input = {}) => options.persistFamilySalesMemoryTransition({ state, ...input })
+    : null;
+  // Governed memory APIs consume this context method so web and MCP actions share the authoritative SQLite transition transaction.
   const persistFamilyReportState = typeof options.persistFamilyReportState === 'function'
     ? (input = {}) => options.persistFamilyReportState({ state, ...input })
-    : null;
+    : () => persist(state, { refreshOptionalResponsibilityGovernance: false });
   const persistAdminSession = typeof options.persistAdminSession === 'function'
     ? (input = {}) => options.persistAdminSession({ state, ...input })
     : null;
@@ -2508,6 +2602,9 @@ export function createPolicyOcrApp(options = {}) {
     : null;
   const persistMembershipState = typeof options.persistMembershipState === 'function'
     ? (input = {}) => options.persistMembershipState({ state, ...input })
+    : null;
+  const persistDingtalkIdentityState = typeof options.persistDingtalkIdentityState === 'function'
+    ? (input = {}) => options.persistDingtalkIdentityState({ state, ...input })
     : null;
   const persistOfficialDomainProfiles = typeof options.persistOfficialDomainProfiles === 'function'
     ? (input = {}) => options.persistOfficialDomainProfiles({ state, ...input })
@@ -2724,7 +2821,12 @@ export function createPolicyOcrApp(options = {}) {
     persistPolicyScanSave,
     persistPendingScan,
     persistFamilyState,
+    persistExtractedFamilySalesMemories,
+    persistFamilySalesMemoryTransition,
     persistFamilyReportState,
+    persistAgentPolicyImportTask,
+    policyImports,
+    familySalesMemoryApi,
     persistAdminSession,
     persistAuthSmsCode,
     persistAuthRegistration,
@@ -2734,6 +2836,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipConfig,
     persistStateDocument,
     persistMembershipState,
+    persistDingtalkIdentityState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
     parseCustomerUploadResponsibility: options.parseCustomerUploadResponsibility,
@@ -2876,6 +2979,17 @@ export function createPolicyOcrApp(options = {}) {
     verifyWechatPaySignature,
     fetchWechatOAuthOpenid: options.fetchWechatOAuthOpenid || fetchWechatOAuthOpenid,
     nowIso: typeof options.now === 'function' ? options.now : () => new Date().toISOString(),
+    authenticateDingtalkServiceRequest: options.authenticateDingtalkServiceRequest,
+    advisorMemoryConfirmationService: options.advisorMemoryConfirmationService,
+    wukongMcpGateway,
+    getDingtalkUserProfile: options.getDingtalkUserProfile,
+    dingtalkAllowedUserIds: Array.isArray(options.dingtalkAllowedUserIds) ? options.dingtalkAllowedUserIds : [],
+    fingerprintDingtalkMobile: options.fingerprintDingtalkMobile,
+    dingtalkMobileFingerprintVersion: options.dingtalkMobileFingerprintVersion,
+    findAdvisorBindingCandidate,
+    createAdvisorBindingChallenge,
+    confirmAdvisorBinding,
+    revokeAdvisorBinding,
     wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
@@ -3311,6 +3425,9 @@ export function createPolicyOcrApp(options = {}) {
   app.use('/api/wechat', createWechatRoutes(routeContext));
   app.use('/api/client-perf', createClientPerformanceRoutes(routeContext));
   app.use('/api/auth', createAuthRoutes(routeContext));
+  app.use('/api/dingtalk/identity', createDingtalkIdentityRoutes(routeContext));
+  app.use('/api/wukong/mcp', createWukongMcpRoutes(routeContext));
+  app.use('/api/wukong/memory-action-confirmations', createAdvisorMemoryConfirmationRoutes(routeContext));
   app.use('/api/policy-responsibilities', responsibilityRoutes);
   app.use('/api', familyRoutes);
   app.use('/api/membership', createMembershipRoutes(routeContext));

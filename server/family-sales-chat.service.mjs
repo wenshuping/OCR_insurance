@@ -446,7 +446,7 @@ export function buildLightweightSalesChatContext({
     sourceUpdated: Boolean(sourceUpdated),
     salesSummary: projectSalesSummary(salesReview),
     expertFindings: relevantFindings(expertReport || {}, safeTopicPack),
-    salesMemoryContext: currentMemories,
+    ...(currentMemories.length ? { salesMemoryContext: currentMemories } : {}),
     recentMessages,
     question: trim(question).slice(0, 2_000),
     clarificationNeeded: ambiguous,
@@ -470,7 +470,7 @@ export function buildLightweightSalesChatContext({
       truncatedSections.add('expertFindings');
     }
   }
-  while (publicLengthOf() > 10_500 && context.salesMemoryContext.length) {
+  while (publicLengthOf() > 10_500 && context.salesMemoryContext?.length) {
     context.salesMemoryContext.pop();
     truncatedSections.add('salesMemoryContext');
   }
@@ -714,6 +714,7 @@ export async function generateFamilySalesChatReply({
   question = '',
   fetchImpl = fetch,
   env = process.env,
+  signal,
 } = {}) {
   const userQuestion = trim(question);
   if (!userQuestion) {
@@ -732,6 +733,9 @@ export async function generateFamilySalesChatReply({
   }
 
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const directIdentifiers = chatDirectIdentifiers(context);
@@ -838,5 +842,6 @@ export async function generateFamilySalesChatReply({
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 }

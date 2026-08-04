@@ -1,0 +1,218 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ApiError,
+  applyPolicyImportAction,
+  finalizePolicyImport,
+  getPolicyImport,
+  listFamilyProfiles,
+  type PolicyImportTask,
+} from '../../api';
+import {
+  completedPolicyHref,
+  createLatestRequestController,
+  nextPolicyImportPoll,
+} from './policy-import-review-state.mjs';
+
+type Props = {
+  taskId: number;
+  token: string;
+  onBack: () => void;
+  onRecover: (taskId: number) => void;
+};
+
+const PROCESSING_STATES = new Set(['uploading', 'recognizing', 'saving']);
+const MAX_POLL_ATTEMPTS = 60;
+const MAX_POLL_LIFETIME_MS = 8 * 60 * 1000;
+const FIELD_LABELS: Record<string, string> = {
+  company: '保险公司',
+  name: '产品名称',
+  productName: '产品名称',
+  applicant: '投保人',
+  insured: '被保人',
+  date: '生效日期',
+  paymentPeriod: '缴费期间',
+  coveragePeriod: '保障期间',
+  amount: '保额',
+  firstPremium: '首期保费',
+};
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : '任务加载失败，请稍后重试';
+}
+
+export function AgentPolicyImportReview({ taskId, token, onBack, onRecover }: Props) {
+  const [task, setTask] = useState<PolicyImportTask | null>(null);
+  const [familyId, setFamilyId] = useState<number | null>(null);
+  const [message, setMessage] = useState('正在加载跨渠道保单任务');
+  const [busy, setBusy] = useState(false);
+  const [policyId, setPolicyId] = useState<number | null>(null);
+  const [pollExhausted, setPollExhausted] = useState(false);
+  const pollAttemptRef = useRef(0);
+  const pollStartedAtRef = useRef(Date.now());
+  const requestControllerRef = useRef(createLatestRequestController());
+  const requestIdRef = useRef(`web-review-${taskId}-${crypto.randomUUID?.() || Date.now()}`);
+
+  const loadTask = useCallback(async () => {
+    const result = await requestControllerRef.current.run(async (signal) => {
+      const families = (await listFamilyProfiles({ token, signal })).families;
+      for (const family of families) {
+        try {
+          const payload = await getPolicyImport({ token, familyId: family.id, taskId, signal });
+          return { familyId: family.id, task: payload.task };
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        }
+      }
+      throw new Error('没有找到可访问的保单导入任务');
+    });
+    if (!result.accepted || !result.value) return null;
+    setFamilyId(result.value.familyId);
+    setTask(result.value.task);
+    if (result.value.task.completedResult?.policyId) setPolicyId(result.value.task.completedResult.policyId);
+    setMessage('已加载最新任务状态');
+    return result.value.task;
+  }, [taskId, token]);
+
+  useEffect(() => {
+    requestControllerRef.current.dispose();
+    requestControllerRef.current = createLatestRequestController();
+    void loadTask().catch((error) => {
+      setMessage(errorMessage(error));
+    });
+    return () => {
+      requestControllerRef.current.dispose();
+    };
+  }, [loadTask]);
+
+  useEffect(() => {
+    if (!task || !PROCESSING_STATES.has(task.status)) {
+      pollAttemptRef.current = 0;
+      return undefined;
+    }
+    const nextPoll = nextPolicyImportPoll(pollAttemptRef.current, MAX_POLL_ATTEMPTS);
+    if (nextPoll.exhausted || Date.now() - pollStartedAtRef.current >= MAX_POLL_LIFETIME_MS) {
+      setPollExhausted(true);
+      setMessage('自动刷新已停止，请手动刷新任务状态');
+      return undefined;
+    }
+    pollAttemptRef.current = nextPoll.attempt;
+    requestControllerRef.current.schedule(nextPoll.delayMs, () => {
+      void loadTask().catch((error) => {
+        setMessage(errorMessage(error));
+      });
+    });
+    return () => {
+      requestControllerRef.current.clearScheduled();
+    };
+  }, [loadTask, task]);
+
+  async function runAction(input: { action: string; field?: string; value?: string; optionId?: string; role?: string }) {
+    if (!task || !familyId) return;
+    setBusy(true);
+    setMessage('正在提交');
+    try {
+      const result = await requestControllerRef.current.run((signal) => applyPolicyImportAction({ token, familyId, taskId, stateVersion: task.stateVersion, signal, ...input }), { lock: true });
+      if (!result.accepted || !result.value) return undefined;
+      const payload = result.value;
+      setTask(payload.task);
+      setMessage('任务已更新');
+      return payload.task;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const latest = await loadTask();
+        if (latest) setMessage('任务已在其他渠道更新，已刷新到最新状态，请重新确认');
+      } else {
+        setMessage(errorMessage(error));
+      }
+    } finally {
+      if (requestControllerRef.current.active()) setBusy(false);
+    }
+  }
+
+  async function finalize(currentTask = task) {
+    if (!currentTask || !familyId) return;
+    setBusy(true);
+    setMessage('正在保存保单');
+    try {
+      const result = await requestControllerRef.current.run((signal) => finalizePolicyImport({
+        token,
+        familyId,
+        taskId,
+        stateVersion: currentTask.stateVersion,
+        requestId: requestIdRef.current,
+        signal,
+      }), { lock: true });
+      if (!result.accepted || !result.value) return;
+      const payload = result.value;
+      setPolicyId(payload.result.policyId);
+      const latest = await loadTask();
+      if (!latest) return;
+      setPolicyId(payload.result.policyId);
+      setMessage('保单已保存');
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        const latest = await loadTask();
+        if (latest) setMessage('任务已在其他渠道更新，已刷新到最新状态，请重新确认');
+      } else {
+        setMessage(errorMessage(error));
+      }
+    } finally {
+      if (requestControllerRef.current.active()) setBusy(false);
+    }
+  }
+
+  if (!task) {
+    return (
+      <main className="min-h-screen bg-slate-50 px-4 py-8">
+        <div className="mx-auto max-w-2xl rounded-3xl bg-white p-6 shadow-sm">
+          <p aria-live="polite" className="text-sm font-semibold text-slate-600">{message}</p>
+          <button type="button" className="mt-5 rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold" onClick={onBack}>返回保单录入</button>
+        </div>
+      </main>
+    );
+  }
+
+  const interaction = task.nextInteraction;
+  const draftEntries = Object.entries(task.policyDraft).filter(([, value]) => value !== '' && value !== undefined && value !== null);
+  return (
+    <main className="min-h-screen bg-slate-50 px-4 py-6 pb-24">
+      <div className="mx-auto max-w-2xl space-y-4">
+        <header className="rounded-3xl bg-gradient-to-br from-blue-600 to-cyan-500 p-5 text-white shadow-lg">
+          <button type="button" className="rounded-full bg-white/15 px-3 py-1.5 text-sm font-bold" onClick={onBack}>返回</button>
+          <h1 className="mt-4 text-2xl font-black">继续审核保单导入</h1>
+          <p className="mt-2 text-sm text-white/85">阶段：{task.status} · 状态版本：{task.stateVersion}</p>
+        </header>
+
+        <section className="rounded-3xl bg-white p-5 shadow-sm" aria-labelledby="document-progress-title">
+          <h2 id="document-progress-title" className="font-black text-slate-900">文件识别进度</h2>
+          <p className="mt-2 text-sm text-slate-600">共 {task.documentSummary.count} 份文件</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Object.entries(task.documentSummary.statuses).map(([status, count]) => <span key={status} className="rounded-full bg-blue-50 px-3 py-1 text-xs font-bold text-blue-700">{status} {count}</span>)}
+          </div>
+        </section>
+
+        <section className="rounded-3xl bg-white p-5 shadow-sm" aria-labelledby="masked-fields-title">
+          <h2 id="masked-fields-title" className="font-black text-slate-900">已识别字段（已脱敏）</h2>
+          <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {draftEntries.map(([field, value]) => <div key={field} className="rounded-2xl bg-slate-50 p-3"><dt className="text-xs font-bold text-slate-500">{FIELD_LABELS[field] || field}</dt><dd className="mt-1 break-words text-sm font-semibold text-slate-900">{String(value)}</dd></div>)}
+          </dl>
+          {task.missingFields.length ? <p className="mt-4 text-sm font-semibold text-amber-700">待补充：{task.missingFields.map((field) => FIELD_LABELS[field] || field).join('、')}</p> : null}
+        </section>
+
+        <section className="rounded-3xl bg-white p-5 shadow-sm" aria-labelledby="resolution-title">
+          <h2 id="resolution-title" className="font-black text-slate-900">匹配与冲突处理</h2>
+          <p className="mt-2 text-sm text-slate-600">产品：{task.resolution.product} · 被保人：{task.resolution.insuredMember} · 投保人：{task.resolution.applicantMember}</p>
+          {interaction?.type === 'select_product' ? <div className="mt-4 grid gap-2">{task.legalOptions.products.map((option) => <button key={option.optionId} type="button" disabled={busy} className="min-h-11 rounded-2xl border border-blue-200 px-4 py-3 text-left text-sm font-bold text-blue-700" onClick={() => void runAction({ action: 'select_product', optionId: option.optionId })}>{option.label}</button>)}</div> : null}
+          {interaction?.type === 'confirm_product_manual' ? <button type="button" disabled={busy} className="mt-4 min-h-11 rounded-2xl bg-blue-600 px-4 py-3 text-sm font-bold text-white" onClick={() => void runAction({ action: 'confirm_product_manual' })}>确认当前产品名称</button> : null}
+          {interaction?.type === 'bind_member' ? <div className="mt-4 grid gap-2">{task.legalOptions.members.map((option) => <button key={option.optionId} type="button" disabled={busy} className="min-h-11 rounded-2xl border border-blue-200 px-4 py-3 text-left text-sm font-bold text-blue-700" onClick={() => void runAction({ action: 'bind_member', role: task.resolution.insuredMember === 'pending' ? 'insured' : 'applicant', optionId: option.optionId })}>{option.label}</button>)}</div> : null}
+          {interaction?.type === 'set_field' && interaction.field ? <form className="mt-4" onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); void runAction({ action: 'set_field', field: interaction.field, value: String(data.get('value') || '') }); }}><label className="block text-sm font-bold text-slate-700" htmlFor="policy-import-field">{FIELD_LABELS[interaction.field] || interaction.field}</label><input id="policy-import-field" name="value" required className="mt-2 min-h-11 w-full rounded-xl border border-slate-300 px-3" /><button type="submit" disabled={busy} className="mt-3 min-h-11 rounded-xl bg-blue-600 px-4 text-sm font-bold text-white">保存字段</button></form> : null}
+          {interaction?.type === 'confirm' ? <button type="button" disabled={busy} className="mt-4 min-h-11 w-full rounded-2xl bg-blue-600 px-5 py-3 text-sm font-black text-white" onClick={() => void runAction({ action: 'confirm' }).then((confirmed) => confirmed && finalize(confirmed))}>确认并保存保单</button> : null}
+          {task.status === 'failed' ? <div className="mt-4 rounded-2xl bg-amber-50 p-4"><p className="text-sm font-semibold text-amber-900">任务 {taskId} 识别失败，需要重新上传或人工复核。</p><p className="mt-2 text-xs text-amber-800">失败任务已关闭，继续操作会开始一条全新的保单录入，不会假装关联旧任务。</p><button type="button" className="mt-3 min-h-11 rounded-xl bg-amber-200 px-4 text-sm font-bold text-amber-950" onClick={() => onRecover(taskId)}>开始全新的保单录入</button></div> : null}
+          {pollExhausted ? <button type="button" className="mt-4 min-h-11 rounded-xl bg-slate-100 px-4 text-sm font-bold text-slate-800" onClick={() => { pollAttemptRef.current = 0; pollStartedAtRef.current = Date.now(); setPollExhausted(false); void loadTask(); }}>手动刷新任务</button> : null}
+          {task.status === 'completed' && policyId ? <a className="mt-4 block min-h-11 rounded-2xl bg-emerald-600 px-4 py-3 text-center text-sm font-black text-white" href={completedPolicyHref(taskId, { policyId })}>查看已保存保单</a> : null}
+        </section>
+        <p aria-live="polite" role="status" className="px-2 text-sm font-semibold text-slate-600">{message}</p>
+      </div>
+    </main>
+  );
+}

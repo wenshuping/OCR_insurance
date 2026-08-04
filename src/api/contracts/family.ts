@@ -126,6 +126,56 @@ export type FamilyReportSharePayload = {
   snapshotAt: string;
 };
 
+export type FamilySalesMemoryStatus = 'candidate' | 'confirmed' | 'conflicted' | 'superseded' | 'rejected' | 'expired' | 'completed' | 'archived';
+export type FamilySalesMemoryAction = 'confirm' | 'reject' | 'supersede' | 'complete' | 'expire' | 'restore';
+export type FamilySalesMemory = {
+  id: number;
+  kind: 'objection' | 'preference' | 'strategy' | 'correction' | 'todo';
+  status: FamilySalesMemoryStatus;
+  content: string;
+  untrustedData: true;
+  normalizedValue?: string;
+  version: number;
+  validFrom: string | null;
+  validTo: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+export type FamilySalesMemorySections = {
+  current: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  pending: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  todos: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+  history: { items: FamilySalesMemory[]; count: number; nextCursor: string };
+};
+export type FamilySalesMemoryEvent = { action: string; previousStatus: string | null; nextStatus: string | null; reasonCode: string; createdAt: string };
+
+type FamilySalesMemoryScope = { token: string; familyId: number; signal?: AbortSignal };
+
+export function getFamilySalesMemories(input: FamilySalesMemoryScope & { section?: 'current' | 'pending' | 'todos' | 'history'; status?: string; kind?: string; cursor?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (input.status) query.set('status', input.status);
+  if (input.section) query.set('section', input.section);
+  if (input.kind) query.set('kind', input.kind);
+  if (input.cursor) query.set('cursor', input.cursor);
+  if (input.limit) query.set('limit', String(input.limit));
+  const suffix = query.size ? `?${query}` : '';
+  return request<{ ok: true; sections?: FamilySalesMemorySections; section?: string; items?: FamilySalesMemory[]; count?: number; nextCursor?: string }>(`/api/family-profiles/${input.familyId}/sales-memories${suffix}`, { token: input.token, signal: input.signal });
+}
+
+export function applyFamilySalesMemoryAction(input: FamilySalesMemoryScope & { memoryId: number; action: FamilySalesMemoryAction; expectedVersion: number; reasonCode: string; requestId: string; replacement?: { content: string } }) {
+  return request<{ ok: true; memories: FamilySalesMemory[] }>(`/api/family-profiles/${input.familyId}/sales-memories/${input.memoryId}/${input.action}`, {
+    token: input.token, body: { expectedVersion: input.expectedVersion, reasonCode: input.reasonCode, requestId: input.requestId, ...(input.replacement ? { replacement: input.replacement } : {}) }, signal: input.signal,
+  });
+}
+
+export function getFamilySalesMemoryHistory(input: FamilySalesMemoryScope & { memoryId: number; cursor?: string; limit?: number }) {
+  const query = new URLSearchParams();
+  if (input.cursor) query.set('cursor', input.cursor);
+  if (input.limit) query.set('limit', String(input.limit));
+  const suffix = query.size ? `?${query}` : '';
+  return request<{ ok: true; items: FamilySalesMemoryEvent[]; nextCursor: string }>(`/api/family-profiles/${input.familyId}/sales-memories/${input.memoryId}/history${suffix}`, { token: input.token, signal: input.signal });
+}
+
 export type FamilyReportRecord = {
   id: number;
   familyId: number;
@@ -228,8 +278,61 @@ export type UpdateFamilyMemberResponse = {
   policies?: Policy[];
 };
 
-export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
-  return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token });
+export type PolicyImportTask = {
+  taskId: number;
+  familyId: number;
+  channel: string;
+  targetAgent: 'sales_champion' | 'insurance_expert';
+  status: string;
+  stateVersion: number;
+  documentSummary: { count: number; statuses: Record<string, number> };
+  intakeLimits: { maxDocumentBytes: number; transport: 'base64_data_url' };
+  policyDraft: Record<string, string | number>;
+  missingFields: string[];
+  resolution: { product: 'pending' | 'trusted_match' | 'selected' | 'manual_confirmed'; insuredMember: 'pending' | 'resolved'; applicantMember: 'pending' | 'resolved' | 'not_required' };
+  legalOptions: {
+    products: Array<{ optionId: string; label: string }>;
+    members: Array<{ optionId: string; label: string }>;
+  };
+  nextInteraction: { type: string; stateVersion: number; field?: string; status?: string } | null;
+  completedResult?: { policyId: number; completedAt: string };
+};
+
+export type PolicyImportFinalizationResult = {
+  taskId: number;
+  policyId: number;
+  summary: Record<string, unknown>;
+  completedAt: string;
+};
+
+type PolicyImportScope = { token?: string; guestId?: string; familyId: number; signal?: AbortSignal };
+
+export function startPolicyImport(input: PolicyImportScope) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports${authQuery(input)}`, { token: input.token, body: {} });
+}
+
+export function getPolicyImport(input: PolicyImportScope & { taskId: number }) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}${authQuery(input)}`, { token: input.token, signal: input.signal });
+}
+
+export function appendPolicyImportFiles(input: PolicyImportScope & { taskId: number; stateVersion: number; files: Array<{ uploadItem: string; name?: string; mediaType?: string }> }) {
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${input.familyId}/policy-imports/${input.taskId}/files${authQuery(input)}`, {
+    token: input.token, body: { stateVersion: input.stateVersion, files: input.files }, signal: input.signal,
+  });
+}
+
+export function applyPolicyImportAction(input: PolicyImportScope & { taskId: number; stateVersion: number; action: string; field?: string; value?: string; optionId?: string; role?: string }) {
+  const { token, guestId, familyId, taskId, signal, ...body } = input;
+  return request<{ ok: true; task: PolicyImportTask }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/actions${authQuery({ guestId })}`, { token, body, signal });
+}
+
+export function finalizePolicyImport(input: PolicyImportScope & { taskId: number; stateVersion: number; requestId: string }) {
+  const { token, guestId, familyId, taskId, signal, ...body } = input;
+  return request<{ ok: true; result: PolicyImportFinalizationResult }>(`/api/family-profiles/${familyId}/policy-imports/${taskId}/finalize${authQuery({ guestId })}`, { token, body, signal });
+}
+
+export function listFamilyProfiles(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
+  return request<{ ok: true; families: FamilyProfile[] }>(`/api/family-profiles${authQuery(input)}`, { token: input.token, signal: input.signal });
 }
 
 export function createFamilyProfile(input: { token?: string; guestId?: string; familyName: string; notes?: string }) {

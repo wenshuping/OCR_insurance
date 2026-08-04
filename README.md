@@ -126,3 +126,31 @@ npm install
 - `.env.local` 需要配置 `WECHAT_H5_APP_ID` 和 `WECHAT_H5_APP_SECRET`。代码不会把 `appsecret` 返回到前端。
 - 小程序内可先用 `web-view` 打开同一个地址。
 - 目前公众号和小程序 WebView 内固定走系统相册/拍照上传，避免 JS-SDK `chooseImage` 返回微信临时图片导致拍照不进入手机相册。
+
+## 钉钉顾问身份绑定配置
+
+服务端身份绑定默认关闭并拒绝请求。启用时通过运行环境提供以下变量：
+
+- `DINGTALK_IDENTITY_SERVICE_TOKEN`：悟空/渠道服务调用身份接口时使用的 Bearer token。
+- `DINGTALK_IDENTITY_ALLOWED_USER_IDS`：允许绑定的 OCR Insurance 用户 ID，使用英文逗号分隔。
+- `DINGTALK_CORP_ID`、`DINGTALK_APP_KEY`、`DINGTALK_APP_SECRET`：钉钉企业与应用凭据。
+- `DINGTALK_MOBILE_FINGERPRINT_KEY`：至少 32 字节的独立服务端密钥，用于手机号 HMAC 指纹；当前仅支持活动版本 `v1`，轮换时已有待确认挑战会安全失效。
+- `DINGTALK_API_BASE_URL`：可选，默认使用钉钉开放平台 API 地址。
+- `DINGTALK_IDENTITY_TIMEOUT_MS`：可选，钉钉 HTTP 请求超时，范围 50–30000 毫秒，默认 10000 毫秒。
+- `DINGTALK_CHANNEL_API_BASE_URL`：可选，Stream 渠道调用 OCR Insurance API 的地址，开发环境默认 `http://127.0.0.1:4207`。
+- `DINGTALK_POLICY_UPLOAD_MODE`：默认关闭；企业批准钉钉单聊传输客户原件后设为 `raw_allowed`。
+- `DINGTALK_POLICY_MAX_DOCUMENT_BYTES`：可选，单个钉钉附件下载上限，默认 16MiB；业务层仍会校验 JPEG、PNG、PDF 的真实文件签名。
+
+API 启动后，可在另一个终端启动钉钉 Stream 渠道：
+
+```bash
+npm run dev:dingtalk
+```
+
+渠道默认只接受企业内单聊，并在后台校验钉钉手机号必须与 OCR Insurance 平台注册手机号一致，无需顾问执行绑定操作。启用原件上传后，先发送“上传保单”，按提示选择家庭并发送“同意上传”，再上传 JPEG、PNG 或 PDF；识别结果只返回脱敏草稿，未经顾问确认不会保存为正式保单。
+
+不要把凭据提交到仓库；生产进程应从受控运行环境注入这些变量。
+
+生产环境还必须配置 `FAMILY_SALES_MEMORY_CURSOR_KEY`（至少 32 个字符），用于绑定并签名家庭销售记忆分页游标。开发环境未配置时会使用进程内随机密钥，重启后旧游标会自然失效。
+
+悟空顾问记忆操作还必须配置独立的 `WUKONG_MEMORY_CONFIRMATION_KEY`（至少 32 个字符）。钉钉卡片点击回调由受信服务调用 `POST /api/wukong/memory-action-confirmations` 换取五分钟内有效的单次确认令牌；该地址不属于 MCP 工具注册表，模型不能自行签发确认。

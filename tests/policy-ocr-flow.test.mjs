@@ -13544,7 +13544,7 @@ test('family sales chat creates threads continues with history and enforces owne
     const currentOwnerMemory = state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat');
     assert.equal(currentOwnerMemory?.content, '客户预算敏感，优先基础方案');
     assert.deepEqual(currentOwnerMemory?.evidenceMessageIds, [21]);
-    assert.equal(currentOwnerMemory?.status, 'confirmed');
+    assert.equal(currentOwnerMemory?.status, 'candidate');
     assert.deepEqual(persistCalls.map((call) => call.includePolicies), [false]);
 
     const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
@@ -13555,17 +13555,13 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(continued.payload.messages.length, 2);
     assert.equal(generationCalls[1].question, '这张保单续保怎么样');
     assert.equal(generationCalls[1].history.length, 2);
-    assert.equal(generationCalls[1].context.salesMemoryContext.length, 1);
-    assert.equal(generationCalls[1].context.salesMemoryContext[0].status, 'confirmed');
+    assert.equal(generationCalls[1].context.salesMemoryContext, undefined);
     assert.deepEqual(generationCalls[1].context.conversationTargets.lastExplicitTarget, { policyRef: 'policy:11', memberRef: 'member:9', category: '增额终身寿险' });
     assert.equal(generationCalls[1].context.topicPack.type, 'policy_indicators');
     assert.deepEqual(generationCalls[1].context.topicPack.policyRefs, ['policy:11']);
-    assert.match(JSON.stringify(generationCalls[1].context.salesMemoryContext), /客户预算敏感/u);
-    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他家庭的偏好/u);
-    assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
     assert.equal(state.familySalesChatMessages.length, 4);
     assert.equal(memoryCalls.length, 2);
-    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'confirmed').length, 1);
+    assert.equal(state.familySalesMemories.filter((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat' && memory.status === 'candidate').length, 1);
     assert.deepEqual(state.familySalesMemories.find((memory) => memory.familyId === 8 && memory.ownerGuestId === 'guest-sales-chat')?.evidenceMessageIds, [21, 24]);
 
     const listed = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat');
@@ -13596,7 +13592,7 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(state.familySalesChatMessages.length, 2);
     assert.equal(state.familySalesMemories.find((memory) => memory.id === 23)?.status, 'superseded');
     const resentMemory = state.familySalesMemories.find((memory) => memory.evidenceMessageIds?.includes(26));
-    assert.equal(resentMemory?.status, 'confirmed');
+    assert.equal(resentMemory?.status, 'candidate');
 
     const deletedAssistant = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/27?guestId=guest-sales-chat', {
       method: 'DELETE',
@@ -13604,7 +13600,7 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(deletedAssistant.response.status, 200);
     assert.equal(deletedAssistant.payload.messages.length, 1);
     assert.equal(deletedAssistant.payload.messages[0].role, 'user');
-    assert.equal(resentMemory?.status, 'confirmed');
+    assert.equal(resentMemory?.status, 'candidate');
 
     const deletedUser = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/26?guestId=guest-sales-chat', {
       method: 'DELETE',

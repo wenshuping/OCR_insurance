@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
 import { createProductionAgentGatewayOptions } from './agent-gateway-runtime.service.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
+import { createAdvisorMemoryConfirmationService } from './advisor-memory-confirmation.service.mjs';
+import { createDingtalkIdentityRuntime } from './dingtalk-identity-runtime.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -94,6 +96,8 @@ const agentGatewayOptions = createProductionAgentGatewayOptions({
   env: process.env,
   loadIdentityState: () => store.loadAgentIdentityState(),
 });
+const dingtalkIdentityRuntime = createDingtalkIdentityRuntime({ env: process.env });
+const advisorMemoryConfirmationService = createAdvisorMemoryConfirmationService({ key: process.env.WUKONG_MEMORY_CONFIRMATION_KEY });
 const app = createPolicyOcrApp({
   ...agentGatewayOptions,
   state,
@@ -101,7 +105,18 @@ const app = createPolicyOcrApp({
   persistPolicyScanSave: store.persistPolicyScanSave,
   persistPendingScan: store.persistPendingScan,
   persistFamilyState: store.persistFamilyState,
+  persistExtractedFamilySalesMemories: store.persistExtractedFamilySalesMemories,
+  persistFamilySalesMemoryTransition: store.persistFamilySalesMemoryTransition,
+  findFamilySalesMemoryActionResult: store.findFamilySalesMemoryActionResult,
+  listFamilySalesMemoryEvents: store.listFamilySalesMemoryEvents,
   persistFamilyReportState: store.persistFamilyReportState,
+  persistAgentPolicyImportTask: store.persistAgentPolicyImportTask,
+  findAgentPolicyImportTask: store.findAgentPolicyImportTask,
+  reserveAgentPolicyImportFinalization: store.reserveAgentPolicyImportFinalization,
+  completeAgentPolicyImportFinalization: store.completeAgentPolicyImportFinalization,
+  findAgentPolicyImportFinalization: store.findAgentPolicyImportFinalization,
+  failAgentPolicyImportFinalization: store.failAgentPolicyImportFinalization,
+  findPolicyByImportSource: store.findPolicyByImportSource,
   persistAdminSession: store.persistAdminSession,
   persistAuthSmsCode: store.persistAuthSmsCode,
   persistAuthRegistration: store.persistAuthRegistration,
@@ -111,6 +126,7 @@ const app = createPolicyOcrApp({
   persistMembershipConfig: store.persistMembershipConfig,
   persistStateDocument: store.persistStateDocument,
   persistMembershipState: store.persistMembershipState,
+  persistDingtalkIdentityState: store.persistDingtalkIdentityState,
   persistOfficialDomainProfiles: store.persistOfficialDomainProfiles,
   persistPolicyDerivedResult: store.persistPolicyDerivedResult,
   persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
@@ -123,6 +139,9 @@ const app = createPolicyOcrApp({
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
   agentStore: store,
+  ...dingtalkIdentityRuntime,
+  advisorMemoryConfirmationService,
+  verifyAdvisorMemoryConfirmation: advisorMemoryConfirmationService.verify,
   db: store.db,
   productResponsibilityPipelineDbPath: dbPath,
 });

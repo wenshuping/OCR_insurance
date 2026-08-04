@@ -1123,7 +1123,7 @@ test('family sales chat corrects a product comparison cashflow amount from the v
   assert.doesNotMatch(reply.content, /2052年确定给付 2 万元/u);
 });
 
-test('family sales memory context is sanitized, deduplicated, and available to chat and review prompts', () => {
+test('unconfirmed family sales memories stay out of chat and review prompts', () => {
   const normalized = normalizeExtractedFamilySalesMemories({
     memories: [
       { kind: 'objection', memoryKey: 'budget_objection', content: '客户担心预算压力，手机号 13800138000 不要保存', confidence: 0.91 },
@@ -1156,10 +1156,11 @@ test('family sales memory context is sanitized, deduplicated, and available to c
   assert.equal(result.changed, true);
   assert.equal(state.familySalesMemories.length, 2);
   assert.deepEqual(state.familySalesMemories[0].evidenceMessageIds, [31]);
-  assert.equal(state.familySalesMemories[0].status, 'confirmed');
+  assert.equal(state.familySalesMemories[0].status, 'candidate');
   assert.equal(state.familySalesMemories[1].status, 'candidate');
 
   const salesMemoryContext = buildFamilySalesMemoryContext(state.familySalesMemories);
+  assert.equal(salesMemoryContext, null);
   const chatPrompt = buildFamilySalesChatMessages({
     context: {
       familyInput: {},
@@ -1167,8 +1168,7 @@ test('family sales memory context is sanitized, deduplicated, and available to c
     },
     question: '继续生成微信话术',
   }).map((message) => message.content).join('\n');
-  assert.match(chatPrompt, /salesMemoryContext/u);
-  assert.match(chatPrompt, /客户担心预算压力/u);
+  assert.doesNotMatch(chatPrompt, /客户担心预算压力/u);
   assert.match(chatPrompt, /保单事实、责任条款、金额、收益仍以当前家庭数据和官网证据为准/u);
 
   const reviewPrompt = buildFamilySalesReviewMessages({
@@ -1181,8 +1181,7 @@ test('family sales memory context is sanitized, deduplicated, and available to c
     salesMemoryContext,
     salesChatContext: { selectedMessageCount: 1, recentMessages: [{ role: 'user', content: '本次勾选优先' }] },
   }).map((message) => message.content).join('\n');
-  assert.match(reviewPrompt, /salesMemoryContext/u);
-  assert.match(reviewPrompt, /salesChatContext 与 salesMemoryContext 同时存在，顾问本次勾选的 salesChatContext 优先/u);
+  assert.doesNotMatch(reviewPrompt, /客户担心预算压力/u);
 });
 
 test('family sales memory marks same-slot changes as conflicts and excludes them from context', () => {

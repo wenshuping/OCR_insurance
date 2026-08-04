@@ -96,6 +96,10 @@ function normalizeSkillKeys(values = []) {
     .slice(0, 4);
 }
 
+function ownSelectionValue(selection, key) {
+  if (!selection || typeof selection !== 'object' || Array.isArray(selection)) return undefined;
+  return Object.hasOwn(selection, key) ? selection[key] : undefined;
+}
 function unique(values = []) {
   return Array.from(new Set(values.filter(Boolean)));
 }
@@ -171,9 +175,11 @@ function parseSkillSelection(content = '') {
 
 export function buildAgentSkillPromptFromSelection({ scene = 'family_sales_chat', selection = {}, salesChatContext = null } = {}) {
   const fallback = selectAgentSkillPrompt({ scene, question: '', salesChatContext });
-  const skillKeys = normalizeSkillKeys(selection.skills);
+  // The router supplies business-skill selection only. Permission-bearing or inherited fields are ignored.
+  const skillKeys = normalizeSkillKeys(ownSelectionValue(selection, 'skills'));
   const keys = skillKeys.length ? skillKeys : fallback.skills.map((skill) => skill.key);
-  const intent = SKILL_KEYS.includes(trim(selection.intent)) ? trim(selection.intent) : keys[0];
+  const selectedIntent = trim(ownSelectionValue(selection, 'intent'));
+  const intent = SKILL_KEYS.includes(selectedIntent) ? selectedIntent : keys[0];
   const skillRules = keys.flatMap((key) => SKILL_DEFINITIONS[key]?.rules || []);
   return {
     scene,
@@ -185,7 +191,7 @@ export function buildAgentSkillPromptFromSelection({ scene = 'family_sales_chat'
     systemRules: unique([...COMMON_INSURANCE_RULES, ...skillRules]),
     promptHint: `智能 skill router 选择为“${SKILL_DEFINITIONS[intent]?.label || intent}”，请按对应保险业务规则组织输出。`,
     selectedBy: 'deepseek',
-    selectionReason: trim(selection.reason),
+    selectionReason: trim(ownSelectionValue(selection, 'reason')).slice(0, 60),
   };
 }
 
@@ -196,11 +202,15 @@ export async function selectAgentSkillPromptWithDeepSeek({
   fetchImpl = fetch,
   config = {},
   privacyOptions = {},
+  signal,
 } = {}) {
   if (!config.apiKey) {
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
   }
   const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', abortFromCaller, { once: true });
   const timeoutId = setTimeout(() => controller.abort(), Number(config.timeoutMs || 30_000));
   try {
     const body = {
@@ -229,5 +239,6 @@ export async function selectAgentSkillPromptWithDeepSeek({
     return selectAgentSkillPrompt({ scene, question, salesChatContext });
   } finally {
     clearTimeout(timeoutId);
+    signal?.removeEventListener('abort', abortFromCaller);
   }
 }

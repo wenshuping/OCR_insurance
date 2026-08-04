@@ -69,6 +69,7 @@ export function createFamilyRoutes(context) {
     normalizeGuestId,
     persistFamilyReportState,
     persistFamilyState,
+    persistExtractedFamilySalesMemories,
     repairDuplicateFamilyMembers,
     requestOwner,
     resolveAuthUser,
@@ -104,6 +105,8 @@ export function createFamilyRoutes(context) {
     loadKnowledgeRecords = null,
     loadResponsibilityIndexes = null,
     nowIso = () => new Date().toISOString(),
+    policyImports,
+    familySalesMemoryApi,
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
   const familyLookupContext = { familyOwnerMatches };
@@ -112,18 +115,10 @@ export function createFamilyRoutes(context) {
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
   state.agentPolicyImportTasks = Array.isArray(state.agentPolicyImportTasks) ? state.agentPolicyImportTasks : [];
   const saveFamilyState = async ({ includePolicies = false } = {}) => {
-    if (persistFamilyState) {
-      await persistFamilyState({ includePolicies });
-      return;
-    }
-    await persist(state, familyPersistOptions);
+    await persistFamilyState({ includePolicies });
   };
   const saveFamilyReportState = async () => {
-    if (persistFamilyReportState) {
-      await persistFamilyReportState();
-      return;
-    }
-    await persist(state, familyPersistOptions);
+    await persistFamilyReportState();
   };
   const saveAgentPolicyImportTasks = async () => {
     if (persistStateDocument) {
@@ -172,6 +167,99 @@ export function createFamilyRoutes(context) {
   function hasOwn(value, key) {
     return Object.prototype.hasOwnProperty.call(value || {}, key);
   }
+
+  function ownedActiveFamily(req, res) {
+    const owner = resolveFamilyRequestOwner(req, res, ownerResolverContext);
+    if (!owner) return null;
+    const family = findOwnedFamily(state, req.params.id, owner, familyLookupContext);
+    if (!family) {
+      res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
+      return null;
+    }
+    return { owner, family };
+  }
+
+  function authenticatedMemoryScope(req, res) {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return null;
+    if (!scope.owner.userId) {
+      res.status(401).json({ ok: false, code: 'UNAUTHORIZED', message: '请先登录' });
+      return null;
+    }
+    return scope;
+  }
+
+  router.get('/family-profiles/:id/sales-memories', (req, res) => {
+    const scope = authenticatedMemoryScope(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, ...familySalesMemoryApi.list({ familyId: scope.family.id, owner: scope.owner, ...req.query }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  for (const action of ['confirm', 'reject', 'supersede', 'complete', 'expire', 'restore']) {
+    router.post(`/family-profiles/:id/sales-memories/:memoryId/${action}`, async (req, res) => {
+      const scope = authenticatedMemoryScope(req, res);
+      if (!scope) return undefined;
+      try { return res.json({ ok: true, ...(await familySalesMemoryApi.action({ familyId: scope.family.id, memoryId: req.params.memoryId, owner: scope.owner, action, input: req.body || {} })) }); }
+      catch (error) { return sendError(res, error, error?.status || 500); }
+    });
+  }
+
+  router.get('/family-profiles/:id/sales-memories/:memoryId/history', (req, res) => {
+    const scope = authenticatedMemoryScope(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, ...familySalesMemoryApi.history({ familyId: scope.family.id, memoryId: req.params.memoryId, owner: scope.owner, ...req.query }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.start({ ...scope, channel: 'web' });
+      return res.status(201).json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.get('/family-profiles/:id/policy-imports/:taskId', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try { return res.json({ ok: true, task: await policyImports.get({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner }) }); }
+    catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports/:taskId/files', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.append({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner, stateVersion: req.body?.stateVersion, files: req.body?.files });
+      return res.json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports/:taskId/actions', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    try {
+      const task = await policyImports.action({ familyId: scope.family.id, taskId: req.params.taskId, owner: scope.owner, input: req.body || {} });
+      return res.json({ ok: true, task });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+  });
+
+  router.post('/family-profiles/:id/policy-imports/:taskId/finalize', async (req, res) => {
+    const scope = ownedActiveFamily(req, res);
+    if (!scope) return undefined;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    const abortOnClose = () => { if (!res.writableFinished) controller.abort(); };
+    req.once('aborted', abort);
+    res.once('close', abortOnClose);
+    try {
+      const result = await policyImports.finalize({ ...scope, taskId: Number(req.params.taskId), requestId: req.body?.requestId, stateVersion: req.body?.stateVersion, signal: controller.signal });
+      return res.json({ ok: true, result });
+    } catch (error) { return sendError(res, error, error?.status || 500); }
+    finally { req.off('aborted', abort); res.off('close', abortOnClose); }
+  });
 
   function isUserReportRefreshRequest(req) {
     return req.body?.userRefresh === true;
@@ -787,17 +875,11 @@ export function createFamilyRoutes(context) {
           names: listFamilyMembers(state, family.id).map((member) => member?.name).filter(Boolean),
         },
       });
-      upsertFamilySalesMemories({
-        state,
-        familyId: family.id,
-        owner: ownerFields(owner),
-        sourceThreadId: thread.id,
-        userMessage,
-        assistantMessage,
-        extractedMemories,
-        allocateId,
-        nowIso,
-      });
+      if (persistExtractedFamilySalesMemories) {
+        await persistExtractedFamilySalesMemories({ familyId: family.id, owner: ownerFields(owner), sourceThreadId: thread.id, userMessage, extractedMemories, nowIso });
+      } else {
+        upsertFamilySalesMemories({ state, familyId: family.id, owner: ownerFields(owner), sourceThreadId: thread.id, userMessage, extractedMemories, allocateId, nowIso });
+      }
     } catch (error) {
       console.warn(`[family-sales-memory] Failed to extract memories family=${family?.id || ''} thread=${thread?.id || ''}: ${error instanceof Error ? error.message : error}`);
     }

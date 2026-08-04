@@ -69,6 +69,18 @@ export * from './api/contracts/family';
 export * from './api/contracts/admin';
 export * from './api/contracts/responsibility';
 export * from './api/contracts/cashflow';
+export {
+  bindDingtalkIdentityFromWeb,
+  confirmDingtalkIdentity,
+  getDingtalkIdentityCandidate,
+  revokeDingtalkIdentity,
+} from './api/contracts/dingtalk';
+export type {
+  DingtalkBoundResponse,
+  DingtalkCandidateResponse,
+  DingtalkChallenge,
+  DingtalkPrincipal,
+} from './api/contracts/dingtalk';
 
 export type ResponsibilitySelectionStatus = ResponsibilitySelectionStatusContract;
 export type QuantificationStatus = QuantificationStatusContract;
@@ -125,7 +137,7 @@ export type FamilyPolicyAnalysisReport = FamilyPolicyAnalysisReportContract;
 
 export type FamilySalesReview = FamilySalesReviewContract;
 
-export function listPolicies(input: { token?: string; guestId?: string } = {}) {
+export function listPolicies(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
   return listPoliciesContract(input);
 }
 
@@ -155,7 +167,7 @@ export function confirmCashValue(input: { token?: string; guestId?: string; poli
   return confirmCashValueContract(input);
 }
 
-export function listFamilyProfiles(input: { token?: string; guestId?: string } = {}) {
+export function listFamilyProfiles(input: { token?: string; guestId?: string; signal?: AbortSignal } = {}) {
   // request<{ ok: true; families: FamilyProfile[] }>
   return listFamilyProfilesContract(input);
 }

@@ -50,3 +50,33 @@ test('agent skill router requires useful follow-up advice before optional inform
   assert.match(rules, /隐私程度高的问题一次只问一项/u);
   assert.match(rules, /先给出下一步动作/u);
 });
+
+test('agent skill router treats model output as a validated selection, never a tool grant', () => {
+  const prompt = buildAgentSkillPromptFromSelection({
+    scene: 'family_sales_chat',
+    selection: {
+      intent: 'product_comparison',
+      skills: ['product_comparison', 'terminal', '__proto__'],
+      tools: ['terminal', 'search_policy_evidence'],
+      permissions: ['*'],
+      tool: 'ask_insurance_expert',
+      reason: '产品对比',
+    },
+  });
+
+  assert.deepEqual(prompt.skills.map(({ key }) => key), ['product_comparison']);
+  assert.equal(prompt.intent, 'product_comparison');
+  assert.equal('tools' in prompt, false);
+  assert.equal('tool' in prompt, false);
+  assert.equal('permissions' in prompt, false);
+  assert.doesNotMatch(JSON.stringify(prompt), /terminal|search_policy_evidence|ask_insurance_expert/);
+
+  const inherited = Object.create({
+    intent: 'product_comparison',
+    skills: ['product_comparison'],
+    tools: ['terminal'],
+  });
+  const inheritedPrompt = buildAgentSkillPromptFromSelection({ selection: inherited });
+  assert.equal(inheritedPrompt.intent, 'sales_script');
+  assert.deepEqual(inheritedPrompt.skills.map(({ key }) => key), ['sales_script']);
+});

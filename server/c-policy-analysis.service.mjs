@@ -870,6 +870,8 @@ function normalizePolicyForPrompt(policy = {}) {
     insuredRelation: trimString(policy.insuredRelation),
     paymentPeriod: trimString(policy.paymentPeriod),
     coveragePeriod: trimString(policy.coveragePeriod),
+    versionNo: trimString(policy.versionNo || policy.version),
+    effectiveDate: trimString(policy.effectiveDate || policy.issueDate || policy.date),
     responsibilities: Array.isArray(policy.responsibilities)
       ? policy.responsibilities
           .map((item) => ({
@@ -1357,6 +1359,7 @@ function normalizeAnalysis(payload, model, options = {}) {
     ? normalizeExternalItems(payload?.generalRules)
     : [];
   return {
+    answer: trimString(payload?.answer || payload?.conclusion).slice(0, 8_000),
     report: '',
     productOverview,
     coreFeature: '',
@@ -1410,7 +1413,7 @@ function buildModelChain(config) {
   });
 }
 
-function buildAnalysisInput({ policy, ocrText = '' }) {
+function buildAnalysisInput({ policy, ocrText = '', question = '' }) {
   const sensitiveTerms = buildSensitiveTerms({ policy, ocrText });
   const ocrConflictSummary = summarizeOcrConflict(policy, ocrText);
   const effectiveOcrText = ocrConflictSummary ? '' : ocrText;
@@ -1426,6 +1429,7 @@ function buildAnalysisInput({ policy, ocrText = '' }) {
     insuredRelation: policy.insuredRelation,
     paymentPeriod: policy.paymentPeriod,
     coveragePeriod: policy.coveragePeriod,
+    question: trimString(question).slice(0, 4_000),
     ocrText: normalizedOcrText,
     ocrConflictSummary,
     sensitiveTerms,
@@ -1694,13 +1698,15 @@ async function fetchNewChinaDisclosureResultsFromUrl({ disclosureUrl: disclosure
             seenUrls.add(result.url);
             results.push(result);
           }
-        } catch {
+        } catch (error) {
+          if (isPolicyAnalysisAbort(error, signal)) throw error;
           // Continue with other official material links.
         }
       }
     }
     return results;
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return [];
   }
 }
@@ -1838,7 +1844,8 @@ async function fetchSearchResultsForQuery({ query, policy, fetchImpl, signal, ma
           maxResults,
         }),
       );
-    } catch {
+    } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       continue;
     }
   }
@@ -2046,11 +2053,12 @@ function extractPdfActualText(buffer) {
   return values.join('');
 }
 
-async function extractPdfTextWithPython(buffer) {
+export async function extractPdfTextWithPython(buffer, { signal, spawnImpl = spawn, killGraceMs = 250 } = {}) {
   const raw = Buffer.from(buffer || []);
   if (!raw.length) return '';
-  return new Promise((resolve) => {
-    const child = spawn(
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+  return new Promise((resolve, reject) => {
+    const child = spawnImpl(
       'python3',
       [
         '-c',
@@ -2070,31 +2078,60 @@ async function extractPdfTextWithPython(buffer) {
       },
     );
     let output = '';
-    const timeout = setTimeout(() => {
+    let settled = false;
+    let killTimer;
+    const remove = (name, listener) => child.off?.(name, listener);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
+      remove('close', onClose);
+      remove('error', onError);
+    };
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback(value);
+    };
+    const terminate = () => {
       child.kill('SIGTERM');
-      resolve('');
+      killTimer = setTimeout(() => {
+        if (child.exitCode == null) child.kill('SIGKILL');
+      }, Math.max(1, Number(killGraceMs) || 250));
+      killTimer.unref?.();
+    };
+    const onAbort = () => {
+      terminate();
+      finish(reject, new DOMException('Aborted', 'AbortError'));
+    };
+    const onClose = () => {
+      clearTimeout(killTimer);
+      finish(resolve, trimString(output));
+    };
+    const onError = () => {
+      clearTimeout(killTimer);
+      finish(resolve, '');
+    };
+    const timeout = setTimeout(() => {
+      terminate();
+      finish(resolve, '');
     }, 8000);
     child.stdout.on('data', (chunk) => {
       output += String(chunk || '');
       if (output.length > 20_000) {
-        child.kill('SIGTERM');
+        terminate();
       }
     });
-    child.on('close', () => {
-      clearTimeout(timeout);
-      resolve(trimString(output));
-    });
-    child.on('error', () => {
-      clearTimeout(timeout);
-      resolve('');
-    });
+    child.on('close', onClose);
+    child.on('error', onError);
+    signal?.addEventListener('abort', onAbort, { once: true });
     child.stdin.end(raw.toString('base64'));
   });
 }
 
-async function extractRelevantPdfText(buffer, policy = {}) {
+async function extractRelevantPdfText(buffer, policy = {}, signal) {
   const actualText = extractPdfActualText(buffer);
-  const rawText = actualText || (await extractPdfTextWithPython(buffer));
+  const rawText = actualText || (await extractPdfTextWithPython(buffer, { signal }));
   return extractRelevantText(rawText, policy);
 }
 
@@ -2121,13 +2158,14 @@ async function enrichSearchResultsWithPageText({ results = [], policy, fetchImpl
         if (response.ok && isPdf && (!contentLength || contentLength <= MAX_SEARCH_PDF_BYTES)) {
           const buffer = Buffer.from(await response.arrayBuffer());
           if (buffer.length <= MAX_SEARCH_PDF_BYTES) {
-            pageText = await extractRelevantPdfText(buffer, policy);
+            pageText = await extractRelevantPdfText(buffer, policy, signal);
           }
         } else if (response.ok && !/(application\/msword|officedocument)/iu.test(contentType)) {
           pageText = extractRelevantPageText(await response.text(), policy);
         }
       }
-    } catch {
+    } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       pageText = '';
     }
     enriched.push({
@@ -2262,6 +2300,7 @@ function policyAnalysisSkillRouterMessages({ policy = {}, analysisInput = {}, se
       content: [
         `保险公司：${policy.company || '未识别'}`,
         `产品名称：${policy.name || '未识别'}`,
+        `用户问题：${analysisInput.question || '请概括保险责任'}`,
         `本地初判文档类型：${localPlan.documentType || 'unknown'}`,
         `OCR证据模式：${analysisInput.evidenceMode || 'basic'}`,
         `OCR片段：${trimString(analysisInput.ocrText).slice(0, 1200) || '无'}`,
@@ -2271,7 +2310,7 @@ function policyAnalysisSkillRouterMessages({ policy = {}, analysisInput = {}, se
   ];
 }
 
-async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisInput, searchArtifacts, fetchImpl }) {
+async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisInput, searchArtifacts, fetchImpl, signal }) {
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts?.sources);
   const hasExternalSource = hasExternalReviewSource(searchArtifacts?.sources);
   const fallback = buildLocalPolicyAnalysisSkillPlan({
@@ -2285,6 +2324,7 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
       config,
       model,
       fetchImpl,
+      signal,
       messages: policyAnalysisSkillRouterMessages({
         policy,
         analysisInput,
@@ -2299,6 +2339,7 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
     const content = trimString(payload?.choices?.[0]?.message?.content);
     return normalizePolicyAnalysisSkillPlanPayload(extractJson(content), fallback);
   } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return {
       ...fallback,
       routerError: trimString(error?.code || error?.message).slice(0, 120),
@@ -2356,18 +2397,20 @@ function buildOfficialSourceDiscoveryMessages(policy = {}) {
   ];
 }
 
-async function discoverOfficialSourceResults({ config, policy, fetchImpl }) {
+async function discoverOfficialSourceResults({ config, policy, fetchImpl, signal }) {
   try {
     const payload = await requestPolicyAnalysis({
       config,
       model: config.model,
       fetchImpl,
+      signal,
       messages: buildOfficialSourceDiscoveryMessages(policy),
       options: { maxTokens: DEFAULT_DISCOVERY_MAX_TOKENS },
     });
     const content = trimString(payload?.choices?.[0]?.message?.content);
     return normalizeDiscoveredSourcePayload(extractJson(content));
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return { officialDomains: [], results: [] };
   }
 }
@@ -2384,19 +2427,20 @@ function uniqueResultsByUrl(results = []) {
   return unique;
 }
 
-async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialDomainProfiles = getDefaultOfficialDomainProfiles() }) {
+async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialDomainProfiles = getDefaultOfficialDomainProfiles(), signal }) {
   if (!config.smartSearchEnabled) return { context: '', sources: [] };
   if (!trimString(policy?.company) || !trimString(policy?.name)) return { context: '', sources: [] };
   const queries = buildSearchQueries(policy, officialDomainProfiles);
   if (!queries.length) return { context: '', sources: [] };
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.smartSearchTimeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
     const resultsByUrl = new Map();
     const officialResults = await fetchNewChinaDisclosureResults({
       policy,
       fetchImpl,
-      signal: controller.signal,
+      signal: fetchSignal,
     });
     for (const result of officialResults) {
       if (!resultsByUrl.has(result.url)) {
@@ -2411,7 +2455,7 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
         query,
         policy,
         fetchImpl,
-        signal: controller.signal,
+        signal: fetchSignal,
         maxResults: candidateLimit,
       });
       for (const result of results) {
@@ -2430,18 +2474,18 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
       results: sortedResults,
       policy,
       fetchImpl,
-      signal: controller.signal,
+      signal: fetchSignal,
       maxResults: config.smartSearchMaxResults,
     });
     let sources = formatSearchSources(enriched, { policy, extraOfficialDomains: officialDomains, officialDomainProfiles });
     if (!hasOfficialSearchSource(sources)) {
-      const discovered = await discoverOfficialSourceResults({ config, policy, fetchImpl });
+      const discovered = await discoverOfficialSourceResults({ config, policy, fetchImpl, signal: fetchSignal });
       officialDomains = discovered.officialDomains;
       const discoveredEnriched = await enrichSearchResultsWithPageText({
         results: discovered.results,
         policy,
         fetchImpl,
-        signal: controller.signal,
+        signal: fetchSignal,
         maxResults: config.smartSearchMaxResults,
       });
       enriched = uniqueResultsByUrl([...enriched, ...discoveredEnriched])
@@ -2453,7 +2497,8 @@ async function fetchPolicySearchArtifacts({ config, policy, fetchImpl, officialD
       context: formatSearchContext(enriched, { policy, extraOfficialDomains: officialDomains, officialDomainProfiles }),
       sources,
     };
-  } catch {
+  } catch (error) {
+    if (isPolicyAnalysisAbort(error, signal)) throw error;
     return { context: '', sources: [] };
   } finally {
     clearTimeout(timeoutId);
@@ -2480,6 +2525,7 @@ function buildMessages({ policy, analysisInput, externalReviewMode = false, skil
     ? `\n\n内部上下文只用于核对保险责任。上下文来源已明确区分为“产品资料（后端搜索获得）”和“保单详情OCR（客户上传识别）”：产品资料用于核对公开保险责任和条款口径，OCR用于核对这张客户保单的关系信息、保费、保额、缴费期和保险期间等个单信息；客户姓名、身份证号、手机号等敏感信息不得出现在上下文或输出中。\n\n${contextLines.join('\n\n')}`
     : '';
   const skillBlock = buildPolicyAnalysisSkillInstructionBlock(skillPlan);
+  const questionMode = !externalReviewMode && Boolean(trimString(analysisInput.question));
   const messages = [
     {
       role: 'system',
@@ -2488,7 +2534,9 @@ function buildMessages({ policy, analysisInput, externalReviewMode = false, skil
 输出要求：
 ${externalReviewMode
     ? '1. 最终输出产品概览、保险责任、跨责任通用规则、免责和增值服务；不要输出购买建议、营销话术或资料来源说明，也不要提到“联网”“搜索”“网页”“检索”“资料摘要”“内部上下文”等来源字样。\n2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含 productOverview、coverageTable、generalRules、exclusions、valueAddedServices。productOverview 必须是对象，包含 productType（产品类型）、purpose（主要解决的保障或费用缺口）、positioning（它与基本医保/已有保障的关系）、planOptions、sourceExcerpt；planOptions 是由资料支持的方案数组，每项包含 name、premium、totalCoverage、relationship、sourceExcerpt，没有多方案时返回空数组。relationship 只描述方案之间的包含或新增关系，不得填写适用人群或亲属关系。generalRules、exclusions、valueAddedServices 都是对象数组，每项包含 title、detail、sourceExcerpt。'
-    : '1. 最终只输出保险责任，不要输出保单概览、注意事项、免责声明、产品利益说明、资料来源说明，也不要提到“联网”“搜索”“网页”“检索”“资料摘要”“内部上下文”“外部资料”等来源字样。\n2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：coverageTable。coverageTable 是对象数组，不要输出 report、notes、summary、overview、disclaimer 等其他字段。'}
+    : questionMode
+      ? '1. 最终只输出保险责任，不要输出保单概览、注意事项、免责声明、产品利益说明、资料来源说明。\n2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：answer、coverageTable。answer 直接回答用户问题；coverageTable 只保留支持该回答的责任行。不要输出 report、notes、summary、overview、disclaimer 等其他字段。'
+      : '1. 最终只输出保险责任，不要输出保单概览、注意事项、免责声明、产品利益说明、资料来源说明，也不要提到“联网”“搜索”“网页”“检索”“资料摘要”“内部上下文”“外部资料”等来源字样。\n2. 优先输出严格 JSON，不要包裹 markdown 代码块。JSON 字段只包含：coverageTable。coverageTable 是对象数组，不要输出 report、notes、summary、overview、disclaimer 等其他字段。'}
 3. coverageTable 是保险责任表，只能写保险公司在“发生保险事故、达到领取条件或满足合同约定触发条件”后承担的给付/赔付/报销责任。以资料明确命名的责任为单位，每一条保险责任单独写入 coverageTable 的一行；同一责任下按人群、档位或情形列出的子项应合并在该责任行中，不能把子项误报为多项责任；只有资料明确列为不同责任的分阶段给付、额外给付或不同领取责任才拆成独立行。每行必须包含 coverageType、scenario、payout、note，并尽量补充指标拆解字段 liability、triggerCondition、formulaText、basis、value、unit、basisKey、calculationKey、cashflowTreatment、calculationReason、requiredInputs、sourceExcerpt。
 4. 指标拆解规则：coverageType 和 liability 都必须写资料中的具体责任名称（例如“医保目录内合规自付费用”“住院津贴”），不得用“医疗费用补偿”“药品费用报销”“保险金给付”等给付类别代替责任名称；triggerCondition 写触发条件；formulaText 写可执行的给付公式或条款口径；basis 写计算基准，例如基本保险金额、已交保险费、现金价值、账户价值、实际医疗费用、领取计划/比例表、伤残等级比例表；value 和 unit 只在条款明确百分比、倍数或固定金额时填写；cashflowTreatment 只能取 scheduled_cashflow、claim_contingent、waiver_only、not_cashflow；sourceExcerpt 必须摘录支持该责任和公式的原文短句，不得编造。
 5. 计算字段统一规则：所有可拆解责任都可以作为指标候选。能直接用保单基础字段计算的，formulaText/basis/value/unit 要写完整，并输出语义判断：basisKey 只能取 basic_amount、first_premium、first_basic_responsibility_premium、annual_premium、total_paid_premium、cash_value、account_value、schedule_or_policy_table、medical_expense、daily_allowance、unknown；calculationKey 只能取 fixed_amount、basic_amount、percent_of_basic_amount、multiple_of_basic_amount、first_premium、percent_of_first_premium、multiple_of_first_premium、total_paid_premium、percent_of_total_paid_premium、multiple_of_total_paid_premium、cash_value、account_value、schedule_or_policy_table、medical_formula、daily_allowance、manual_formula、not_calculable、unknown。不得直接计算或输出最终金额，最终金额由代码执行。暂时需要额外输入的，也要写完整公式口径，并用 requiredInputs 写需要的输入字段，例如 cashValue、accountValue、policyScheduleTable、policyYearOrAge、disabilityGrade、actualMedicalExpense、deductible、reimbursementRate、thirdPartyPaid、liabilityLimit、actualDays、dailyAmount、dayLimit。凡是需要额外输入才能算出具体金额的责任，标记 calculationEligible=false，并在 calculationReason 写明缺哪些输入。
@@ -2504,14 +2552,17 @@ ${contextBlock}`,
     role: 'user',
     content: externalReviewMode
       ? `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。请输出产品类型与作用、完整保险责任、明确赔付参数和通用重要规则。`
-      : `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。请只输出保险责任 coverageTable，不要输出其他内容。`,
+      : questionMode
+        ? `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。用户问题：${analysisInput.question}。请只输出保险责任 coverageTable 及支持该回答的 answer，不要输出其他内容。`
+        : `${policy.company || '未识别'}公司的保险产品：${policy.name || '未识别'}。请只输出保险责任 coverageTable，不要输出其他内容。`,
   });
   return messages;
 }
 
-async function requestPolicyAnalysis({ config, model, messages, fetchImpl, options = {} }) {
+async function requestPolicyAnalysis({ config, model, messages, fetchImpl, options = {}, signal }) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), config.timeoutMs);
+  const providerSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
   try {
     const url = buildDeepSeekChatCompletionsUrl(config.baseUrl);
     const body = {
@@ -2528,7 +2579,7 @@ async function requestPolicyAnalysis({ config, model, messages, fetchImpl, optio
     }
     const response = await fetchImpl(url, {
       method: 'POST',
-      signal: controller.signal,
+      signal: providerSignal,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
@@ -2635,6 +2686,12 @@ function withCode(error, code) {
   return error;
 }
 
+function isPolicyAnalysisAbort(error, signal) {
+  return signal?.aborted === true
+    || error?.name === 'AbortError'
+    || error?.code === 'POLICY_ANALYSIS_TIMEOUT';
+}
+
 export async function analyzeInsurancePolicyResponsibilities({
   policy,
   ocrText = '',
@@ -2642,6 +2699,8 @@ export async function analyzeInsurancePolicyResponsibilities({
   officialDomainProfiles: customOfficialDomainProfiles = [],
   knowledgeRecords = [],
   allowExternalReferences = false,
+  question = '',
+  signal,
 }) {
   const normalizedPolicy = normalizePolicyForPrompt(policy);
   const externalPolicy = stripSensitivePolicyForLlm(normalizedPolicy);
@@ -2653,6 +2712,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   const analysisInput = buildAnalysisInput({
     policy: normalizedPolicy,
     ocrText,
+    question,
   });
   const officialDomainProfiles = mergeOfficialDomainProfiles(customOfficialDomainProfiles);
   const searchQuery = buildSearchQuery(externalPolicy, officialDomainProfiles);
@@ -2671,6 +2731,7 @@ export async function analyzeInsurancePolicyResponsibilities({
         policy: externalPolicy,
         fetchImpl,
         officialDomainProfiles,
+        signal,
       });
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts.sources);
   const hasExternalSource = allowExternalReferences && hasExternalReviewSource(searchArtifacts.sources);
@@ -2702,11 +2763,13 @@ export async function analyzeInsurancePolicyResponsibilities({
         analysisInput: enrichedAnalysisInput,
         searchArtifacts,
         fetchImpl,
+        signal,
       });
       const payload = await requestPolicyAnalysis({
         config,
         model,
         fetchImpl,
+        signal,
         messages: buildMessages({
           policy: externalPolicy,
           analysisInput: enrichedAnalysisInput,
@@ -2744,6 +2807,7 @@ export async function analyzeInsurancePolicyResponsibilities({
       };
       return buildAnalysisResult(result);
     } catch (error) {
+      if (isPolicyAnalysisAbort(error, signal)) throw error;
       if (error?.code) {
         lastError = error;
       } else {
