@@ -2,6 +2,7 @@ import {
   catalogProductIdentity,
   searchProductCatalog,
 } from './product-catalog-search.mjs';
+import { canonicalProductIdFromOfficialProduct } from './canonical-product-id.mjs';
 
 const MATCH_TYPES = new Set([
   'exact_official_name',
@@ -191,13 +192,42 @@ function scannableTerm(value, { approved = false } = {}) {
   return [...normalized].length >= (approved ? 2 : 4) ? normalized : '';
 }
 
-function canonicalProductForCatalogRow(row, products) {
+function belongsToAnotherTenant(db, tenantId, row) {
+  const columns = tableColumns(db, 'insurance_products');
+  if (!columns.has('tenant_id') || !columns.has('company')
+    || !columns.has('official_name') || !columns.has('status')) return false;
+  return db.prepare(`
+    SELECT company, official_name
+    FROM insurance_products
+    WHERE tenant_id != ? AND LOWER(TRIM(COALESCE(status, ''))) = 'active'
+  `).all(tenantId).some((product) => (
+    clean(product.company) === clean(row.company)
+    && catalogProductIdentity(product.official_name) === catalogProductIdentity(row.productName)
+  ));
+}
+
+function canonicalProductForCatalogRow(row, products, db, tenantId) {
   const identity = catalogProductIdentity(row.productName);
   const matches = products.filter((product) => product.company === row.company
     && catalogProductIdentity(product.officialName) === identity);
   const canonicalIds = new Set(matches.map((product) => product.canonicalProductId).filter(Boolean));
+  const catalogProductId = belongsToAnotherTenant(db, tenantId, row)
+    ? ''
+    : canonicalProductIdFromOfficialProduct({
+      company: row.company,
+      productName: row.productName,
+    });
   return {
-    product: matches.find((product) => product.canonicalProductId) || matches[0] || null,
+    product: matches.find((product) => product.canonicalProductId) || matches[0] || (
+      catalogProductId
+        ? {
+          canonicalProductId: catalogProductId,
+          company: clean(row.company),
+          officialName: clean(row.productName),
+          payload: {},
+        }
+        : null
+    ),
     identityConflict: canonicalIds.size > 1,
   };
 }
@@ -434,7 +464,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         visibility: 'public',
       });
       const candidates = recalled.map((row) => {
-        const canonicalMatch = canonicalProductForCatalogRow(row, products);
+        const canonicalMatch = canonicalProductForCatalogRow(row, products, db, scopedTenantId);
         const canonical = canonicalMatch.product;
         if (!canonical?.canonicalProductId && !canonicalMatch.identityConflict) return null;
         return matchCandidate({
@@ -455,7 +485,7 @@ export function createAgentProductEntityResolver({ db, tenantId, officialDomainP
         const canonicalMatch = canonicalProductForCatalogRow({
           company: product.company,
           productName: product.officialName,
-        }, products);
+        }, products, db, scopedTenantId);
         candidates.push(matchCandidate({
           ...(canonicalMatch.product || product),
           identityConflict: canonicalMatch.identityConflict,

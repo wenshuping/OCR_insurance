@@ -416,15 +416,20 @@ test('public catalog excludes product documents when review status is unavailabl
   }
 });
 
-test('does not resolve public knowledge without a canonical product id', () => {
+test('offers an official public knowledge product when the canonical catalog has not been backfilled', () => {
   const db = makeDb();
   try {
     addPublicKnowledge(db, '新华保险', '新华人寿保险股份有限公司康健无忧两全保险');
     const result = createAgentProductEntityResolver({ db }).resolve({
-      mentions: [{ type: 'product', rawText: '康健无忧两全保险' }],
+      mentions: [{ type: 'product', rawText: '康健无忧' }],
     });
 
-    assert.deepEqual(result, { status: 'not_found', entity: null, candidates: [] });
+    assert.equal(result.status, 'ambiguous');
+    assert.equal(result.entity, null);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].company, '新华保险');
+    assert.equal(result.candidates[0].officialName, '新华人寿保险股份有限公司康健无忧两全保险');
+    assert.match(result.candidates[0].canonicalProductId, /^product_[a-f0-9]{16}$/u);
   } finally {
     db.close();
   }
