@@ -481,6 +481,34 @@ test('customer summary renders official PDF field evidence as display-only when 
   assert.equal(summary.mainResponsibilities[0].title, '身故保险金');
 });
 
+test('customer card fast path marks legacy universal evidence as incomplete when source digest is missing', () => {
+  const legacyProductName = '示例万能终身寿险（万能型）';
+  const summary = buildCustomerResponsibilitySummaryFromCards({
+    company,
+    productName: legacyProductName,
+    responsibilityCards: [{
+      company,
+      productName: legacyProductName,
+      title: '身故保险金',
+      plainSummary: '身故保险金按基本保险金额与保单账户价值的较大者给付。',
+      sourceUrl: 'https://official.example.test/legacy-universal.pdf',
+    }],
+    sourceRecords: [{
+      company,
+      productName: legacyProductName,
+      official: true,
+      url: 'https://official.example.test/legacy-universal.pdf',
+      pageText: '第十条 被保险人身故，按基本保险金额与保单账户价值的较大者给付身故保险金。',
+    }],
+  });
+
+  const productFunctions = summary.contentBlocks.find((block) => block.blockKey === 'productFunctions');
+  assert.equal(productFunctions.enabled, false);
+  assert.equal(productFunctions.content, '');
+  assert.ok(summary.notices.some((notice) => /万能账户条款.*尚未完成对齐/u.test(notice)));
+  assert.equal(summary.mainResponsibilities[0].title, '身故保险金');
+});
+
 test('generateProductCustomerResponsibilitySummary returns an existing database summary without calling DeepSeek', async () => {
   let modelCalls = 0;
   const existing = {

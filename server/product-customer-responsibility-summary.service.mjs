@@ -1367,6 +1367,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   // Special-product renderers own their purpose wording and quantified fields.
   const summaryJson = ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
     || special.evaluation?.fieldEvidenceDisplay?.productFunctions?.length
+    || special.evaluation?.universalAccount?.status === 'hold'
     ? special.summary
     : summary;
   return safeCustomerSummary({ summaryJson, payload: { officialResponsibilityText } });

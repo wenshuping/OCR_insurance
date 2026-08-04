@@ -263,6 +263,33 @@ test('official PDF fields remain displayable without an approved persistence cha
   assert.ok(result.blockers.includes('source_chain_not_aligned'));
 });
 
+test('legacy universal evidence without a source digest holds instead of becoming ordinary', () => {
+  const legacyProductName = '示例万能终身寿险（万能型）';
+  const result = routeUnifiedSpecialProductResponsibility({
+    company,
+    productName: legacyProductName,
+    cards: [{
+      company,
+      productName: legacyProductName,
+      title: '身故保险金',
+      plainSummary: '身故保险金按基本保险金额与保单账户价值的较大者给付。',
+    }],
+    sourceRecords: [{
+      company,
+      productName: legacyProductName,
+      official: true,
+      url: 'https://official.example.test/legacy-universal.pdf',
+      pageText: '第十条 被保险人身故，按基本保险金额与保单账户价值的较大者给付身故保险金。',
+    }],
+  });
+
+  assert.equal(result.category, 'blocked');
+  assert.equal(result.universalAccount.status, 'hold');
+  assert.equal(result.universalAccount.productFunctions.length, 0);
+  assert.ok(result.blockers.includes('source_chain_not_aligned'));
+  assert.equal(result.ordinaryResponsibilities[0].title, '身故保险金');
+});
+
 test('official materials from the same plan version merge for display instead of becoming a version conflict', () => {
   const baseUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=853&versionNo=853-1';
   const result = routeUnifiedSpecialProductResponsibility({
