@@ -430,6 +430,8 @@ describe('cash-value-parser', () => {
       assert.equal(result.ok, true);
       assert.equal(result.source, 'deepseek_ocr');
       assert.deepEqual(result.rows.find((row) => row.policyYear === 1), { policyYear: 1, age: null, cashValue: 18228 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 2), { policyYear: 2, age: null, cashValue: 42595 });
+      assert.deepEqual(result.rows.find((row) => row.policyYear === 4), { policyYear: 4, age: null, cashValue: 71394 });
       assert.deepEqual(result.rows.find((row) => row.policyYear === 9), { policyYear: 9, age: null, cashValue: 83308 });
       assert.deepEqual(result.rows.find((row) => row.policyYear === 10), { policyYear: 10, age: null, cashValue: 92162 });
       assert.deepEqual(result.rows.find((row) => row.policyYear === 60), { policyYear: 60, age: null, cashValue: 102546 });
