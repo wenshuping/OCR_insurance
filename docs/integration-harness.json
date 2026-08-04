@@ -1,9 +1,8 @@
 {
   "format": "ocr-insurance-integration-config/v1",
-  "canonicalWorktree": ".",
+  "canonicalWorktree": ".worktrees/dev-agent-semantic-integration",
   "canonicalBranch": "codex/dev-agent-semantic-integration",
   "skillRoot": ".agents/skills",
-  "allowedUncommittedPrefixes": ["artifacts"],
   "requiredSkills": [
     "ocr-insurance-fast-responsibility-pipeline",
     "ocr-insurance-incremental-whole-life-responsibility",

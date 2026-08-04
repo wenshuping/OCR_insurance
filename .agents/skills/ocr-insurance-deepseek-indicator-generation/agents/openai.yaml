@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeepSeek 指标生成"
+  short_description: "基于锁定的官方责任证据用DeepSeek生成并验证保险责任指标数据"
+  default_prompt: "Use $ocr-insurance-deepseek-indicator-generation to generate source-grounded insurance indicators with DeepSeek from an immutable manifest."

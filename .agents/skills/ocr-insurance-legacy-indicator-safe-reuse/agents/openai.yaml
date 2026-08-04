@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Legacy Indicator Safe Reuse"
+  short_description: "Safely reuse verified legacy responsibility indicators"
+  default_prompt: "Use $ocr-insurance-legacy-indicator-safe-reuse to compare locked official responsibility inventory with legacy cards and indicators, then route exact reuse, missing-only extraction, or fresh parsing."

@@ -127,3 +127,4 @@ this Skill.
 - No non-target product row changes; no full production replacement occurs.
 - Clone dry-run, focused tests, backup/SHA, serial write, exact readback, FK,
   integrity, and rollback receipt are all present before claiming completion.
+
