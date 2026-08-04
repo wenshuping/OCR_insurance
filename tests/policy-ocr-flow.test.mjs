@@ -5643,6 +5643,7 @@ test('customer responsibility summary reads existing responsibility cards withou
       plainSummary: '发生身故或身体全残时给付保险金。',
       payoutSummary: '金额结合已交保险费、基本保险金额和保单年度计算。',
       sourceUrl: 'https://example.test/terms.pdf',
+      sourceDigest: 'sha256:customer-summary-current-version',
       sourceExcerpt: '保险责任包括身故或身体全残保险金。',
     }),
   );
