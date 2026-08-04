@@ -190,8 +190,8 @@ test('buildStructuredResponsibilityPrompt requires contentBlocks while preservin
   assert.match(prompt, /productPurpose/u);
   assert.match(prompt, /responsibilities/u);
   assert.match(prompt, /productFunctions/u);
-  assert.match(prompt, /productFunctions 使用已有开关关闭/u);
-  assert.match(prompt, /enabled 必须为 false/u);
+  assert.match(prompt, /productFunctions 只有在输入中的同版本官方证据明确支持/u);
+  assert.match(prompt, /无证据时必须关闭/u);
   assert.match(prompt, /attentionNotes/u);
   assert.match(prompt, /enabled/u);
   assert.match(prompt, /editable/u);

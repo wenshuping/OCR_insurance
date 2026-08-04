@@ -26,6 +26,13 @@ import {
   buildSpecialProductDatabaseSummary,
 } from './unified-special-product-responsibility.mjs';
 import {
+  buildDomainWorkerPlan,
+  buildWholeDocumentProductProfile,
+  mergeDomainWorkerResults,
+  runDomainEvidenceWorkers,
+  wholeDocumentTextFromRecord,
+} from './product-document-domain-workers.mjs';
+import {
   productIdentityKey,
   responsibilityCompanyIdentity,
   sameResponsibilityProduct,
@@ -37,7 +44,7 @@ import {
   responsibilityGenerationGovernanceDigest,
 } from './responsibility-generation-governance.service.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v26-field-evidence-display';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v27-whole-document-domains';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -331,6 +338,10 @@ function officialResponsibilitySourceTextFrom(row = {}) {
   );
 }
 
+function officialWholeDocumentTextFrom(row = {}) {
+  return wholeDocumentTextFromRecord(row) || officialResponsibilitySourceTextFrom(row);
+}
+
 function sourceTextFrom(row = {}) {
   return text(officialResponsibilitySummaryTextFrom(row) || officialResponsibilitySourceTextFrom(row));
 }
@@ -563,8 +574,12 @@ function recordProductMatches(row, { company, productName, canonicalProductId })
 function sourceRecordsForProduct(records, product) {
   return normalizeArray(records)
     .filter((record) => recordProductMatches(record, product))
-    .filter((record) => sourceUrlFrom(record) || sourceTextFrom(record))
-    .slice(0, 6);
+    .filter((record) => sourceUrlFrom(record) || officialWholeDocumentTextFrom(record))
+    .sort((left, right) => (
+      officialWholeDocumentTextFrom(right).length - officialWholeDocumentTextFrom(left).length
+      || Number(Boolean(sourceUrlFrom(right))) - Number(Boolean(sourceUrlFrom(left)))
+    ))
+    .slice(0, 20);
 }
 
 function extractOfficialResponsibilityText(value = '', limit = OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT) {
@@ -628,11 +643,16 @@ function digestIndicator(indicator = {}) {
 }
 
 function digestRecord(record = {}) {
+  const wholeDocumentText = officialWholeDocumentTextFrom(record);
   return {
     title: text(record.title || record.productName || record.name),
     url: sourceUrlFrom(record),
     responsibilitySummary: excerpt(officialResponsibilitySummaryTextFrom(record), OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT),
     pageText: extractOfficialResponsibilityText(officialResponsibilitySourceTextFrom(record), OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT),
+    wholeDocumentDigest: wholeDocumentText
+      ? crypto.createHash('sha256').update(wholeDocumentText).digest('hex')
+      : '',
+    sourceDigest: text(record.sourceDigest || record.source_digest || record.responsibilitySourceDigest),
   };
 }
 
@@ -753,6 +773,7 @@ function officialAnalysisSources(analysis = {}) {
       title: text(source?.title || source?.name || source?.url),
       url: sourceUrlFrom(source),
       snippet: text(source?.snippet || source?.evidenceLabel || source?.description),
+      fullText: text(source?.fullText || source?.full_text || source?.pageText || source?.text || source?.content),
     }))
     .filter((source) => source.title || source.url || source.snippet)
     .slice(0, 6);
@@ -800,6 +821,7 @@ function sourceRecordsFromOfficialAnalysis(analysis = {}, { company, productName
       title: source.title || productName,
       url: source.url,
       pageText: ['第五条 保险责任', source.snippet, coverageText].filter(Boolean).join('\n'),
+      fullText: source.fullText,
       official: true,
     }));
 }
@@ -1530,6 +1552,14 @@ function productFunctionTextFrom(item) {
   return firstText(item?.title, item?.name, item?.plainText, item?.summary, item?.description);
 }
 
+function enabledContentBlock(summary = {}, blockKey = '') {
+  return normalizeArray(summary.contentBlocks).find((block) => (
+    text(block?.blockKey) === blockKey
+      && block?.enabled !== false
+      && text(block?.content)
+  ));
+}
+
 function responsibilitySearchText(item = {}) {
   return [
     item.title,
@@ -1860,6 +1890,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   persistGenerationRun,
   generateWithDeepSeek = callDeepSeekForCustomerResponsibilitySummary,
   generatePlannerWithDeepSeek,
+  generateDomainWorkerWithDeepSeek,
   generateOfficialAnalysis,
   modelName = resolveDeepSeekConfig().model,
   nowIso = () => new Date().toISOString(),
@@ -1883,24 +1914,6 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   const inputProductKey = productKeyFor(company, inputProductName, canonicalProductId);
   const inputProduct = { company, productName: inputProductName, productKey: inputProductKey, canonicalProductId };
   const scopedPrivateRecords = normalizeArray(privateSourceRecords);
-  // Canonical official products can return a ready summary before scanning the full knowledge snapshot.
-  if (!scopedPrivateRecords.length && canonicalProductId && typeof findSummary === 'function') {
-    const cachedCanonicalSummary = await findExistingCustomerResponsibilitySummary({
-      findSummary,
-      company,
-      productName: inputProductName,
-      canonicalProductId,
-      productKey: inputProductKey,
-      sourceDigest: '',
-    });
-    if (cachedCanonicalSummary) {
-      return {
-        ok: true,
-        source: 'database',
-        summary: safeCustomerSummary(cachedCanonicalSummary),
-      };
-    }
-  }
   let cards = loadProductResponsibilityCards(db, inputProduct);
   let records = sourceRecordsForProduct(
     scopedPrivateRecords.length ? scopedPrivateRecords : state.knowledgeRecords,
@@ -2096,6 +2109,27 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     };
   }
   const sourceRecords = resolvedSources.records;
+  const documentProfile = buildWholeDocumentProductProfile({ company, productName, records: sourceRecords });
+  if (documentProfile.versionConflict) {
+    await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
+      productKey,
+      company,
+      productName,
+      status: 'needs_source_review',
+      sourceDigest,
+      qualityIssues: [{
+        code: 'official_document_version_conflict',
+        versions: documentProfile.explicitVersionKeys,
+      }],
+      now: structuredNow,
+    }));
+    return {
+      ok: false,
+      status: 'needs_source_review',
+      message: '发现多个不同版本的官方条款，已停止生成并保留原有保单详情。',
+    };
+  }
+  const domainWorkerPlan = buildDomainWorkerPlan(documentProfile);
   const preliminaryRouting = routeInsuranceProductCategory({
     productName,
     records: sourceRecords,
@@ -2128,6 +2162,16 @@ async function generateProductCustomerResponsibilitySummaryInternal({
       message: '这个产品的保险责任资料需要进一步核验，请稍后再试。',
     };
   }
+  const resolvedDomainWorkerGenerator = typeof generateDomainWorkerWithDeepSeek === 'function'
+    ? generateDomainWorkerWithDeepSeek
+    : generateWithDeepSeek === callDeepSeekForCustomerResponsibilitySummary
+      ? generateWithDeepSeek
+      : null;
+  const domainWorkersPromise = runDomainEvidenceWorkers({
+    product: { company, productName },
+    plan: domainWorkerPlan,
+    generateWorker: resolvedDomainWorkerGenerator,
+  });
   const localRouting = routeInsuranceProductCategory({
     productName,
     records: sourceRecords,
@@ -2361,7 +2405,8 @@ async function generateProductCustomerResponsibilitySummaryInternal({
       issues: qualityIssuesFromGenerationAttempts(generationAttempts),
     };
   }
-  const summaryJson = enrichSummaryWithCompoundGrowth(
+  const domainWorkerResults = await domainWorkersPromise;
+  const baseSummaryJson = enrichSummaryWithCompoundGrowth(
     applyIncrementalWholeLifePurpose(normalizeStructuredSummaryToCustomerSummary(rawSummary, {
       company,
       productName,
@@ -2377,6 +2422,67 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     }),
     { cards, indicators, records: sourceRecords },
   );
+  const specialSummary = buildSpecialProductDatabaseSummary({
+    summary: baseSummaryJson,
+    evidence: {
+      company,
+      productName,
+      productKey,
+      cards,
+      indicators,
+      artifacts: approvedResponsibilityArtifacts,
+      sourceRecords,
+      responsibilities: baseSummaryJson.mainResponsibilities,
+      productCategory: routing.productCategory,
+    },
+  }).summary;
+  const summaryJson = mergeDomainWorkerResults(specialSummary, domainWorkerResults);
+  if (resolvedDomainWorkerGenerator && domainWorkerPlan.length
+    && domainWorkerResults.every((worker) => worker.status !== 'passed')) {
+    await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
+      productKey,
+      company,
+      productName,
+      status: 'needs_model_review',
+      routing,
+      sourceDigest,
+      sourceSections,
+      qualityIssues: [{ code: 'all_domain_workers_failed' }],
+      modelName: usedModelName,
+      modelTier: routing.modelTier,
+      plannerResult,
+      now: structuredNow,
+    }));
+    return {
+      ok: false,
+      status: 'needs_model_review',
+      message: '产品全文领域解析暂未通过，已保留原有保单详情。',
+    };
+  }
+  const universalEvidence = documentProfile.evidencePackets.find((packet) => (
+    packet.domain === 'universal_life' && text(packet.evidenceText)
+  ));
+  if (resolvedDomainWorkerGenerator && universalEvidence && !enabledContentBlock(summaryJson, 'productFunctions')) {
+    await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({
+      productKey,
+      company,
+      productName,
+      status: 'needs_model_review',
+      routing,
+      sourceDigest,
+      sourceSections,
+      qualityIssues: [{ code: 'universal_account_evidence_not_rendered' }],
+      modelName: usedModelName,
+      modelTier: routing.modelTier,
+      plannerResult,
+      now: structuredNow,
+    }));
+    return {
+      ok: false,
+      status: 'needs_model_review',
+      message: '万能账户条款未完整生成，已保留原有保单详情。',
+    };
+  }
   const summaryContext = buildSummaryContext({ productKey, company, productName, cards, indicators, records: sourceRecords });
   Object.assign(summaryContext, {
     generationGovernance,
@@ -2386,6 +2492,14 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     plannerModel: plannerResult.plannerModel,
     plannerOutput: plannerResult.planner,
     plannerError: plannerResult.plannerError,
+    documentProfile,
+    domainWorkerPlan: domainWorkerPlan.map((worker) => ({ role: worker.role, domain: worker.domain })),
+    domainWorkers: domainWorkerResults.map((worker) => ({
+      role: worker.role,
+      domain: worker.domain,
+      status: worker.status,
+      errorCode: worker.errorCode || '',
+    })),
   });
   const now = structuredNow;
   const saved = await persistReadyCustomerSummary({

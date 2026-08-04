@@ -17,7 +17,7 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v26-field-evidence-display';
+const currentSummaryVersion = 'customer-summary-v27-whole-document-domains';
 
 test('material enrichment dynamically adds grounded blocks and responsibilities from published chunks', async () => {
   let receivedPrompt = '';
