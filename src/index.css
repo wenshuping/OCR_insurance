@@ -65,6 +65,26 @@ body {
   display: none;
 }
 
+.family-report-table-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+}
+
+.family-report-responsibility-table th,
+.family-report-responsibility-table td {
+  vertical-align: top;
+}
+
+.family-report-policy-source {
+  overflow-x: auto;
+  word-break: keep-all;
+}
+
+.family-report-policy-name {
+  word-break: keep-all;
+}
+
 .family-report-screen-export-target [data-report-export-cards] {
   display: none !important;
 }

@@ -218,11 +218,30 @@ function ConditionSummary({ text }: { text?: string | number | null }) {
 }
 
 function sourcePolicyText(row: FamilyMemberProtectionReport['rows'][number]) {
-  if (!row.sourcePolicies.length) return '-';
+  return sourcePolicyNames(row).join(' / ') || '-';
+}
+
+function sourcePolicyNames(row: FamilyMemberProtectionReport['rows'][number]) {
   const names = row.sourcePolicies
     .map((policy) => compactText(policy.productName || policy.liability || '未命名保单'))
     .filter(Boolean);
-  return Array.from(new Set(names)).join(' / ') || '-';
+  return Array.from(new Set(names));
+}
+
+function SourcePolicyList({ row }: { row: FamilyMemberProtectionReport['rows'][number] }) {
+  const names = sourcePolicyNames(row);
+  if (!names.length) return <span>-</span>;
+
+  return (
+    <span className="family-report-policy-source flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-1" title={sourcePolicyText(row)}>
+      {names.map((name, index) => (
+        <span key={name} className="inline-flex min-w-0 items-center gap-x-1">
+          {index ? <span aria-hidden="true" className="shrink-0 text-slate-400">/</span> : null}
+          <span className="family-report-policy-name whitespace-nowrap">{name}</span>
+        </span>
+      ))}
+    </span>
+  );
 }
 
 function Section({
@@ -252,7 +271,7 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function TableWrap({ children }: { children: React.ReactNode }) {
-  return <div data-pdf-table-wrap className="overflow-x-auto rounded-[18px] border border-[#E1E8EF] bg-white">{children}</div>;
+  return <div data-pdf-table-wrap className="family-report-table-wrap overflow-x-auto rounded-[18px] border border-[#E1E8EF] bg-white">{children}</div>;
 }
 
 type RadarSeries = FamilyReport['radar']['family'];
@@ -1395,8 +1414,8 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
             </div>
             <div data-report-canvas-skip className="mt-3 border-t border-[#E1E8EF] pt-2">
               <p className="text-[11px] font-bold leading-4 text-[#72849A]">来源保单</p>
-              <p className="mt-1 break-words text-[11px] font-medium leading-5 text-slate-500">
-                {truncateText(sourcePolicyText(row), 42)}
+              <p className="family-report-policy-source mt-1 max-w-full overflow-x-auto text-[11px] font-medium leading-5 text-slate-500">
+                <SourcePolicyList row={row} />
               </p>
             </div>
           </div>
@@ -1404,7 +1423,15 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
       </div>
       <div data-report-canvas-skip data-report-export-table className="hidden md:block">
         <TableWrap>
-        <table className="min-w-full border-separate border-spacing-0 text-left">
+        <table className="family-report-responsibility-table min-w-[1215px] table-fixed border-separate border-spacing-0 text-left">
+          <colgroup>
+            <col className="w-[210px]" />
+            <col className="w-[130px]" />
+            <col className="w-[125px]" />
+            <col className="w-[100px]" />
+            <col className="w-[350px]" />
+            <col className="w-[300px]" />
+          </colgroup>
           <thead>
             <tr>
               <th className={`${thClassName} rounded-tl-[18px]`}>责任颗粒度</th>
@@ -1429,8 +1456,8 @@ function ProtectionMemberTable({ member }: { member: FamilyMemberProtectionRepor
                 <td className="max-w-[300px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium text-slate-500">
                   <ConditionSummary text={row.conditionText} />
                 </td>
-                <td className="max-w-[240px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium leading-5 text-slate-500">
-                  {truncateText(sourcePolicyText(row), 56)}
+                <td className="family-report-source-cell border-b border-[#E6EEF5] bg-white px-3 py-2.5 align-top text-xs font-medium leading-5 text-slate-500">
+                  <SourcePolicyList row={row} />
                 </td>
               </tr>
             ))}
