@@ -10,6 +10,7 @@ import { createCashflowStore, createCashValueStore } from '../server/cashflow-st
 import { createAgentQuestionRouter } from '../server/agent-question-router.service.mjs';
 import { dispatchPendingTransferRegenerationJobs, startTransferRegenerationRecovery } from '../server/agent-confirmation.service.mjs';
 import { createInitialState } from '../server/policy-ocr.domain.mjs';
+import { resolveFamilySalesReviewFreshness } from '../server/family-sales-review.service.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 async function makeTempDir() {
@@ -19,6 +20,24 @@ async function makeTempDir() {
 async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
+
+test('sqlite state store safely loads legacy expert and sales payloads as stale', async () => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const seedStatePath = path.join(dir, 'legacy-state.json');
+  await writeJson(seedStatePath, {
+    familyReports: [{ id: 1, familyId: 8, status: 'active', report: {}, generatedAt: '2026-05-01T00:00:00.000Z' }],
+    familySalesReviews: [{ id: 2, familyId: 8, status: 'active', content: '旧销售建议', generatedAt: '2026-05-01T00:00:00.000Z' }],
+  });
+
+  const store = await createSqliteStateStore({ dbPath, seedStatePath });
+  const loaded = await store.load();
+  assert.equal(loaded.familyReports[0].structuredResult, undefined);
+  assert.equal(loaded.familyReports[0].expertInputVersion, undefined);
+  assert.equal(loaded.familySalesReviews[0].expertReportId, undefined);
+  assert.equal(resolveFamilySalesReviewFreshness(loaded.familySalesReviews[0]).status, 'stale');
+  store.close();
+});
 
 function insertExternalKnowledgeRecord(store) {
   store.db.prepare(`
@@ -171,6 +190,17 @@ test('sqlite state store imports JSON once and keeps database as the source of t
       createdAt: '2026-05-01T00:11:00.000Z',
       updatedAt: '2026-05-01T00:11:00.000Z',
       inputSummary: { familyId: 8, memberCount: 1, policyCount: 1 },
+      expertReportId: 12,
+      expertInputVersion: 'expert-input-v2',
+      structuredSummary: {
+        conclusion: '先补足基础保障',
+        verificationItems: ['核实既往症'],
+        coverageConcerns: ['医疗保障不足'],
+        salesOpportunities: ['补充医疗险'],
+        meetingObjective: '确认预算',
+        nextActions: ['预约面谈'],
+        refs: { facts: ['fact:coverage-gap'], indicators: [], policies: ['policy:3'] },
+      },
     }],
     familySalesChatThreads: [{
       id: 30,
@@ -212,6 +242,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
       createdAt: '2026-05-01T00:12:00.000Z',
       updatedAt: '2026-05-01T00:12:00.000Z',
       summary: { familyId: 8, memberCount: 1, policyCount: 1, issueCount: 1 },
+      expertInputVersion: 'expert-input-v2',
+      structuredResult: { summary: '基础保障存在缺口', verificationItems: ['核实既往症'] },
     }],
     familyReportIssues: [{
       id: 13,
@@ -266,6 +298,9 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familySalesReviews.length, 1);
   assert.equal(imported.familySalesReviews[0].familyId, 8);
   assert.equal(imported.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(imported.familySalesReviews[0].expertReportId, 12);
+  assert.equal(imported.familySalesReviews[0].expertInputVersion, 'expert-input-v2');
+  assert.equal(imported.familySalesReviews[0].structuredSummary.meetingObjective, '确认预算');
   assert.equal(imported.familySalesChatThreads.length, 1);
   assert.equal(imported.familySalesChatThreads[0].title, '微信话术');
   assert.equal(imported.familySalesChatMessages.length, 2);
@@ -274,6 +309,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(imported.familySalesMemories[0].content, '客户预算敏感，优先基础方案');
   assert.equal(imported.familyReports.length, 1);
   assert.equal(imported.familyReports[0].summary.issueCount, 1);
+  assert.equal(imported.familyReports[0].expertInputVersion, 'expert-input-v2');
+  assert.equal(imported.familyReports[0].structuredResult.summary, '基础保障存在缺口');
   assert.equal(imported.familyReportIssues.length, 1);
   assert.equal(imported.familyReportIssues[0].reportId, 12);
   assert.equal(imported.familyReportCorrections.length, 1);
@@ -339,6 +376,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloaded.familySalesReviews.length, 1);
   assert.equal(reloaded.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloaded.familySalesReviews[0].expertInputVersion, 'expert-input-v2');
+  assert.equal(reloaded.familySalesReviews[0].structuredSummary.conclusion, '先补足基础保障');
   assert.equal(reloaded.familySalesChatThreads.length, 1);
   assert.equal(reloaded.familySalesChatThreads[0].title, '微信话术');
   assert.equal(reloaded.familySalesChatMessages.length, 2);
@@ -347,6 +386,7 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloaded.familySalesMemories[0].kind, 'objection');
   assert.equal(reloaded.familyReports.length, 1);
   assert.equal(reloaded.familyReports[0].summary.issueCount, 1);
+  assert.equal(reloaded.familyReports[0].structuredResult.verificationItems[0], '核实既往症');
   assert.equal(reloaded.familyReportIssues.length, 1);
   assert.equal(reloaded.familyReportIssues[0].title, '家庭成员未绑定保单');
   assert.equal(reloaded.familyReportCorrections.length, 1);
@@ -374,6 +414,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familyReportShares[0].token, 'share-token-1');
   assert.equal(reloadedAfterRestart.familySalesReviews.length, 1);
   assert.equal(reloadedAfterRestart.familySalesReviews[0].content, '销售建议报告');
+  assert.equal(reloadedAfterRestart.familySalesReviews[0].expertReportId, 12);
+  assert.equal(reloadedAfterRestart.familySalesReviews[0].structuredSummary.nextActions[0], '预约面谈');
   assert.equal(reloadedAfterRestart.familySalesChatThreads.length, 1);
   assert.equal(reloadedAfterRestart.familySalesChatThreads[0].title, '微信话术');
   assert.equal(reloadedAfterRestart.familySalesChatMessages.length, 2);
@@ -382,6 +424,8 @@ test('sqlite state store imports JSON once and keeps database as the source of t
   assert.equal(reloadedAfterRestart.familySalesMemories[0].sourceThreadId, 30);
   assert.equal(reloadedAfterRestart.familyReports.length, 1);
   assert.equal(reloadedAfterRestart.familyReports[0].summary.issueCount, 1);
+  assert.equal(reloadedAfterRestart.familyReports[0].expertInputVersion, 'expert-input-v2');
+  assert.equal(reloadedAfterRestart.familyReports[0].structuredResult.summary, '基础保障存在缺口');
   assert.equal(reloadedAfterRestart.familyReportIssues.length, 1);
   assert.equal(reloadedAfterRestart.familyReportIssues[0].reportId, 12);
   assert.equal(reloadedAfterRestart.familyReportCorrections.length, 1);

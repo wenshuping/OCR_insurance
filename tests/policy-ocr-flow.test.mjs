@@ -27,6 +27,16 @@ const TEST_POLICY_ENTRY_DEFAULT_GUEST = '__default_policy_entry_guest__';
 const appStateByBaseUrl = new Map();
 const policyEntryAuthByBaseUrl = new Map();
 
+async function generateTestFamilyPolicyAnalysisReport({ input }) {
+  return {
+    status: 'complete', content: '测试专家报告', expertInputVersion: input.expertInputVersion, model: 'test-expert',
+    structuredResult: {
+      summary: '测试专家结论', priorityFindings: [], confirmedFacts: [], verificationItems: [], memberFindings: [],
+      evidenceRefs: { facts: [], indicators: [], policies: [] }, dataQualityWarnings: [],
+    },
+  };
+}
+
 function parseJsonFetchBody(body) {
   if (!body || typeof body !== 'string') return {};
   try {
@@ -13127,14 +13137,15 @@ test('family sales review is generated once persisted and returned by latest rep
   let generationCount = 0;
   const app = createPolicyOcrApp({
     state,
+    generateFamilyPolicyAnalysisReport: generateTestFamilyPolicyAnalysisReport,
     persistFamilyState: async (input) => {
       familyPersistCalls.push(input);
     },
     generateFamilySalesReview: async ({ input }) => {
       generationCount += 1;
-      assert.equal(input.family.familyRef, '当前家庭');
       assert.equal(input.members.length, generationCount === 3 ? 3 : 2);
-      assert.equal(input.policies.length, 1);
+      assert.equal(input.policyIndex.length, 1);
+      assert.equal(input.expertFindings.summary, '测试专家结论');
       assert.equal(input.family.notes, generationCount === 1 ? '初始家庭备注' : '更新后的家庭备注：年收入约80万，喜欢现金流方案');
       assert.equal(
         input.members.find((member) => member.memberRef === '{{member_1}}')?.notes,
@@ -13145,10 +13156,10 @@ test('family sales review is generated once persisted and returned by latest rep
         model: 'test-internal-expert',
         generatedAt: `2026-06-15T00:0${generationCount + 2}:00.000Z`,
         inputSummary: {
-          memberCount: input.dataQuality.memberCount,
-          policyCount: input.dataQuality.policyCount,
-          membersWithoutPolicyCount: input.dataQuality.membersWithoutPolicy.length,
-          officialProductCount: input.officialEvidence.length,
+          memberCount: input.members.length,
+          policyCount: input.policyIndex.length,
+          membersWithoutPolicyCount: 0,
+          officialProductCount: 0,
         },
       };
     },
@@ -13164,16 +13175,19 @@ test('family sales review is generated once persisted and returned by latest rep
       body: JSON.stringify({}),
     });
     assert.equal(generated.response.status, 200);
-    assert.equal(generated.payload.review.id, 12);
+    assert.equal(Number.isInteger(generated.payload.review.id), true);
     assert.equal(generated.payload.review.familyId, 8);
     assert.equal(generated.payload.review.model, '');
     assert.equal(generated.payload.review.content.includes('第 1 次销售建议'), true);
     assert.equal(generated.payload.review.inputSummary.memberCount, 2);
+    assert.equal(generated.payload.review.freshness, 'fresh');
+    assert.equal(generated.payload.review.freshnessReason, '');
+    assert.equal('structuredResult' in generated.payload.review, false);
     assert.equal(state.familySalesReviews.length, 1);
     assert.equal(state.familySalesReviews[0].content, generated.payload.review.content);
     assert.equal(state.familySalesReviews[0].ownerGuestId, 'guest-sales-review');
-    assert.equal(state.nextId, 13);
-    assert.deepEqual(familyPersistCalls.map((call) => call.includePolicies), [false]);
+    assert.equal(state.nextId > generated.payload.review.id, true);
+    assert.equal(familyPersistCalls.some((call) => call.includePolicies === false), true);
 
     const saved = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
     assert.equal(saved.response.status, 200);
@@ -13199,19 +13213,21 @@ test('family sales review is generated once persisted and returned by latest rep
 
     const afterNotesGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
     assert.equal(afterNotesGet.response.status, 200);
-    assert.equal(afterNotesGet.payload.review.id, 12);
+    assert.equal(afterNotesGet.payload.review.id, generated.payload.review.id);
     assert.equal(afterNotesGet.payload.review.status, 'archived');
+    assert.equal(afterNotesGet.payload.review.freshness, 'archived');
+    assert.equal(afterNotesGet.payload.review.freshnessReason, 'source_updated');
 
     const regenerated = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
       method: 'POST',
       body: JSON.stringify({}),
     });
     assert.equal(regenerated.response.status, 200);
-    assert.equal(regenerated.payload.review.id, 13);
+    assert.notEqual(regenerated.payload.review.id, generated.payload.review.id);
     assert.equal(regenerated.payload.review.content.includes('第 2 次销售建议'), true);
     assert.equal(state.familySalesReviews.length, 2);
-    assert.equal(state.familySalesReviews.find((review) => review.id === 12).status, 'archived');
-    assert.equal(state.familySalesReviews.find((review) => review.id === 13).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === generated.payload.review.id).status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.id === regenerated.payload.review.id).status, 'active');
     assert.equal(state.familyReportShares.length, 0);
     assert.equal(generationCount, 2);
 
@@ -13221,11 +13237,11 @@ test('family sales review is generated once persisted and returned by latest rep
     });
     assert.equal(addedMember.response.status, 201);
     assert.equal(addedMember.payload.members.length, 3);
-    assert.equal(state.familySalesReviews.find((review) => review.id === 13).status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.id === regenerated.payload.review.id).status, 'archived');
 
     const afterMemberGet = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review');
     assert.equal(afterMemberGet.response.status, 200);
-    assert.equal(afterMemberGet.payload.review.id, 13);
+    assert.equal(afterMemberGet.payload.review.id, regenerated.payload.review.id);
     assert.equal(afterMemberGet.payload.review.status, 'archived');
 
     const regeneratedAfterMember = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-review?guestId=guest-sales-review', {
@@ -13233,10 +13249,10 @@ test('family sales review is generated once persisted and returned by latest rep
       body: JSON.stringify({}),
     });
     assert.equal(regeneratedAfterMember.response.status, 200);
-    assert.equal(regeneratedAfterMember.payload.review.id, 15);
+    assert.notEqual(regeneratedAfterMember.payload.review.id, regenerated.payload.review.id);
     assert.equal(regeneratedAfterMember.payload.review.inputSummary.memberCount, 3);
     assert.equal(regeneratedAfterMember.payload.review.content.includes('第 3 次销售建议'), true);
-    assert.equal(state.familySalesReviews.find((review) => review.id === 15).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.id === regeneratedAfterMember.payload.review.id).status, 'active');
     assert.equal(generationCount, 3);
   } finally {
     await server.close();
@@ -13310,6 +13326,7 @@ test('family sales review generation preserves other family and owner reviews', 
   state.nextId = 40;
   const app = createPolicyOcrApp({
     state,
+    generateFamilyPolicyAnalysisReport: generateTestFamilyPolicyAnalysisReport,
     generateFamilySalesReview: async () => ({
       content: '当前家庭新销售建议',
       model: 'test',
@@ -13325,10 +13342,10 @@ test('family sales review generation preserves other family and owner reviews', 
     });
 
     assert.equal(generated.response.status, 200);
-    assert.equal(state.familySalesReviews.find((review) => review.id === 30).status, 'archived');
-    assert.equal(state.familySalesReviews.find((review) => review.id === 31).status, 'active');
-    assert.equal(state.familySalesReviews.find((review) => review.id === 32).status, 'active');
-    assert.equal(state.familySalesReviews.find((review) => review.id === 40).status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.content === '当前家庭旧销售建议').status, 'archived');
+    assert.equal(state.familySalesReviews.find((review) => review.content === '当前家庭新销售建议').status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.content === '其他家庭销售建议').status, 'active');
+    assert.equal(state.familySalesReviews.find((review) => review.content === '其他 owner 销售建议').status, 'active');
   } finally {
     await server.close();
   }
@@ -13370,6 +13387,7 @@ test('family sales review daily refresh limit only counts explicit user refreshe
   const app = createPolicyOcrApp({
     state,
     now: () => '2026-06-15T08:00:00.000Z',
+    generateFamilyPolicyAnalysisReport: generateTestFamilyPolicyAnalysisReport,
     generateFamilySalesReview: async () => {
       generatedCount += 1;
       return {
@@ -13452,6 +13470,7 @@ test('family sales chat creates threads continues with history and enforces owne
     ownerGuestId: 'guest-sales-chat',
     status: 'active',
     content: '## 销售建议\n先和{{member_1}}核实预算。',
+    structuredSummary: { conclusion: '优先沟通终身寿', salesOpportunities: ['测试终身寿'], refs: { policies: ['policy:11'] } },
     generatedAt: '2026-06-15T00:03:00.000Z',
     createdAt: '2026-06-15T00:03:00.000Z',
     updatedAt: '2026-06-15T00:03:00.000Z',
@@ -13504,9 +13523,9 @@ test('family sales chat creates threads continues with history and enforces owne
   try {
     const created = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads?guestId=guest-sales-chat', {
       method: 'POST',
-      body: JSON.stringify({ message: '帮我改成微信话术' }),
+      body: JSON.stringify({ message: '测试终身寿怎么聊' }),
     });
-    assert.equal(created.response.status, 201);
+    assert.equal(created.response.status, 201, JSON.stringify(created.payload));
     assert.equal(created.payload.thread.id, 20);
     assert.equal(created.payload.messages.length, 2);
     assert.equal(created.payload.messages[0].role, 'user');
@@ -13514,9 +13533,9 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(state.familySalesChatThreads.length, 1);
     assert.equal(state.familySalesChatMessages.length, 2);
     assert.equal(state.familySalesChatThreads[0].ownerGuestId, 'guest-sales-chat');
-    assert.equal(generationCalls[0].question, '帮我改成微信话术');
-    assert.equal(generationCalls[0].context.latestSalesReview.id, 12);
-    assert.equal(generationCalls[0].context.salesMemoryContext, undefined);
+    assert.equal(generationCalls[0].question, '测试终身寿怎么聊');
+    assert.equal(generationCalls[0].context.salesSummary.conclusion, '优先沟通终身寿');
+    assert.deepEqual(generationCalls[0].context.conversationTargets.activeOpportunity, { policyRef: 'policy:11' });
     assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他家庭的偏好/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[0].context), /其他登录人的偏好/u);
     assert.equal(generationCalls[0].history.length, 0);
@@ -13530,13 +13549,17 @@ test('family sales chat creates threads continues with history and enforces owne
 
     const continued = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages?guestId=guest-sales-chat', {
       method: 'POST',
-      body: JSON.stringify({ message: '客户说预算不够怎么回应' }),
+      body: JSON.stringify({ message: '这张保单续保怎么样' }),
     });
     assert.equal(continued.response.status, 200);
     assert.equal(continued.payload.messages.length, 2);
-    assert.equal(generationCalls[1].question, '客户说预算不够怎么回应');
+    assert.equal(generationCalls[1].question, '这张保单续保怎么样');
     assert.equal(generationCalls[1].history.length, 2);
-    assert.equal(generationCalls[1].context.salesMemoryContext.memoryCount, 1);
+    assert.equal(generationCalls[1].context.salesMemoryContext.length, 1);
+    assert.equal(generationCalls[1].context.salesMemoryContext[0].status, 'confirmed');
+    assert.deepEqual(generationCalls[1].context.conversationTargets.lastExplicitTarget, { policyRef: 'policy:11', memberRef: 'member:9', category: '增额终身寿险' });
+    assert.equal(generationCalls[1].context.topicPack.type, 'policy_indicators');
+    assert.deepEqual(generationCalls[1].context.topicPack.policyRefs, ['policy:11']);
     assert.match(JSON.stringify(generationCalls[1].context.salesMemoryContext), /客户预算敏感/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他家庭的偏好/u);
     assert.doesNotMatch(JSON.stringify(generationCalls[1].context.salesMemoryContext), /其他登录人的偏好/u);
@@ -13550,8 +13573,8 @@ test('family sales chat creates threads continues with history and enforces owne
     assert.equal(listed.payload.threads.length, 1);
     assert.equal(listed.payload.threads[0].messageCount, 4);
     assert.equal(listed.payload.threads[0].messages.length, 4);
-    assert.equal(listed.payload.threads[0].messages[0].content, '帮我改成微信话术');
-    assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 客户说预算不够怎么回应');
+    assert.equal(listed.payload.threads[0].messages[0].content, '测试终身寿怎么聊');
+    assert.equal(listed.payload.threads[0].messages[3].content, '回复 2: 这张保单续保怎么样');
 
     const assistantEditRejected = await jsonFetch(server.baseUrl, '/api/family-profiles/8/sales-chat/threads/20/messages/25?guestId=guest-sales-chat', {
       method: 'PATCH',
@@ -13755,6 +13778,7 @@ test('family sales review regeneration only includes selected sales chat context
   let reviewInput = null;
   const app = createPolicyOcrApp({
     state,
+    generateFamilyPolicyAnalysisReport: generateTestFamilyPolicyAnalysisReport,
     generateFamilySalesReview: async ({ input }) => {
       reviewInput = input;
       return {
@@ -13940,7 +13964,7 @@ test('family report generation persists report records and exposes issues only i
   }
 });
 
-test('family report reads archived fallback with stale policy analysis content', async () => {
+test('family policy analysis GET ignores archived fallback and reports current status as missing', async () => {
   const state = createInitialState();
   state.familyProfiles.push({
     id: 8,
@@ -13980,8 +14004,151 @@ test('family report reads archived fallback with stale policy analysis content',
 
     const analysis = await jsonFetch(server.baseUrl, '/api/family-profiles/8/policy-analysis-report?guestId=guest-family-report-stale');
     assert.equal(analysis.response.status, 200);
-    assert.equal(analysis.payload.analysisReport.content, '旧版家庭保单分析报告正文');
-    assert.equal(analysis.payload.analysisReport.stale, true);
+    assert.equal(analysis.payload.analysisReport.status, 'missing');
+    assert.equal(analysis.payload.analysisReport.content, '');
+
+    state.familyReports.push({
+      id: 13, familyId: 8, ownerGuestId: 'guest-family-report-stale', status: 'active',
+      report: { familyPolicyAnalysisReport: { status: 'complete', content: 'legacy without version' } },
+    });
+    const legacy = await jsonFetch(server.baseUrl, '/api/family-profiles/8/policy-analysis-report?guestId=guest-family-report-stale');
+    assert.equal(legacy.payload.analysisReport.status, 'stale');
+    assert.equal(legacy.payload.analysisReport.content, 'legacy without version');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family policy analysis POST explicitly refreshes, shares concurrent work, and hides structured result', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 81, ownerGuestId: 'guest-expert-refresh', familyName: '专家报告家庭', status: 'active' });
+  state.policies.push({
+    id: 82, guestId: 'guest-expert-refresh', familyId: 81, company: '测试保险', name: '测试重疾险', insured: '张三',
+    coverage: 500000, annualPremium: 10000, status: 'active', coverageIndicators: [],
+  });
+  let calls = 0;
+  let release;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      calls += 1;
+      if (calls === 1) await new Promise((resolve) => { release = resolve; });
+      return {
+        status: 'complete', content: `专家报告${calls}`, structuredResult: { secret: true },
+        expertInputVersion: input.expertInputVersion, model: 'test', generatedAt: `2026-07-15T00:00:0${calls}.000Z`,
+      };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/81/policy-analysis-report?guestId=guest-expert-refresh';
+    const first = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    const second = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    while (!release) await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+    const callsBeforeRelease = calls;
+    const pending = await jsonFetch(server.baseUrl, path);
+    assert.equal(pending.payload.analysisReport.status, 'pending');
+    release();
+    const [left, right] = await Promise.all([first, second]);
+    assert.equal(callsBeforeRelease, 1);
+    assert.equal(left.response.status, 200);
+    assert.equal(right.response.status, 200);
+    assert.equal(left.payload.analysisReport.content, right.payload.analysisReport.content);
+    assert.match(left.payload.analysisReport.expertInputVersion, /^sha256:/u);
+    assert.equal('structuredResult' in left.payload.analysisReport, false);
+
+    const refreshed = await jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(refreshed.response.status, 200);
+    assert.equal(calls, 2);
+    assert.equal(refreshed.payload.analysisReport.content, '专家报告2');
+
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.response.status, 200);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, '专家报告2');
+
+    const sameVersionRegeneration = await jsonFetch(server.baseUrl, '/api/family-profiles/81/report?guestId=guest-expert-refresh', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    assert.equal(sameVersionRegeneration.response.status, 200);
+    const preserved = await jsonFetch(server.baseUrl, path);
+    assert.equal(preserved.payload.analysisReport.status, 'fresh');
+    assert.equal(preserved.payload.analysisReport.content, '专家报告2');
+
+    state.policies.find((policy) => policy.id === 82).name = '变更后的重疾险';
+    const changedVersionRegeneration = await jsonFetch(server.baseUrl, '/api/family-profiles/81/report?guestId=guest-expert-refresh', {
+      method: 'POST', body: JSON.stringify({}),
+    });
+    assert.equal(changedVersionRegeneration.response.status, 200);
+    const invalidated = await jsonFetch(server.baseUrl, path);
+    assert.equal(invalidated.payload.analysisReport.status, 'missing');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family policy analysis POST follows the latest input when policy changes during generation', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 83, ownerGuestId: 'guest-expert-race', familyName: '竞态家庭', status: 'active' });
+  state.policies.push({ id: 84, guestId: 'guest-expert-race', familyId: 83, name: '旧保单', status: 'active', coverageIndicators: [] });
+  const inputs = [];
+  let releaseFirst;
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      inputs.push(input);
+      if (inputs.length === 1) await new Promise((resolve) => { releaseFirst = resolve; });
+      return { status: 'complete', content: `race:${inputs.length}`, expertInputVersion: input.expertInputVersion };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/83/policy-analysis-report?guestId=guest-expert-race';
+    const request = jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    while (!releaseFirst) await new Promise((resolve) => setImmediate(resolve));
+    state.policies.find((policy) => policy.id === 84).name = '新保单';
+    releaseFirst();
+    const response = await request;
+    assert.equal(response.response.status, 200);
+    assert.equal(inputs.length, 2);
+    assert.notEqual(inputs[0].expertInputVersion, inputs[1].expertInputVersion);
+    assert.equal(response.payload.analysisReport.content, 'race:2');
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, 'race:2');
+  } finally {
+    await server.close();
+  }
+});
+
+test('family policy analysis POST applies requested planning profile to an existing report', async () => {
+  const state = createInitialState();
+  state.familyProfiles.push({ id: 85, ownerGuestId: 'guest-expert-planning', familyName: '规划家庭', status: 'active' });
+  state.policies.push({ id: 86, guestId: 'guest-expert-planning', familyId: 85, name: '规划保单', status: 'active', coverageIndicators: [] });
+  const inputs = [];
+  const app = createPolicyOcrApp({
+    state,
+    generateFamilyPolicyAnalysisReport: async ({ input }) => {
+      inputs.push(input);
+      return { status: 'complete', content: `planning:${inputs.length}`, expertInputVersion: input.expertInputVersion };
+    },
+  });
+  const server = await listen(app);
+  try {
+    const path = '/api/family-profiles/85/policy-analysis-report?guestId=guest-expert-planning';
+    const first = await jsonFetch(server.baseUrl, path, { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(first.response.status, 200);
+    const second = await jsonFetch(server.baseUrl, path, {
+      method: 'POST', body: JSON.stringify({ planningProfile: { annualIncome: 300000 } }),
+    });
+    assert.equal(second.response.status, 200);
+    assert.equal(inputs.length, 2);
+    assert.equal(inputs[1].planningProfile.annualIncome.value, 300000);
+    assert.notEqual(inputs[0].expertInputVersion, inputs[1].expertInputVersion);
+    const current = await jsonFetch(server.baseUrl, path);
+    assert.equal(current.payload.analysisReport.status, 'fresh');
+    assert.equal(current.payload.analysisReport.content, 'planning:2');
   } finally {
     await server.close();
   }
@@ -16311,6 +16478,7 @@ test('family sales review repairs duplicate members before returning or generati
   let reviewedInput = null;
   const app = createPolicyOcrApp({
     state,
+    generateFamilyPolicyAnalysisReport: generateTestFamilyPolicyAnalysisReport,
     persistFamilyState: async (input) => {
       familyPersistCalls.push(input);
     },
@@ -16322,9 +16490,9 @@ test('family sales review repairs duplicate members before returning or generati
         generatedAt: '2026-06-15T00:04:00.000Z',
         inputSummary: {
           memberCount: input.members.length,
-          policyCount: input.policies.length,
-          membersWithoutPolicyCount: input.dataQuality.membersWithoutPolicy.length,
-          officialProductCount: input.officialEvidence.length,
+          policyCount: input.policyIndex.length,
+          membersWithoutPolicyCount: 0,
+          officialProductCount: 0,
         },
       };
     },
@@ -16348,7 +16516,7 @@ test('family sales review repairs duplicate members before returning or generati
     assert.equal(generated.payload.review.inputSummary.memberCount, 2);
     assert.deepEqual(reviewedInput.members.map((member) => member.memberRef), ['{{member_1}}', '{{member_2}}']);
     assert.equal(reviewedInput.members.filter((member) => member.relationLabel === '儿子').length, 1);
-    assert.equal(reviewedInput.policies[0].insuredMemberRef, '{{member_2}}');
+    assert.equal(reviewedInput.policyIndex[0].insuredMemberRef, '{{member_2}}');
     assert.equal(familyPersistCalls.some((call) => call.includePolicies === true), true);
   } finally {
     await server.close();

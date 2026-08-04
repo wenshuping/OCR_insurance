@@ -12,6 +12,24 @@ import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 import { createPolicyOcrApp } from '../server/app.mjs';
 
 const NOW = '2026-07-12T04:00:00.000Z';
+const EXPERT_INPUT_VERSION = 'expert-input-test-v1';
+
+function generatedExpertReport() {
+  return {
+    status: 'complete', content: '专家保障分析', model: 'test-expert', generatedAt: NOW,
+    expertInputVersion: EXPERT_INPUT_VERSION,
+    structuredResult: { summary: '保障分析完成', verificationItems: [], coverageConcerns: [], evidenceRefs: { facts: [], indicators: [], policies: [] } },
+  };
+}
+
+function generatedSalesReview() {
+  return {
+    content: '建议', model: 'test-sales', generatedAt: NOW, expertReportId: null,
+    expertInputVersion: EXPERT_INPUT_VERSION,
+    structuredSummary: { conclusion: '优先完善基础保障', verificationItems: [], coverageConcerns: [], salesOpportunities: [], meetingObjective: '确认需求', nextActions: [], refs: { facts: [], indicators: [], policies: [] } },
+    inputSummary: {},
+  };
+}
 
 function state(overrides = {}) {
   return {
@@ -137,6 +155,11 @@ test('real app composition drains persisted sales regeneration work on startup',
     familyProfiles: [{ id: 20, ownerUserId: 7, familyName: '恢复家庭', status: 'active' }],
     familyMembers: [{ id: 201, familyId: 20, name: '成员', status: 'active' }],
     policies: [],
+    familyReports: [{
+      id: 401, familyId: 20, ownerUserId: 7, status: 'active', generatedAt: NOW,
+      report: { familyPolicyAnalysisReport: generatedExpertReport() },
+      expertInputVersion: EXPERT_INPUT_VERSION,
+    }],
   });
   store.db.prepare(`INSERT INTO agent_policy_transfer_regeneration_outbox
     (confirmation_id,user_id,family_id,job_type,dedupe_key,status,attempts,last_error,claim_token,lease_until,created_at,updated_at,dispatched_at)
@@ -144,10 +167,15 @@ test('real app composition drains persisted sales regeneration work on startup',
   const app = createPolicyOcrApp({
     state: await store.load(), agentStore: store,
     persistFamilyState: store.persistFamilyState, persistFamilyReportState: store.persistFamilyReportState,
-    generateFamilySalesReview: async () => ({ content: '已恢复销售建议', model: 'test', generatedAt: NOW, inputSummary: {} }),
+    generateFamilyPolicyAnalysisReport: async () => generatedExpertReport(),
+    generateFamilySalesReview: async () => ({ ...generatedSalesReview(), content: '已恢复销售建议' }),
     agentTransferRecoveryOptions: { workerId: 'bootstrap-worker', now: () => NOW, setIntervalFn() { return { unref() {} }; }, clearIntervalFn() {} },
   });
-  assert.deepEqual(await app.locals.transferRegenerationRecovery.initialDrain, { dispatched: 1, failed: 0 });
+  assert.deepEqual(
+    await app.locals.transferRegenerationRecovery.initialDrain,
+    { dispatched: 1, failed: 0 },
+    JSON.stringify(store.db.prepare('SELECT status,last_error FROM agent_policy_transfer_regeneration_outbox').all()),
+  );
   assert.equal((await store.load()).familySalesReviews[0].content, '已恢复销售建议');
   assert.equal(store.db.prepare('SELECT status FROM agent_policy_transfer_regeneration_outbox').get().status, 'dispatched');
   app.locals.transferRegenerationRecovery.stop();
@@ -168,7 +196,8 @@ test('same-process confirm regenerates both families from post-transfer sqlite s
   const app = createPolicyOcrApp({
     state: await store.load(), agentStore: store,
     persistFamilyState: store.persistFamilyState, persistFamilyReportState: store.persistFamilyReportState,
-    generateFamilySalesReview: async () => ({ content: '建议', model: 'test', generatedAt: NOW, inputSummary: {} }),
+    generateFamilyPolicyAnalysisReport: async () => generatedExpertReport(),
+    generateFamilySalesReview: async () => generatedSalesReview(),
     agentTransferRecoveryOptions: { workerId: 'fresh-worker', now: () => NOW, setIntervalFn() { return { unref() {} }; }, clearIntervalFn() {} },
   });
   await app.locals.transferRegenerationRecovery.initialDrain;

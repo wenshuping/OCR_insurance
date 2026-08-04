@@ -6,10 +6,13 @@ import { computePolicyResponsibilityCalculations } from '../cashflow-compute.mjs
 import {
   buildFamilySalesReviewInput,
   generateFamilySalesReview,
+  resolveFamilySalesReviewFreshness,
 } from '../family-sales-review.service.mjs';
 import {
-  buildFamilySalesChatContext,
+  buildLightweightSalesChatContext,
+  deriveSalesConversationTargets,
   generateFamilySalesChatReply,
+  resolveSalesTopicPack,
 } from '../family-sales-chat.service.mjs';
 import {
   buildFamilySalesMemoryContext,
@@ -22,6 +25,7 @@ import {
   generateFamilyPolicyAnalysisReport,
   hasLocalFamilyPolicyAnalysisEvidence,
 } from '../family-policy-analysis-report.service.mjs';
+import { createFamilyPolicyAnalysisOrchestrator } from '../family-policy-analysis-orchestrator.service.mjs';
 import { sanitizeStoredPolicyAnalysis } from '../c-policy-analysis.service.mjs';
 import {
   agentPolicyImportMatchesOwner,
@@ -395,6 +399,19 @@ export function createFamilyRoutes(context) {
     }
   }
 
+  function familyPolicyAnalysisInputVersion({ family, members, policies, report, planningProfile, snapshot = state }) {
+    return buildFamilyPolicyAnalysisInput({
+      family,
+      members,
+      policies,
+      familyReport: report,
+      planningProfile,
+      knowledgeRecords: snapshot.knowledgeRecords || [],
+      indicatorRecords: snapshot.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: snapshot.optionalResponsibilityRecords || [],
+    }).expertInputVersion;
+  }
+
   function refreshFamilyReportWithTrustedCorrections({ record, family, owner, members, policies, force = false } = {}) {
     if (!record || typeof trustedFamilyReportCorrections !== 'function' || typeof updateFamilyReportRecordReport !== 'function') {
       return false;
@@ -402,12 +419,20 @@ export function createFamilyRoutes(context) {
     const corrections = trustedFamilyReportCorrections(state, { familyId: family.id, reportId: record.id });
     if (!force && !corrections.length) return false;
     const reportMembers = members || listFamilyMembers(state, family.id);
+    const sourcePolicies = policies || policiesForFamilyReport(family, owner);
     const reportPolicies = typeof applyFamilyReportPolicyCorrections === 'function'
-      ? applyFamilyReportPolicyCorrections(policies || policiesForFamilyReport(family, owner), corrections)
-      : (policies || policiesForFamilyReport(family, owner));
+      ? applyFamilyReportPolicyCorrections(sourcePolicies, corrections)
+      : sourcePolicies;
     const nextReport = buildFamilyReport(reportPolicies, record.planningProfile || null, {
       familyId: family.id,
       corrections,
+    });
+    const expertInputVersion = familyPolicyAnalysisInputVersion({
+      family,
+      members: reportMembers,
+      policies: sourcePolicies,
+      report: nextReport,
+      planningProfile: record.planningProfile || null,
     });
     const draftRecord = { summary: record.summary || {} };
     updateFamilyReportRecordReport({
@@ -415,6 +440,7 @@ export function createFamilyRoutes(context) {
       members: reportMembers,
       policies: reportPolicies,
       report: nextReport,
+      expertInputVersion,
     });
     let changed = false;
     const requiresEngineRefresh = force
@@ -425,6 +451,7 @@ export function createFamilyRoutes(context) {
         members: reportMembers,
         policies: reportPolicies,
         report: nextReport,
+        expertInputVersion,
       });
       changed = true;
     }
@@ -466,8 +493,28 @@ export function createFamilyRoutes(context) {
     return true;
   }
 
+  function salesReviewFreshness(review = null) {
+    if (!review) return { freshness: '', freshnessReason: '' };
+    if (String(review.status || 'active') === 'archived') {
+      return { freshness: 'archived', freshnessReason: 'source_updated' };
+    }
+    if (!review.expertReportId || !String(review.expertInputVersion || '').trim()) {
+      return { freshness: 'legacy', freshnessReason: 'legacy_missing_binding' };
+    }
+    const expertRecord = (state.familyReports || []).find((record) => Number(record?.id) === Number(review.expertReportId));
+    const currentExpertVersion = String(expertRecord?.report?.familyPolicyAnalysisReport?.expertInputVersion || '').trim();
+    if (!currentExpertVersion || currentExpertVersion !== String(review.expertInputVersion).trim()) {
+      return { freshness: 'stale', freshnessReason: 'expert_version_changed' };
+    }
+    const resolved = resolveFamilySalesReviewFreshness(review, { sourceUpdatedAt: review.sourceUpdatedAt || '' });
+    return resolved.status === 'fresh'
+      ? { freshness: 'fresh', freshnessReason: '' }
+      : { freshness: 'stale', freshnessReason: 'source_updated' };
+  }
+
   function clientSalesReview(review = null) {
     if (!review) return null;
+    const freshness = salesReviewFreshness(review);
     return {
       id: review.id,
       familyId: review.familyId,
@@ -476,6 +523,10 @@ export function createFamilyRoutes(context) {
       model: '',
       generatedAt: review.generatedAt || review.createdAt || '',
       inputSummary: review.inputSummary || {},
+      expertReportId: review.expertReportId ?? null,
+      expertInputVersion: review.expertInputVersion || '',
+      structuredSummary: review.structuredSummary || null,
+      ...freshness,
       createdAt: review.createdAt || '',
       updatedAt: review.updatedAt || '',
     };
@@ -682,33 +733,43 @@ export function createFamilyRoutes(context) {
     return { target: messages[targetIndex], removedIds };
   }
 
-  function buildSalesChatRuntimeContext({ family, owner, policyImportTask = null }) {
+  function buildSalesChatRuntimeContext({ family, owner, question = '', history = [], policyImportTask = null }) {
     const members = listFamilyMembers(state, family.id);
     const policies = policiesForFamilyReport(family, owner);
-    const planningProfile = family.planningProfile || null;
-    const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
-    const input = buildFamilySalesReviewInput({
-      family,
-      members,
-      policies,
-      familyReport,
-      planningProfile,
-      knowledgeRecords: state.knowledgeRecords || [],
-      indicatorRecords: state.insuranceIndicatorRecords || [],
-      optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
-      generatedAt: nowIso(),
-    });
-    const context = buildFamilySalesChatContext({
-      input,
-      family,
-      members,
-      policies,
-      familyReports: state.familyReports || [],
-      familySalesReviews: state.familySalesReviews || [],
-      generatedAt: nowIso(),
-    });
     const salesMemoryContext = salesMemoryContextForFamily(family.id, owner);
-    if (salesMemoryContext) context.salesMemoryContext = salesMemoryContext;
+    const latestRecord = (records = []) => records.filter((record) => Number(record?.familyId) === Number(family.id) && String(record?.status || 'active') === 'active')
+      .sort((left, right) => String(right.generatedAt || right.updatedAt || right.createdAt || '').localeCompare(String(left.generatedAt || left.updatedAt || left.createdAt || '')))[0] || null;
+    const latestSalesReview = latestRecord(state.familySalesReviews);
+    const latestFamilyReport = latestRecord(state.familyReports);
+    const expertReport = latestFamilyReport?.report?.familyPolicyAnalysisReport || latestFamilyReport?.report || null;
+    const { lastExplicitTarget, activeOpportunity } = deriveSalesConversationTargets({
+      salesReview: latestSalesReview,
+      memories: salesMemoryContext,
+      history,
+      members,
+      policies,
+    });
+    const topicResolution = resolveSalesTopicPack(question, { members, policies, activeOpportunity, lastExplicitTarget });
+    const topicPack = topicResolution.topicPack;
+    const baseline = latestSalesReview?.generatedAt || latestSalesReview?.updatedAt || latestSalesReview?.createdAt || '';
+    const sourceUpdated = [family, ...members, ...policies].some((record) => record?.updatedAt && baseline && record.updatedAt > baseline);
+    const displayReplacements = members.map((member, index) => ({ token: `{{member_${index + 1}}}`, value: member.name })).filter((item) => item.value);
+    const context = buildLightweightSalesChatContext({
+      salesReview: latestSalesReview,
+      expertReport,
+      memories: salesMemoryContext,
+      history,
+      question,
+      topicPack,
+      members,
+      policies,
+      financeSummary: family.planningProfile || null,
+      conversationTargets: { lastExplicitTarget, activeOpportunity },
+      topicResolution,
+      sourceUpdated,
+      generatedAt: nowIso(),
+      displayReplacements,
+    });
     if (policyImportTask) context.policyImportContext = buildAgentPolicyImportContext(policyImportTask);
     return context;
   }
@@ -744,7 +805,7 @@ export function createFamilyRoutes(context) {
 
   async function generateAndAppendSalesChatReply({ thread, family, owner, question, history, userMessage, policyImportTask = null }) {
     refreshFamilyCashflowsForAnalysis(family, owner);
-    const chatContext = buildSalesChatRuntimeContext({ family, owner, policyImportTask });
+    const chatContext = buildSalesChatRuntimeContext({ family, owner, question, history, policyImportTask });
     const reply = await generateFamilySalesChatReplyImpl({
       context: chatContext,
       history,
@@ -761,19 +822,50 @@ export function createFamilyRoutes(context) {
     return assistantMessage;
   }
 
-  function clientFamilyPolicyAnalysisReport(record = null) {
+  function clientFamilyPolicyAnalysisReport(record = null, freshnessStatus = '', currentInputVersion = '') {
     const report = record?.report?.familyPolicyAnalysisReport || null;
-    if (!report) return null;
+    if (!report) {
+      return freshnessStatus ? {
+        status: freshnessStatus,
+        content: '',
+        model: '',
+        generatedAt: '',
+        expertInputVersion: currentInputVersion,
+        error: '',
+        stale: freshnessStatus === 'stale',
+      } : null;
+    }
     return {
-      status: report.status || 'complete',
+      status: freshnessStatus || report.status || 'complete',
       content: report.content || '',
       model: '',
       source: report.source || (report.model ? 'model' : 'database'),
       generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
+      expertInputVersion: report.expertInputVersion || '',
       error: report.error || '',
-      stale: String(record?.status || 'active') !== 'active',
+      stale: freshnessStatus === 'stale' || String(record?.status || 'active') !== 'active',
     };
   }
+
+  const familyPolicyAnalysisOrchestrator = createFamilyPolicyAnalysisOrchestrator({
+    getReportRecord: (family, owner) => latestFamilyReport(family.id, owner),
+    buildInput: (family, owner) => {
+      const reportRecord = latestFamilyReport(family.id, owner);
+      const planningProfile = reportRecord?.planningProfile || family.planningProfile || null;
+      return buildFamilyPolicyAnalysisInput({
+        family,
+        members: listFamilyMembers(state, family.id),
+        policies: policiesForFamilyReport(family, owner),
+        familyReport: reportRecord?.report || {},
+        planningProfile,
+        knowledgeRecords: state.knowledgeRecords || [],
+        indicatorRecords: state.insuranceIndicatorRecords || [],
+        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+      });
+    },
+    generateReport: generateFamilyPolicyAnalysisReportImpl,
+    persistReport: saveFamilyReportState,
+  });
 
   async function appendDeepSeekReportIssues({
     record,
@@ -879,7 +971,10 @@ export function createFamilyRoutes(context) {
     state, allocateId, listFamilyMembers, policiesForFamilyReport, policiesForSalesReview,
     repairFamilyMembersBeforeReview, refreshFamilyCashflowsForAnalysis, buildFamilyReport,
     createFamilyReportRecord, appendDeepSeekReportIssues, refreshFamilyReportWithTrustedCorrections,
-    buildFamilySalesReviewInput, generateFamilySalesReview: generateFamilySalesReviewImpl,
+    buildFamilyPolicyAnalysisInput,
+    generateFamilySalesReview: generateFamilySalesReviewImpl,
+    familyPolicyAnalysisOrchestrator,
+    getExpertReportRecord: (family, owner) => latestFamilyReport(family.id, owner),
     archiveSalesReviewForFamily, ownerFields, persistFamilyReportState: persistFreshFamilyReportState,
     persistFamilyState: persistFreshFamilyState, nowIso,
   });
@@ -1212,8 +1307,12 @@ export function createFamilyRoutes(context) {
     if (!family) {
       return res.status(404).json({ ok: false, code: 'FAMILY_NOT_FOUND', message: '家庭档案不存在' });
     }
-    const reportRecord = latestFamilyReport(family.id, owner, { includeArchivedFallback: true });
-    return res.json({ ok: true, analysisReport: clientFamilyPolicyAnalysisReport(reportRecord) });
+    const reportRecord = latestFamilyReport(family.id, owner);
+    const current = familyPolicyAnalysisOrchestrator.getStatus({ family, owner });
+    return res.json({
+      ok: true,
+      analysisReport: clientFamilyPolicyAnalysisReport(reportRecord, current.status, current.expertInputVersion),
+    });
   });
 
   router.post('/family-profiles/:id/report', async (req, res) => {
@@ -1627,9 +1726,17 @@ export function createFamilyRoutes(context) {
       const members = listFamilyMembers(state, family.id);
       const policies = policiesForFamilyReport(family, owner);
       let reportRecord = latestFamilyReport(family.id, owner);
+      const hadReportRecord = Boolean(reportRecord);
       const planningProfile = req.body?.planningProfile || family.planningProfile || reportRecord?.planningProfile || null;
       const familyReport = buildFamilyReport(policies, planningProfile, { familyId: family.id });
       if (!reportRecord) {
+        const expertInputVersion = familyPolicyAnalysisInputVersion({
+          family,
+          members,
+          policies,
+          report: familyReport,
+          planningProfile,
+        });
         const created = createFamilyReportRecord({
           state,
           family,
@@ -1638,6 +1745,7 @@ export function createFamilyRoutes(context) {
           policies,
           report: familyReport,
           planningProfile,
+          expertInputVersion,
           allocateId,
         });
         reportRecord = created.record;
@@ -1648,6 +1756,25 @@ export function createFamilyRoutes(context) {
       ) {
         await saveFamilyReportState();
         reportRecord = latestFamilyReport(family.id, owner);
+      }
+
+      if (hadReportRecord && hasOwn(req.body, 'planningProfile')) {
+        const expertInputVersion = familyPolicyAnalysisInputVersion({
+          family,
+          members,
+          policies,
+          report: familyReport,
+          planningProfile,
+        });
+        updateFamilyReportRecordReport({
+          record: reportRecord,
+          members,
+          policies,
+          report: familyReport,
+          expertInputVersion,
+        });
+        reportRecord.planningProfile = planningProfile;
+        await saveFamilyReportState();
       }
 
       const responsibilityIndexes = await responsibilityIndexesForPolicies(policies);
@@ -1661,19 +1788,24 @@ export function createFamilyRoutes(context) {
         indicatorRecords: responsibilityIndexes.indicatorRecords,
         optionalResponsibilityRecords: responsibilityIndexes.optionalResponsibilityRecords,
       });
-      const analysisReport = hasLocalFamilyPolicyAnalysisEvidence(input)
-        ? buildLocalFamilyPolicyAnalysisReport(input, { generatedAt: nowIso() })
-        : await generateFamilyPolicyAnalysisReportImpl({ input });
-      reportRecord.report = reportRecord.report || {};
-      reportRecord.report.familyPolicyAnalysisReport = {
-        status: analysisReport.status || 'complete',
-        content: analysisReport.content || '',
-        model: analysisReport.model || '',
-        source: analysisReport.source || (analysisReport.model ? 'model' : 'database'),
-        generatedAt: analysisReport.generatedAt || nowIso(),
-      };
-      reportRecord.updatedAt = nowIso();
-      await saveFamilyReportState();
+      if (hasLocalFamilyPolicyAnalysisEvidence(input)) {
+        const analysisReport = buildLocalFamilyPolicyAnalysisReport(input, { generatedAt: nowIso() });
+        reportRecord.report = reportRecord.report || {};
+        reportRecord.report.familyPolicyAnalysisReport = {
+          status: analysisReport.status || 'complete',
+          content: analysisReport.content || '',
+          model: analysisReport.model || '',
+          source: analysisReport.source || 'database',
+          generatedAt: analysisReport.generatedAt || nowIso(),
+          expertInputVersion: input.expertInputVersion || '',
+          structuredResult: analysisReport.structuredResult || null,
+        };
+        reportRecord.updatedAt = nowIso();
+        await saveFamilyReportState();
+      } else {
+        await familyPolicyAnalysisOrchestrator.ensureFresh({ family, owner, explicitRefresh: true });
+        reportRecord = latestFamilyReport(family.id, owner);
+      }
       return res.json({ ok: true, analysisReport: clientFamilyPolicyAnalysisReport(reportRecord) });
     } catch (error) {
       return sendError(res, error, error?.status || 500);

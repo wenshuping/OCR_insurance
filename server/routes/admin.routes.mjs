@@ -19,6 +19,7 @@ import {
   validateAgentQuestionPolicy,
 } from '../agent-question-policy.service.mjs';
 import { simulateAgentQuestionDecision } from '../agent-question-router.service.mjs';
+import { buildFamilyPolicyAnalysisInput } from '../family-policy-analysis-report.service.mjs';
 
 export function createAdminRoutes(context) {
   const router = express.Router();
@@ -289,6 +290,19 @@ export function createAdminRoutes(context) {
       .map(attachPolicyForFamilyReport);
   }
 
+  function familyPolicyAnalysisInputVersion({ family, members, policies, report, planningProfile }) {
+    return buildFamilyPolicyAnalysisInput({
+      family,
+      members,
+      policies,
+      familyReport: report,
+      planningProfile,
+      knowledgeRecords: state.knowledgeRecords || [],
+      indicatorRecords: state.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+    }).expertInputVersion;
+  }
+
   function policiesForAdminFamilyReport(familyId) {
     return (state.policies || [])
       .filter((policy) => Number(policy?.familyId || 0) === Number(familyId || 0))
@@ -365,12 +379,20 @@ export function createAdminRoutes(context) {
         familyId: family.id || report.familyId,
         corrections,
       });
+      const expertInputVersion = familyPolicyAnalysisInputVersion({
+        family,
+        members,
+        policies,
+        report: nextReport,
+        planningProfile: report.planningProfile || null,
+      });
       const draftRecord = { summary: report.summary || {} };
       updateFamilyReportRecordReport({
         record: draftRecord,
         members,
         policies: reportPolicies,
         report: nextReport,
+        expertInputVersion,
       });
       if (reportJson(draftRecord.report) !== reportJson(report.report)) {
         updateFamilyReportRecordReport({
@@ -378,6 +400,7 @@ export function createAdminRoutes(context) {
           members,
           policies: reportPolicies,
           report: nextReport,
+          expertInputVersion,
         });
         changed = true;
       }
@@ -660,6 +683,7 @@ export function createAdminRoutes(context) {
       const policies = policiesForAdminFamilyReport(familyId);
       const planningProfile = req.body?.planningProfile || null;
       const report = buildFamilyReport(policies, planningProfile, { familyId });
+      const expertInputVersion = familyPolicyAnalysisInputVersion({ family, members, policies, report, planningProfile });
       const { record } = createFamilyReportRecord({
         state,
         family,
@@ -671,6 +695,7 @@ export function createAdminRoutes(context) {
         policies,
         report,
         planningProfile,
+        expertInputVersion,
         allocateId,
       });
       await appendAdminDeepSeekReportIssues({
