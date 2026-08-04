@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manifest Output Integrity"
+  short_description: "Audit batch identity before validation"
+  default_prompt: "Use $ocr-insurance-manifest-output-integrity to audit a manifest and its batch outputs before validation."

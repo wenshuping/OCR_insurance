@@ -25,14 +25,6 @@ function summarizeStatus(output = '') {
   return visible.join('\n');
 }
 
-export function uncommittedStatusLines(output = '', allowedPrefixes = []) {
-  const prefixes = allowedPrefixes.map((prefix) => String(prefix).replace(/^\/+|\/+$/gu, '')).filter(Boolean);
-  return String(output).split(/\r?\n/).filter(Boolean).filter((line) => {
-    const pathText = line.slice(3).trim().replace(/^"|"$/gu, '');
-    return !prefixes.some((prefix) => pathText === prefix || pathText.startsWith(`${prefix}/`));
-  });
-}
-
 function normalizePath(value = '') {
   return path.resolve(String(value));
 }
@@ -221,7 +213,7 @@ export function auditIntegrationConsistency({
     return report;
   }
   const { config } = loaded;
-  const canonicalRoot = normalizePath(path.resolve(root, config.canonicalWorktree));
+  const canonicalRoot = normalizePath(path.join(root, config.canonicalWorktree));
 
   const topLevel = gitRunner(['rev-parse', '--show-toplevel'], root);
   if (!topLevel.ok) {
@@ -255,15 +247,10 @@ export function auditIntegrationConsistency({
   const canonicalStatus = gitRunner(['status', '--porcelain=v1', '--untracked-files=all'], canonicalRoot);
   if (!canonicalStatus.ok) {
     add(report, 'failed', 'canonical-cleanliness', 'canonical worktree status could not be read', canonicalStatus.error);
+  } else if (canonicalStatus.stdout.trim()) {
+    add(report, 'failed', 'canonical-cleanliness', 'canonical worktree has uncommitted or untracked files', summarizeStatus(canonicalStatus.stdout));
   } else {
-    const dirtyLines = uncommittedStatusLines(canonicalStatus.stdout, config.allowedUncommittedPrefixes || []);
-    if (dirtyLines.length) {
-      add(report, 'failed', 'canonical-cleanliness', 'canonical worktree has uncommitted or untracked code files', summarizeStatus(dirtyLines.join('\n')));
-    } else if (canonicalStatus.stdout.trim()) {
-      add(report, 'passed', 'canonical-cleanliness', 'canonical worktree has only protected generated artifacts', summarizeStatus(canonicalStatus.stdout));
-    } else {
-      add(report, 'passed', 'canonical-cleanliness', 'canonical worktree is clean');
-    }
+    add(report, 'passed', 'canonical-cleanliness', 'canonical worktree is clean');
   }
 
   const canonicalHead = canonicalEntry.head || '';

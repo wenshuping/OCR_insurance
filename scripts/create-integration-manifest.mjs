@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { collectSkillManifest, parseWorktreeList, uncommittedStatusLines } from './integration-harness-audit.mjs';
+import { collectSkillManifest, parseWorktreeList } from './integration-harness-audit.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -52,9 +52,8 @@ function buildManifest(options) {
   const entry = worktrees.find((item) => path.resolve(item.path) === canonicalRoot);
   if (!entry) throw new Error(`canonical integration worktree is not registered: ${canonicalRoot}`);
   if (entry.branch !== config.canonicalBranch) throw new Error(`canonical worktree is on the wrong branch: ${entry.branch || '(detached)'}`);
-  const status = runGit(['status', '--porcelain=v1', '--untracked-files=all'], canonicalRoot);
-  const dirtyLines = uncommittedStatusLines(status, config.allowedUncommittedPrefixes || []);
-  if (dirtyLines.length) throw new Error(`canonical worktree has uncommitted code files:\n${dirtyLines.slice(0, 80).join('\n')}`);
+  const status = runGit(['status', '--porcelain=v1', '--untracked-files=all'], canonicalRoot).trim();
+  if (status) throw new Error(`canonical worktree is not clean:\n${status.split(/\r?\n/).slice(0, 80).join('\n')}`);
 
   const skills = collectSkillManifest({ canonicalRoot, config });
   if (!skills.ok) throw new Error(`required Skills are missing or empty:\n${skills.missing.join('\n')}`);

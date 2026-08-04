@@ -20,6 +20,11 @@ Read
 before routing formulas or scheduled cashflows.
 Read [references/high-throughput-batch.md](references/high-throughput-batch.md)
 when the request covers multiple products, a backfill, or a throughput test.
+Read and run
+`$ocr-insurance-manifest-output-integrity` before canonicalization, validation,
+importer dry-run, retry/resume selection, or approved-artifact reuse. It is a
+mandatory identity gate for every batch path; a non-zero audit is an identity
+block, not `validation-review` or `model-retry`.
 
 ## Stage 1: Acquire Official Evidence
 
@@ -56,6 +61,16 @@ offsets. Then:
 
 If chapter boundaries are uncertain, use complete extracted text for repair
 rather than declaring a responsibility absent.
+
+### Legacy Card And Indicator Reuse
+
+After the official inventory is locked, invoke
+`$ocr-insurance-legacy-indicator-safe-reuse` when historical responsibility
+cards or indicators exist. Keep its model-blind official packet separate from
+the legacy diff. Use exact reuse only for source-supported one-to-one matches;
+send only proven missing targets to bounded extraction, and route broad or
+version conflicts to fresh parse or review. Never let legacy values determine
+the official inventory or enter model prompts as proposed truth.
 
 ## Stage 3: Shadow Local Candidate Assistant
 
@@ -94,6 +109,14 @@ but fails title-inventory or latency gates may assist formulas only.
 
 ## Stage 4: Bounded Parallel Online Extraction
 
+Before starting or resuming a batch, bind every selected/input/provider/artifact/
+terminal row by `sourceDigest` (then `sourceUrl`, then normalized company plus
+product name only as fallback). Treat manifest and selected ordinals as display
+fields only; never join or fill a gap by ordinal, including copying the final
+item during resume. Require terminal union to equal the manifest and terminal
+queue intersections to be zero. Stop with `identity_blocked` or
+`manifest_output_identity_misaligned` until the identity audit passes.
+
 Build one evidence packet per locked responsibility using the extraction
 contract. Each packet contains the complete responsibility section plus only its
 applicable shared clauses, referenced definitions, tables, and continuation
@@ -114,6 +137,12 @@ and retry only the failed task for the failed responsibility.
 
 These tasks are read-only proposals. Do not allow any branch to write SQLite,
 Feishu, code, or the final artifact.
+
+Invoke `$ocr-insurance-deepseek-indicator-generation` for the automatic online
+indicator-generation step. DeepSeek receives only the model-blind official
+packets and must produce the provider, artifact, canonicalizer, validator,
+dedicated importer dry-run, terminal, and SHA receipts required by that Skill.
+Historical cards and indicators remain outside the prompt as `legacyDiff`.
 
 ## Stage 5: Deterministic Formula Routing
 
@@ -170,13 +199,12 @@ may define these roles independently:
   conflicts;
 - `local_shadow`: a non-blocking local candidate assistant.
 
-The current recommended allocation is Gemini Flash for `standard_extractor` and
-Luna for `complex_extractor` or `verifier`, but the skill must record the actual
-provider and model ID and must not infer behavior from the literal name `Luna`.
-If Luna is available only through a Codex/interactive client and not through an
-OpenAI-compatible endpoint accepted by the batch runner, do not pretend it is a
-runner provider. Keep Gemini on the online path and create an explicit Luna
-review queue, or stop before model work and request a configured endpoint.
+The default automatic indicator generator is DeepSeek. It must use
+`$ocr-insurance-deepseek-indicator-generation` and record the actual provider
+and model ID. DeepSeek failures remain explicit DeepSeek/model-layer failures;
+do not silently move them to Luna, Gemini, DianJin, or another provider. A
+different verifier or reviewer may be used only through a new, explicitly
+authorized manifest, never as implicit failover inside the same run.
 
 Route a product to the complex pool when deterministic manifest evidence shows
 one or more of the following:
@@ -288,18 +316,18 @@ Never run parallel database or Feishu writes.
 
 ## Batch And Daily Refresh
 
-### Shared Gemini Spend Breaker Recovery
+### Shared DeepSeek Provider Breaker Recovery
 
-When a Gemini request returns an explicit spend, billing, or quota `429`, stop
-new Gemini work and write a shared `GEMINI_SPEND_RATE_STOP` receipt. This is a
-pause marker, not a permanent state: do not leave a batch blocked indefinitely
-because the provider may recover after the billing window or quota refreshes.
+When a DeepSeek request returns an explicit authentication, spend, billing,
+quota, rate-limit, or upstream failure, stop new DeepSeek work and write a
+provider-layer stop receipt. This is a pause marker, not a source failure or
+permanent product state.
 
 The coordinator must recover the marker in two phases:
 
 1. Preserve the original receipt and atomically move it to a temporary
-   `*.pending-canary` name. Run exactly one `route=standard_gemini` product from
-   the next immutable manifest with `workers=1`, `repair-rounds=0`,
+   `*.pending-canary` name. Run exactly one DeepSeek product from the next
+   immutable manifest with `workers=1`, `repair-rounds=0`,
    `--parse-only`, and shadow disabled. The canary must complete the normal
    validator and must not write SQLite, Feishu, or published cards.
 2. If the canary returns another spend-based `429`, restore the shared stop
@@ -323,16 +351,16 @@ stale marker must therefore be tested, not manually deleted.
 - Run the local candidate assistant with at most its measured serving
   concurrency. It remains non-blocking: queued, late, timed-out, or malformed
   shadow work must not reduce online throughput.
-- Use the existing validated batch runner as the high-throughput path. Its
-  extraction provider may be DeepSeek, Gemini, or another measured
-  OpenAI-compatible model; provider choice must not change retrieval,
-  canonicalization, validation, or publication behavior.
+- Use the existing validated batch runner as the high-throughput path with
+  DeepSeek as the configured automatic indicator generator. Provider choice
+  must not change retrieval, canonicalization, validation, or publication
+  behavior.
 - Persist model billing/auth/rate-limit/upstream failures separately from source
   acquisition failures. A bare model HTTP error must never be reported as an
   insurer-site failure.
 - Resume failed cohorts by failure layer. Keep successful products immutable;
-  after a DeepSeek 402/403/429 incident, the same run may retry only the model
-  cohort with Gemini, and vice versa.
+  after a DeepSeek provider incident, retry only the DeepSeek model cohort in a
+  new immutable output directory after a one-product recovery canary.
 - Do not automatically fail over thousands of products to another paid model.
   Require an explicit retry command with the replacement provider and preserve
   both provider/model IDs in the product receipts.

@@ -1,0 +1,47 @@
+{
+  "manifest": [
+    {"manifestOrder": 1, "company": "新华保险", "productName": "优越人生A款防癌综合医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+    {"manifestOrder": 2, "company": "新华保险", "productName": "住院团体医疗保险", "sourceUrl": "https://official.example/inpatient.pdf", "sourceDigest": "sha256:inpatient"},
+    {"manifestOrder": 3, "company": "新华保险", "productName": "健安终身重大疾病保险", "sourceUrl": "https://official.example/ji an.pdf", "sourceDigest": "sha256:ji an"},
+    {"manifestOrder": 4, "company": "新华保险", "productName": "华康团体重大疾病保险", "sourceUrl": "https://official.example/huakang.pdf", "sourceDigest": "sha256:huakang"}
+  ],
+  "layers": {
+    "selected": [
+      {"selectedOrder": 1, "manifestOrder": 1, "company": "新华保险", "productName": "优越人生A款防癌综合医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "company": "新华保险", "productName": "住院团体医疗保险", "sourceUrl": "https://official.example/inpatient.pdf", "sourceDigest": "sha256:inpatient"},
+      {"selectedOrder": 3, "manifestOrder": 3, "company": "新华保险", "productName": "健安终身重大疾病保险", "sourceUrl": "https://official.example/ji an.pdf", "sourceDigest": "sha256:ji an"},
+      {"selectedOrder": 4, "manifestOrder": 4, "company": "新华保险", "productName": "华康团体重大疾病保险", "sourceUrl": "https://official.example/huakang.pdf", "sourceDigest": "sha256:huakang"}
+    ],
+    "input": [
+      {"selectedOrder": 1, "manifestOrder": 1, "company": "新华保险", "productName": "优越人生A款防癌综合医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 3, "company": "新华保险", "productName": "健安终身重大疾病保险", "sourceUrl": "https://official.example/ji an.pdf", "sourceDigest": "sha256:ji an"},
+      {"selectedOrder": 3, "manifestOrder": 4, "company": "新华保险", "productName": "华康团体重大疾病保险", "sourceUrl": "https://official.example/huakang.pdf", "sourceDigest": "sha256:huakang"},
+      {"selectedOrder": 4, "manifestOrder": 4, "company": "新华保险", "productName": "华康团体重大疾病保险", "sourceUrl": "https://official.example/huakang.pdf", "sourceDigest": "sha256:huakang"}
+    ],
+    "provider": [
+      {"selectedOrder": 1, "manifestOrder": 1, "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "sourceDigest": "sha256:inpatient"},
+      {"selectedOrder": 3, "manifestOrder": 3, "sourceDigest": "sha256:ji an"},
+      {"selectedOrder": 4, "manifestOrder": 4, "sourceDigest": "sha256:huakang"}
+    ],
+    "artifact": [
+      {"selectedOrder": 2, "manifestOrder": 2, "company": "新华保险", "productName": "健安终身重大疾病保险", "sourceUrl": "https://official.example/ji an.pdf", "sourceDigest": "sha256:ji an", "_container": "02-新华保险-住院团体医疗保险", "status": "approved"},
+      {"selectedOrder": 3, "manifestOrder": 3, "company": "新华保险", "productName": "华康团体重大疾病保险", "sourceUrl": "https://official.example/huakang.pdf", "sourceDigest": "sha256:huakang", "_container": "03-新华保险-健安终身重大疾病保险", "status": "approved"},
+      {"selectedOrder": 3, "manifestOrder": 3, "company": "新华保险", "productName": "健安终身重大疾病保险", "sourceUrl": "https://official.example/ji an.pdf", "sourceDigest": "sha256:ji an-v2", "_container": "03-新华保险-健安终身重大疾病保险", "status": "approved"}
+    ],
+    "terminal": [
+      {"selectedOrder": 1, "manifestOrder": 1, "terminal": "approved", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 3, "terminal": "approved", "sourceDigest": "sha256:ji an"},
+      {"selectedOrder": 3, "manifestOrder": 4, "terminal": "model-retry", "sourceDigest": "sha256:huakang"},
+      {"selectedOrder": 4, "manifestOrder": 4, "terminal": "model-retry", "sourceDigest": "sha256:huakang"}
+    ]
+  },
+  "terminalQueues": {
+    "approved": ["sha256:a", "sha256:ji an"],
+    "validation-review": ["sha256:ji an", "sha256:huakang"],
+    "model-retry": ["sha256:huakang"]
+  },
+  "validatorReceipts": [
+    {"status": "approved", "sourceDigest": "sha256:ji an"}
+  ]
+}

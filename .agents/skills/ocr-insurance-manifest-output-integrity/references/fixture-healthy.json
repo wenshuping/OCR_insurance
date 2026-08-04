@@ -1,0 +1,32 @@
+{
+  "manifest": [
+    {"manifestOrder": 1, "company": "示例保险", "productName": "安心医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+    {"manifestOrder": 2, "company": "示例保险", "productName": "安心定期寿险", "sourceUrl": "https://official.example/b.pdf", "sourceDigest": "sha256:b"}
+  ],
+  "layers": {
+    "selected": [
+      {"selectedOrder": 1, "manifestOrder": 1, "company": "示例保险", "productName": "安心医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "company": "示例保险", "productName": "安心定期寿险", "sourceUrl": "https://official.example/b.pdf", "sourceDigest": "sha256:b"}
+    ],
+    "input": [
+      {"selectedOrder": 1, "manifestOrder": 1, "company": "示例保险", "productName": "安心医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "company": "示例保险", "productName": "安心定期寿险", "sourceUrl": "https://official.example/b.pdf", "sourceDigest": "sha256:b"}
+    ],
+    "provider": [
+      {"selectedOrder": 1, "manifestOrder": 1, "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "sourceDigest": "sha256:b"}
+    ],
+    "artifact": [
+      {"selectedOrder": 1, "manifestOrder": 1, "company": "示例保险", "productName": "安心医疗保险", "sourceUrl": "https://official.example/a.pdf", "sourceDigest": "sha256:a", "_container": "01-示例保险-安心医疗保险"},
+      {"selectedOrder": 2, "manifestOrder": 2, "company": "示例保险", "productName": "安心定期寿险", "sourceUrl": "https://official.example/b.pdf", "sourceDigest": "sha256:b", "_container": "02-示例保险-安心定期寿险"}
+    ],
+    "terminal": [
+      {"selectedOrder": 1, "manifestOrder": 1, "terminal": "approved", "sourceDigest": "sha256:a"},
+      {"selectedOrder": 2, "manifestOrder": 2, "terminal": "validation-review", "sourceDigest": "sha256:b"}
+    ]
+  },
+  "terminalQueues": {
+    "approved": ["sha256:a"],
+    "validation-review": ["sha256:b"]
+  }
+}
