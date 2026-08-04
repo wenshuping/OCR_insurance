@@ -716,6 +716,16 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
   if (hasCanonicalProductIdInput) data.canonicalProductId = trim(input.canonicalProductId);
+  if (hasOwn(input, 'benefitFrequency')) {
+    const benefitFrequency = trim(input.benefitFrequency);
+    if (!['', 'annual', 'monthly'].includes(benefitFrequency)) {
+      const error = new Error('领取频率格式不正确');
+      error.code = 'INVALID_BENEFIT_FREQUENCY';
+      error.status = 400;
+      throw error;
+    }
+    data.benefitFrequency = benefitFrequency;
+  }
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'beneficiaryRelation') || hasOwn(input, 'beneficiaryRelationLabel')) {
     data.beneficiaryRelation = normalizePolicyRelation(input.beneficiaryRelation || input.beneficiaryRelationLabel);
