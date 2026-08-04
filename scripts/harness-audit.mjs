@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { readDevSourceOwner } from './local-dev-source-owner.mjs';
+import { auditProductIdentityMatching } from './product-identity-harness.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PROJECT_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -104,6 +105,7 @@ function gitStatus(projectRoot) {
   const result = spawnSync('git', ['status', '--porcelain', '--untracked-files=all'], {
     cwd: projectRoot,
     encoding: 'utf8',
+    maxBuffer: 1024 * 1024 * 32,
   });
   if (result.error || result.status !== 0) {
     return {
@@ -801,6 +803,17 @@ export function auditHighRiskScriptDefaults({ projectRoot = DEFAULT_PROJECT_ROOT
   return report;
 }
 
+export function auditProductIdentityMatchGate({ changedFiles = [], projectRoot = DEFAULT_PROJECT_ROOT } = {}) {
+  const result = auditProductIdentityMatching({ changedFiles, projectRoot });
+  const report = makeReport();
+  if (result.ok) {
+    add(report, 'passed', 'product-identity-match-gate', 'changed product matching code satisfies key-first identity contract');
+  } else {
+    add(report, 'failed', 'product-identity-match-gate', 'changed product matching code violates key-first identity contract', result.failures.join('\n'));
+  }
+  return report;
+}
+
 function loadTestMap(projectRoot) {
   const mapPath = path.join(projectRoot, DEFAULT_TEST_MAP_PATH);
   if (!fs.existsSync(mapPath)) return { ok: false, testMap: [], error: `${DEFAULT_TEST_MAP_PATH} is missing` };
@@ -888,6 +901,14 @@ export function runHarnessAudit({
   mergeReport(report, auditRouteSqlPersistence({ projectRoot }));
   mergeReport(report, auditOptionalResponsibilityDatabase({ dbPath }));
   mergeReport(report, auditHighRiskScriptDefaults({ projectRoot }));
+  if (status.skipped) {
+    add(report, 'skipped', 'product-identity-match-gate', 'git status unavailable');
+  } else {
+    mergeReport(report, auditProductIdentityMatchGate({
+      changedFiles: status.entries.map((entry) => entry.path),
+      projectRoot,
+    }));
+  }
   return report;
 }
 

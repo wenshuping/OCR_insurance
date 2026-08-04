@@ -12,6 +12,10 @@ import {
   combinedDeathDisabilityTitleForLegacyAlias,
   removeSupersededDiseaseDisabilityAliases,
 } from './responsibility-indicator-aliases.mjs';
+import {
+  productIdentityMatches,
+  responsibilityCompanyIdentity,
+} from './product-responsibility-identity.mjs';
 
 const MISSING_OFFICIAL_EXCERPT_REASON = '缺少官方来源片段，不能进入计算';
 
@@ -172,6 +176,7 @@ function isRuleParameterText(value = '') {
   const target = compact(value);
   if (/规则参数/u.test(target)) return true;
   if (/^(?:等待期)$/u.test(target)) return true;
+  if (/^(?:可选|该项|本项|此项)?责任的基本保险金额?$/u.test(target)) return true;
   return /^(?:现金流|医疗保障|疾病保障|人寿保障|意外保障|豁免|其他)?(?:赔付方式|给付方式|疾病种数|疾病数量|领取起始年龄|开始领取年龄|领取年龄|缴费年期)$/u.test(target);
 }
 
@@ -407,8 +412,10 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
 
   if (isWaiverText(waiverTarget)) return 'waiver_only';
   if (isRuleParameterText(coreTarget)) return 'not_cashflow';
+  if (text(indicator.branchSemanticContract) === 'official-policy-parameter-branches') return 'scheduled_cashflow';
   if (explicitCashflowCategory) {
     if (meta.calculationKey === 'schedule_or_policy_table' || meta.basisKey === 'schedule_or_policy_table') return 'scheduled_cashflow';
+    if (meta.calculationKey === 'scheduled_branch_scenarios') return 'scheduled_cashflow';
     if (meta.calculationEligible && !hasBlockedCalculationDependency(meta)) return 'scheduled_cashflow';
     if (hasBlockedCalculationDependency(meta)) return 'scheduled_cashflow';
   }
@@ -427,9 +434,11 @@ function cashflowTreatmentFor(indicator = {}, meta = {}) {
   return 'not_cashflow';
 }
 
-function calculationStatusFor({ calculationEligible, cashflowTreatment, calculationReason, calculationKey, basisKey }) {
+function calculationStatusFor({ calculationEligible, cashflowTreatment, calculationReason, calculationKey, basisKey, branchSemanticContract }) {
   if (cashflowTreatment === 'waiver_only') return 'waiver_only';
   if (needsTableForCalculation({ calculationKey, basisKey })) return 'needs_table';
+  if (branchSemanticContract === 'official-payout-frequency-branches' && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
+  if (branchSemanticContract === 'official-policy-parameter-branches' && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
   if (calculationEligible && cashflowTreatment === 'scheduled_cashflow') return 'calculable';
   if (calculationEligible && cashflowTreatment === 'claim_contingent') return 'claim_contingent';
   if (cashflowTreatment === 'not_cashflow') {
@@ -514,6 +523,7 @@ function structuredFormulaFields(indicator = {}) {
       )),
     } : {}),
     ...(Array.isArray(indicator.branches) ? { branches: indicator.branches.map((branch) => ({ ...branch })) } : {}),
+    ...(Array.isArray(indicator.evidenceSegments) ? { evidenceSegments: indicator.evidenceSegments.map((segment) => ({ ...segment })) } : {}),
     ...(branchSemanticContract ? { branchSemanticContract } : {}),
   };
 }
@@ -735,11 +745,9 @@ function isInvalidResponsibilityTitle(value = '') {
 function knowledgeMatchesPolicy(record = {}, policy = {}) {
   const recordCompany = compact(record.company);
   const policyCompany = compact(policy.company);
-  if (recordCompany && policyCompany && recordCompany !== policyCompany) return false;
-  const recordProductName = compact(record.productName || record.product_name || record.name);
-  const policyProductName = compact(policy.productName || policy.name);
-  if (recordProductName && policyProductName && recordProductName !== policyProductName) return false;
-  return true;
+  if (recordCompany && policyCompany
+    && responsibilityCompanyIdentity(record.company) !== responsibilityCompanyIdentity(policy.company)) return false;
+  return productIdentityMatches(record, policy);
 }
 
 function responsibilityClauseTitle(value = '') {
@@ -1077,7 +1085,9 @@ function shouldUseKnowledgeResponsibilities({
 function responsibilityMatchesIndicator(responsibility = {}, indicator = {}) {
   const responsibilityCompany = compact(responsibility.company);
   const indicatorCompany = compact(indicator.company);
-  if (responsibilityCompany && indicatorCompany && responsibilityCompany !== indicatorCompany) return false;
+  if (responsibilityCompany && indicatorCompany
+    && responsibilityCompanyIdentity(responsibility.company) !== responsibilityCompanyIdentity(indicator.company)) return false;
+  if (!productIdentityMatches(responsibility, indicator)) return false;
   const responsibilityCanonicalId = compact(responsibility.canonicalProductId);
   const indicatorCanonicalId = compact(indicator.canonicalProductId);
   if (responsibilityCanonicalId && indicatorCanonicalId && responsibilityCanonicalId !== indicatorCanonicalId) return false;
@@ -1230,6 +1240,14 @@ function cardStatus(indicators = []) {
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'scheduled_cashflow')) {
     return 'calculable';
   }
+  if (indicators.some((indicator) => (
+    indicator.branchSemanticContract === 'official-payout-frequency-branches'
+      && indicator.cashflowTreatment === 'scheduled_cashflow'
+  ))) return 'calculable';
+  if (indicators.some((indicator) => (
+    indicator.branchSemanticContract === 'official-policy-parameter-branches'
+      && indicator.cashflowTreatment === 'scheduled_cashflow'
+  ))) return 'calculable';
   if (indicators.some((indicator) => indicator.calculationEligible && indicator.cashflowTreatment === 'claim_contingent')) {
     return 'claim_contingent';
   }
@@ -1649,7 +1667,8 @@ export function responsibilityRowsFromCards(cards = [], { optionalResponsibiliti
 export function mergeCoverageTableWithCheckedRows(coverageTable = [], checkedRows = []) {
   const rawProvidedRows = objectRows(coverageTable)
     .map(normalizeSummaryRow)
-    .filter(hasSummaryRowContent);
+    .filter(hasSummaryRowContent)
+    .filter((row) => !isRuleParameterText(row.coverageType));
   const checkedSummaryRows = objectRows(checkedRows)
     .map(normalizeSummaryRow)
     .filter(hasSummaryRowContent);
@@ -1705,6 +1724,115 @@ function simpleScheduledPayoutSummary({ title = '', clause = '' } = {}) {
   if (/(?:以下|二者|较大|较小|现金价值|本合同约定|约定给付)/u.test(compactBasis)) return '';
   if (!/(?:保险金额|有效保险金额|保险费|保费|已交|交纳|实际交纳|%|％)/u.test(compactBasis)) return '';
   return `${text(title)} = ${basis}`;
+}
+
+function payoutFrequencyFactorEvidence(responsibility = {}, { policy = {}, knowledgeRecords = [] } = {}) {
+  const candidates = objectRows(knowledgeRecords).filter((record) => (
+    knowledgeMatchesPolicy(record, policy)
+    && (record.official === true || text(record.evidenceLevel) === 'insurer_official')
+  ));
+  for (const record of candidates) {
+    const sourceText = compact(firstNonEmpty(record.pageText, record.originalPageText, record.sourceExcerpt));
+    const match = sourceText.match(/月领折算系数(?:的数值)?为\s*(0(?:\.\d+)?|1(?:\.0+)?)[。；;]?/u);
+    if (!match) continue;
+    return {
+      value: Number(match[1]),
+      sourceUrl: sourceUrlFrom(record),
+      sourceTitle: text(record.title),
+      sourceExcerpt: match[0],
+      sourceDigest: text(record.sourceDigest),
+      official: record.official === true || text(record.evidenceLevel) === 'insurer_official',
+      evidenceLevel: text(record.evidenceLevel),
+      verificationStatus: text(record.verificationStatus),
+    };
+  }
+  return null;
+}
+
+function derivePayoutFrequencyIndicator(responsibility = {}, { policy = {}, knowledgeRecords = [] } = {}) {
+  const title = text(responsibility.title);
+  const clause = compact(joinedText(
+    responsibility.scenario,
+    responsibility.payout,
+    responsibility.formulaText,
+    responsibility.sourceExcerpt,
+  ));
+  if (!title || !/(?:年金|养老金|生存金|教育金|婚嫁金|祝寿金|满期金)/u.test(title)) return null;
+  const annual = /按年领取[^。；;]{0,60}?每年领取金额为基本保险金额/u.test(clause);
+  const monthly = /按月领取[^。；;]{0,80}?每月领取金额为基本保险金额[×xX*]月领折算系数/u.test(clause);
+  if (!annual || !monthly) return null;
+  const factorEvidence = payoutFrequencyFactorEvidence(responsibility, { policy, knowledgeRecords });
+  const policyFactor = Number(policy.monthlyConversionFactor || 0);
+  const monthlyFactor = factorEvidence?.value ?? (Number.isFinite(policyFactor) && policyFactor > 0 ? policyFactor : undefined);
+  const responsibilitySourceUrl = sourceUrlFrom(responsibility);
+  const officialResponsibilitySource = objectRows(knowledgeRecords).find((record) => (
+    knowledgeMatchesPolicy(record, policy)
+    && sourceUrlFrom(record) === responsibilitySourceUrl
+    && (record.official === true || text(record.evidenceLevel) === 'insurer_official')
+  ));
+  const sourceDigest = firstNonEmpty(
+    responsibility.sourceDigest,
+    officialResponsibilitySource?.sourceDigest,
+    factorEvidence?.sourceDigest,
+  );
+
+  return standardizeResponsibilityIndicator({
+    id: `derived_payout_frequency_${compact(title)}`,
+    company: firstNonEmpty(responsibility.company, policy.company),
+    productName: firstNonEmpty(responsibility.productName, policy.productName, policy.name),
+    coverageType: '现金流',
+    liability: title,
+    triggerCondition: responsibility.triggerCondition || responsibility.scenario,
+    basis: '基本保险金额',
+    formulaText: `${title}：按年领取，每年领取金额为基本保险金额；按月领取，每月领取金额为基本保险金额 × 月领折算系数。`,
+    normalizedFormula: 'benefit_amount = basic_insured_amount',
+    branches: [
+      {
+        branchId: 'annual',
+        condition: '按年领取',
+        formulaText: '每年领取金额 = 基本保险金额',
+        normalizedFormula: 'benefit_amount = basic_insured_amount',
+      },
+      {
+        branchId: 'monthly',
+        condition: '按月领取',
+        formulaText: `每月领取金额 = 基本保险金额 × ${monthlyFactor ?? '月领折算系数'}`,
+        normalizedFormula: `benefit_amount = basic_insured_amount * ${monthlyFactor ?? 'monthly_conversion_factor'}`,
+        ...(factorEvidence ? {
+          sourceUrl: factorEvidence.sourceUrl,
+          sourceTitle: factorEvidence.sourceTitle,
+          sourceExcerpt: factorEvidence.sourceExcerpt,
+          sourceDigest: factorEvidence.sourceDigest,
+        } : {}),
+      },
+    ],
+    branchSemanticContract: 'official-payout-frequency-branches',
+    sourceUrl: responsibility.sourceUrl,
+    sourceTitle: responsibility.sourceTitle,
+    sourceExcerpt: responsibility.sourceExcerpt,
+    sourceKind: responsibility.sourceKind,
+    evidenceLabel: responsibility.evidenceLabel,
+    evidenceLevel: responsibility.evidenceLevel,
+    verificationStatus: responsibility.verificationStatus,
+    verificationLabel: responsibility.verificationLabel,
+    referenceOnly: responsibility.referenceOnly,
+    official: responsibility.official === true || Boolean(officialResponsibilitySource || factorEvidence?.official),
+    responsibilityId: responsibility.responsibilityId,
+    responsibilitySourceDigest: responsibility.responsibilitySourceDigest,
+    sourceDigest,
+    responsibilityScope: responsibility.responsibilityScope,
+    ...(factorEvidence ? {
+      evidenceSegments: [{
+        sourceUrl: factorEvidence.sourceUrl,
+        sourceTitle: factorEvidence.sourceTitle,
+        sourceExcerpt: factorEvidence.sourceExcerpt,
+        ...(factorEvidence.sourceDigest ? { sourceDigest: factorEvidence.sourceDigest } : {}),
+        ...(factorEvidence.official ? { official: true } : {}),
+        role: 'monthly_conversion_factor',
+      }],
+    } : {}),
+    __skipOfficialFormulaRepair: true,
+  }, { policy });
 }
 
 function createIndicatorCard({ indicator, responsibility, knowledge, policy, index, title: titleOverride = '' }) {
@@ -1847,6 +1975,7 @@ export function buildResponsibilityCardsForPolicy({
     .filter((responsibility) => (
       (responsibility.responsibilityKind === 'waiting_period_refund' || !isInvalidResponsibilityTitle(responsibility.title))
       && !isWeakLiabilityName(responsibility.title)
+      && !isRuleParameterText(responsibility.title)
       && !isSentenceFragmentTitle(responsibility.title)
     ));
   const normalizedIndicators = sortIndicatorsByReviewedOrder(removeSupersededDiseaseDisabilityAliases(objectRows(coverageIndicators))
@@ -1898,6 +2027,19 @@ export function buildResponsibilityCardsForPolicy({
     if (authoritativeOnly) {
       throw new Error(`authoritative_responsibility_without_indicator:${responsibility.title}`);
     }
+    const derivedIndicator = derivePayoutFrequencyIndicator(responsibility, { policy, knowledgeRecords });
+    if (derivedIndicator) {
+      const card = createIndicatorCard({
+        indicator: derivedIndicator,
+        responsibility,
+        knowledge,
+        policy,
+        index: cards.length,
+      });
+      cardsByKey.set(key, card);
+      cards.push(card);
+      return;
+    }
     const card = createResponsibilityCard({
       responsibility,
       knowledge,
@@ -1909,4 +2051,18 @@ export function buildResponsibilityCardsForPolicy({
   });
 
   return suppressDisplayOnlyCards(cards).map(withIndicatorCheck);
+}
+
+export function mergeResponsibilityCardIndicators(indicators = [], cards = []) {
+  const merged = Array.isArray(indicators) ? [...indicators] : [];
+  const seen = new Set(merged.map((indicator) => text(indicator?.id)).filter(Boolean));
+  for (const card of objectRows(cards)) {
+    for (const indicator of objectRows(card.indicators)) {
+      const id = text(indicator.id);
+      if (id && seen.has(id)) continue;
+      if (id) seen.add(id);
+      merged.push(indicator);
+    }
+  }
+  return merged;
 }

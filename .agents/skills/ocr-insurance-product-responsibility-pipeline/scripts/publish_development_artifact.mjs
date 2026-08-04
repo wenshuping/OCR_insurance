@@ -10,11 +10,11 @@ import {
   responsibilityProductIdentity,
   sameResponsibilityProduct,
 } from '../../../../server/product-responsibility-identity.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../../../../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const skillDir = path.resolve(__dirname, '..');
 const projectRoot = path.resolve(__dirname, '../../../..');
-const defaultDbPath = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 const publisherVersion = '2026-07-23-unified-responsibility-artifact-v3';
 
 function readArg(name, fallback = '') {
@@ -60,15 +60,6 @@ function requireFile(value, label) {
   const resolved = path.resolve(text(value));
   if (!text(value) || !fs.existsSync(resolved) || !fs.statSync(resolved).isFile()) {
     throw new Error(`${label} must be an existing file: ${resolved}`);
-  }
-  return resolved;
-}
-
-function assertDevelopmentDbPath(dbPath) {
-  const resolved = path.resolve(dbPath);
-  const allowedRoot = `${path.resolve(projectRoot, '.runtime', 'local')}${path.sep}`;
-  if (!resolved.startsWith(allowedRoot)) {
-    throw new Error(`refusing non-development database path: ${resolved}`);
   }
   return resolved;
 }
@@ -439,7 +430,7 @@ export async function publishDevelopmentArtifact({
   sourceDocumentPath,
   sourceTextPath,
   officialDomain,
-  dbPath = defaultDbPath,
+  dbPath = '',
   existingBackupPath = '',
   write = false,
   now = new Date().toISOString(),
@@ -447,7 +438,10 @@ export async function publishDevelopmentArtifact({
   const artifactFile = requireFile(artifactPath, 'artifact');
   const sourceDocument = requireFile(sourceDocumentPath, 'source-document');
   const sourceText = requireFile(sourceTextPath, 'source-text');
-  const resolvedDbPath = assertDevelopmentDbPath(dbPath);
+  const resolvedDbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    requestedPath: dbPath,
+  });
   const validatorPath = path.join(skillDir, 'scripts', 'validate_artifact.py');
   const validatorArgs = [validatorPath, `--artifact=${artifactFile}`, `--source-document=${sourceDocument}`, `--source-text=${sourceText}`, `--official-domain=${text(officialDomain)}`];
   const validatorStdout = execFileSync('python3', validatorArgs, { encoding: 'utf8' }).trim();
@@ -506,6 +500,7 @@ export async function publishDevelopmentArtifact({
       validatorPath,
       validatorExitCode: 0,
       validatorStdout,
+      databasePath: resolvedDbPath,
       developmentDbPath: resolvedDbPath,
       backupPath,
       company: built.company,
@@ -533,7 +528,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     sourceDocumentPath: readArg('source-document'),
     sourceTextPath: readArg('source-text'),
     officialDomain: readArg('official-domain'),
-    dbPath: readArg('db-path', defaultDbPath),
+    dbPath: readArg('db-path', ''),
     existingBackupPath: readArg('backup-path', ''),
     write: hasFlag('write'),
   });

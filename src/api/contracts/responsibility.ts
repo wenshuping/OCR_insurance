@@ -76,6 +76,7 @@ export type OptionalResponsibility = {
   quantificationReason?: string;
   coverageAmount?: number;
   indicatorIds?: string[];
+  customerSummary?: string;
   sourceExcerpt?: string;
 };
 
@@ -99,6 +100,17 @@ export type CoverageIndicator = {
   calculationEligible?: boolean;
   calculationReason?: string;
   formulaText?: string;
+  normalizedFormula?: string;
+  branches?: Array<{
+    branchId?: string;
+    condition?: string;
+    conditionText?: string;
+    formulaText?: string;
+    normalizedFormula?: string;
+    sourceUrl?: string;
+    sourceExcerpt?: string;
+  }>;
+  branchSemanticContract?: string;
   condition?: string;
   extractionMethod?: string;
   sourceRecordId?: string;

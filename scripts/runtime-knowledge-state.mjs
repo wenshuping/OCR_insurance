@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -106,10 +107,13 @@ function writeStateDocument(db, key, value) {
 }
 
 export async function createKnowledgeStateStore({
-  dbPath = process.env.POLICY_OCR_APP_DB_PATH || path.join(defaultRuntimeDir, 'policy-ocr.sqlite'),
+  dbPath = '',
   seedStatePath = process.env.POLICY_OCR_APP_STATE_PATH || path.join(defaultRuntimeDir, 'state.json'),
 } = {}) {
-  const resolvedDbPath = path.resolve(dbPath);
+  const resolvedDbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    requestedPath: dbPath,
+  });
   const resolvedSeedStatePath = path.resolve(seedStatePath);
   const runtimeStore = await createSqliteStateStore({
     dbPath: resolvedDbPath,

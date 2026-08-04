@@ -311,6 +311,13 @@ test('entry form exposes local product candidates before responsibility generati
   assert.match(customerPolicyComponentsSource, /匹配：\{planProductDisplayName\(plan\)\}/);
 });
 
+test('entry form exposes benefit frequency before OCR responsibility review', () => {
+  assert.match(policyEntrySource, /label="领取频率（年\/月领）"/);
+  assert.match(policyEntrySource, /value=\{String\(formData\.benefitFrequency \|\| ''\)\}/);
+  assert.match(policyEntrySource, /onUpdateForm\('benefitFrequency', value\)/);
+  assert.match(policyEntrySource, /\{ value: 'annual', label: '年领' \}, \{ value: 'monthly', label: '月领' \}/);
+});
+
 test('customer date fields use text entry instead of mobile native date picker', () => {
   const textFieldSource = componentSource('TextField', 'PeriodField');
   const familySource = componentSource('FamilyProfileManager', null);
@@ -341,6 +348,11 @@ test('entry form surfaces OCR layout review warnings', () => {
   assert.match(customerSource, /ocrWarnings=\{scanResult\?\.ocrWarnings \|\| \[\]\}/);
   assert.match(pageSource, /部分 OCR 字段建议确认/);
   assert.match(pageSource, /ocrWarnings\.map/);
+});
+
+test('policy detail refresh requests fresh official evidence and retains local responsibility context', () => {
+  assert.match(policyApiSource, /regeneratePolicyReport[\s\S]*body:\s*\{ forceFresh: true \}/);
+  assert.match(customerAppSource, /正在重新读取官方条款，并结合本地责任库刷新保单详情/);
 });
 
 test('entry form requires family profile and supports top-pillar setup after OCR', () => {
@@ -926,7 +938,7 @@ test('family overview treats annuity payouts as cashflow instead of cash value t
   assert.doesNotMatch(overviewBuilderSource, /缺少现金价值表/);
 });
 
-test('family overview substitutes policy amounts into indicator formulas', () => {
+test('family overview delegates policy amount substitution to the shared calculation engine', () => {
   const overviewBuilderSource = normalizedCustomerAppSource.slice(
     normalizedCustomerAppSource.indexOf('function parseAmountFromText'),
     normalizedCustomerAppSource.indexOf('type PolicyUploadSource'),
@@ -935,12 +947,21 @@ test('family overview substitutes policy amounts into indicator formulas', () =>
   assert.match(overviewBuilderSource, /isNonPayoutCashflowIndicator/);
   assert.match(overviewBuilderSource, /resolveIndicatorAmount/);
   assert.match(overviewBuilderSource, /formatIndicatorCalculation/);
-  assert.match(overviewBuilderSource, /基本保额 × 倍数/);
-  assert.match(overviewBuilderSource, /基本保额 × 比例/);
-  assert.match(overviewBuilderSource, /基本保额 = /);
-  assert.match(overviewBuilderSource, /年交保费 × 缴费年期/);
-  assert.match(overviewBuilderSource, /实际交纳保险费/);
+  assert.match(overviewBuilderSource, /resolveIndicatorAmountForCurrentContext/);
+  assert.match(overviewBuilderSource, /indicatorCalculationInputs/);
+  assert.doesNotMatch(overviewBuilderSource, /基本保额 × 倍数/);
+  assert.doesNotMatch(overviewBuilderSource, /基本保额 × 比例/);
+  assert.doesNotMatch(overviewBuilderSource, /年交保费 × 缴费年期/);
   assert.match(overviewBuilderSource, /领取起始年龄|开始领取年龄/);
+});
+
+test('customer indicator amounts use the shared structured calculation engine without keyword fallback', () => {
+  const resolverSource = functionSource(customerAppSource, 'resolveIndicatorAmount', 'formatIndicatorCalculation');
+  assert.match(normalizedCustomerAppSource, /resolveIndicatorAmountForCurrentContext/);
+  assert.match(resolverSource, /resolveIndicatorAmountForCurrentContext/);
+  assert.doesNotMatch(resolverSource, /planOrPolicyTotalPremium/);
+  assert.doesNotMatch(resolverSource, /实际交纳的保险费|已交保险费|所交保险费/);
+  assert.doesNotMatch(resolverSource, /planOrPolicyAmount\(policy, indicator\) \* value/);
 });
 
 test('responsibility assistant floats at the bottom right of the screen', () => {
@@ -1125,6 +1146,19 @@ test('customer policy detail exposes edit and delete actions through policy APIs
   assert.match(detailSource, /Trash2/);
   assert.match(detailSource, /PolicyEditDialog/);
   assert.match(detailSource, /reportRegenerating/);
+});
+
+test('customer policy detail exposes an official-PDF plus local-library refresh action', () => {
+  const customerSource = componentSource('CustomerApp', 'FamilyCoverageOverview');
+  const detailSource = componentSource('PolicyDetailSheet', null);
+  assert.match(detailSource, /aria-label="刷新保单详情"/u);
+  assert.match(detailSource, /重新解析官方条款并结合本地责任库刷新/u);
+  assert.match(detailSource, /if \(reportGenerating\) \{/u);
+  assert.match(detailSource, /downloadReportPdf\(reportRef\.current, exportTitle\)/u);
+  assert.doesNotMatch(detailSource, /disabled=\{(?:reportGenerating|!hasReportContent)\}/u);
+  assert.match(detailSource, /max-\[359px\]:sr-only/u);
+  assert.match(policyApiSource, /body:\s*\{ forceFresh: true \}/u);
+  assert.match(customerSource, /正在重新读取官方条款，并结合本地责任库刷新保单详情/u);
 });
 
 test('customer policy detail shows applicant beneficiary and effective date', () => {
@@ -1315,6 +1349,12 @@ test('customer responsibility cards retain the established policy calculation in
   assert.match(cardSource, /有效保险金额/);
   assert.match(cardSource, /计算参照：本保单首期保费/);
   assert.match(cardSource, /calculatedScenario/);
+});
+
+test('customer responsibility cards do not label an incomplete formula as a zero-yuan calculation', () => {
+  const cardSource = fs.readFileSync(new URL('../src/shared/CustomerResponsibilitySummaryCard.tsx', import.meta.url), 'utf8');
+
+  assert.match(cardSource, /formulaCalculation\.partial[\s\S]*已按本保单数据列出领取阶段测算，未合并统计/);
 });
 
 test('responsibility cards keep formula-based indicators visible even before a final amount is calculable', () => {

@@ -3,6 +3,7 @@
     "name": "harness-audit",
     "patterns": [
       "scripts/harness-audit.mjs",
+      "scripts/product-identity-harness.mjs",
       "scripts/check.sh",
       "scripts/test.sh",
       "scripts/dev.sh",
@@ -208,6 +209,42 @@
     ],
     "commands": [
       "node --test tests/sqlite-state-store.test.mjs"
+    ]
+  },
+  {
+    "name": "policy-ocr-database-target",
+    "patterns": [
+      "server/policy-ocr-database-target.mjs",
+      "server/index.mjs",
+      "scripts/import-reviewed-responsibility-artifacts.mjs",
+      "scripts/reconcile-approved-responsibility-products.mjs",
+      ".agents/skills/ocr-insurance-product-responsibility-pipeline/**",
+      "tests/policy-ocr-database-target.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/policy-ocr-database-target.test.mjs"
+    ]
+  },
+  {
+    "name": "product-identity-responsibility",
+    "patterns": [
+      "server/product-responsibility-identity.mjs",
+      "server/responsibility-card-standardizer.mjs",
+      "server/product-customer-responsibility-summary.service.mjs",
+      "server/routes/policies.routes.mjs",
+      "server/routes/responsibilities.routes.mjs",
+      "tests/responsibility-card-standardizer.test.mjs",
+      "tests/product-responsibility-identity.test.mjs",
+      "tests/responsibility-projection-selection.test.mjs",
+      "tests/product-customer-responsibility-summary.test.mjs",
+      "docs/harness.md",
+      "docs/harness-test-map.json"
+    ],
+    "commands": [
+      "node --test tests/responsibility-card-standardizer.test.mjs",
+      "node --test tests/responsibility-projection-selection.test.mjs",
+      "node --test tests/product-customer-responsibility-summary.test.mjs",
+      "node --test tests/product-responsibility-identity.test.mjs"
     ]
   },
   {

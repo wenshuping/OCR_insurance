@@ -39,6 +39,7 @@ function requiresClaimEventFacts(indicator = {}) {
   const liability = normalizeText(indicator.liability || indicator.coverageType);
   if (!/(?:身故|死亡|全残|伤残|残疾|重疾|重大疾病)/u.test(liability)) return false;
   const text = normalizeText(indicatorCoreText(indicator));
+  if (/豁免/u.test(liability) || /豁免.*(?:保险费|保费)|后续应交保险费|后续保险费/u.test(text)) return false;
   return /(?:因疾病|因意外(?:伤害)?|出险原因|出险日期|事故原因|事故日期|合同生效(?:或复效)?之日起.{0,8}(?:年内|年后)|复效.{0,12}(?:年内|年后))/u.test(text);
 }
 
@@ -68,11 +69,13 @@ export function requiredCalculationInputsForMeta(meta = {}) {
   const basisKey = displayText(meta.basisKey);
   if (calculationKey === 'claim_event_facts') return ['eventCause', 'eventDate'];
   if (calculationKey === 'scheduled_branch_scenarios') return ['policy.amount', 'policyYearOrAge'];
+  if (calculationKey === 'policy_parameter_branches') return ['policy.firstPremium', 'policy.paymentPeriod', 'policy.coveragePeriod'];
   if (calculationKey === 'fixed_amount') return [];
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
   }
   if (basisKey === 'effective_insured_amount') return ['effectiveInsuranceAmount', 'policyYearOrAge'];
+  if (basisKey === 'policy_anniversary_basic_amount') return ['policyScheduleTable', 'policyYearOrAge'];
   if (
     ['first_premium', 'percent_of_first_premium', 'multiple_of_first_premium'].includes(calculationKey) ||
     ['first_premium', 'first_basic_responsibility_premium', 'annual_premium'].includes(basisKey)
@@ -80,7 +83,7 @@ export function requiredCalculationInputsForMeta(meta = {}) {
     return ['policy.firstPremium'];
   }
   if (['total_paid_premium', 'percent_of_total_paid_premium', 'multiple_of_total_paid_premium'].includes(calculationKey) || basisKey === 'total_paid_premium') {
-    return ['policy.firstPremium', 'policy.paymentPeriodYears'];
+    return ['policy.firstPremium', 'policy.paymentPeriodYears', 'policy.paymentFrequency'];
   }
   if (calculationKey === 'cash_value' || basisKey === 'cash_value') return ['cashValue', 'policyYear'];
   if (calculationKey === 'account_value' || basisKey === 'account_value') return ['accountValue'];
@@ -136,17 +139,27 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     indicator.responsibilityScope,
   ].filter(Boolean).join(' '));
   const { value, unit } = numericSpec(indicator);
-  const hasStructuredEventBranches = Array.isArray(indicator.branches)
+  const hasStructuredBranchFormulas = Array.isArray(indicator.branches)
     && indicator.branches.length > 0
     && indicator.branches.every((branch) => displayText(branch?.normalizedFormula || branch?.formulaText));
-  const hasStructuredScheduledBranches = hasStructuredEventBranches
-    && /生存|年金|养老金|祝寿|教育|婚嫁|满期/u.test(liability)
-    && indicator.branches.every((branch) => (
-      /周岁|保单生效对应日|合同生效满|保险期间届满/u.test(displayText([
-        branch?.conditionText,
-        branch?.condition,
-      ].filter(Boolean).join(' ')))
-    ));
+  const hasStructuredScheduledBranches = hasStructuredBranchFormulas
+    && (
+      displayText(indicator.branchSemanticContract) === 'official-payout-frequency-branches'
+      || (
+        /生存|年金|养老金|祝寿|教育|婚嫁|满期/u.test(liability)
+        && indicator.branches.every((branch) => (
+          /周岁|保单生效对应日|合同生效满|保险期间届满/u.test(displayText([
+            branch?.conditionText,
+            branch?.condition,
+          ].filter(Boolean).join(' ')))
+        ))
+      )
+    );
+  const hasStructuredEventBranches = hasStructuredBranchFormulas
+    && (hasStructuredScheduledBranches
+      || displayText(indicator.branchSemanticContract) === 'official-claim-event-branches');
+  const hasStructuredPolicyParameterBranches = hasStructuredBranchFormulas
+    && displayText(indicator.branchSemanticContract) === 'official-policy-parameter-branches';
 
   if (requiresClaimEventFacts(indicator)) {
     return {
@@ -167,6 +180,18 @@ export function normalizeIndicatorCalculation(indicator = {}) {
       calculationEligible: false,
       calculationReason: '按年龄或保单周年阶段分别测算',
       decisionSource: 'official_scheduled_benefit_branches',
+      value,
+      unit: '公式',
+    };
+  }
+
+  if (hasStructuredPolicyParameterBranches) {
+    return {
+      basisKey: 'policy_parameter',
+      calculationKey: 'policy_parameter_branches',
+      calculationEligible: false,
+      calculationReason: '需根据保单录入的缴费期间、交费方式或保险期间选择官方给付比例',
+      decisionSource: 'official_policy_parameter_branches',
       value,
       unit: '公式',
     };
@@ -204,8 +229,11 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     };
   }
 
+  const policyAnniversaryBasicAmount = /保单生效对应日(?:的)?基本责任(?:的)?保险金额/u;
   let basisKey = '';
-  if (/现金价值|现价/u.test(formulaSignalText)) {
+  if (policyAnniversaryBasicAmount.test(text)) {
+    basisKey = 'policy_anniversary_basic_amount';
+  } else if (/现金价值|现价/u.test(formulaSignalText)) {
     basisKey = 'cash_value';
   } else if (/账户价值|账户余额|个人账户|公共账户|账户|帐户/u.test(formulaSignalText)) {
     basisKey = 'account_value';
@@ -252,6 +280,14 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   const normalizedUnit = unit === '％' ? '%' : unit;
   const modelBasisKey = displayText(indicator.basisKey);
   const modelCalculationKey = displayText(indicator.calculationKey);
+  const explicitEffectiveAmountFormula = modelBasisKey === 'effective_insured_amount'
+    && modelCalculationKey === 'manual_formula';
+  if (explicitEffectiveAmountFormula) basisKey = 'effective_insured_amount';
+  const legacyEffectiveAmountMultiple = modelBasisKey === 'contract_defined_effective_insured_amount'
+    && modelCalculationKey === 'multiple_of_basis'
+    && value !== null
+    && normalizedUnit === '倍'
+    && Boolean(indicator.basisDefinition && typeof indicator.basisDefinition === 'object');
   const hasStructuredDecision = Boolean(modelCalculationKey)
     && MODEL_CALCULATION_PAIRS.has(`${modelBasisKey || 'unknown'}:${modelCalculationKey}`)
     && (!basisKey || basisKey === modelBasisKey);
@@ -270,10 +306,22 @@ export function normalizeIndicatorCalculation(indicator = {}) {
       ? '包含条件化给付，需要结合事故原因、合同生效时间或条款条件判断'
       : '包含较大者/多基准比较，需要现金价值或条款表后才能计算';
     decisionSource = 'code_safety_rule';
+  } else if (explicitEffectiveAmountFormula) {
+    calculationKey = 'manual_formula';
+    calculationEligible = indicator.calculationEligible === true;
+    calculationReason = calculationEligible
+      ? ''
+      : (displayText(indicator.calculationReason) || '有效保险金额需要基本保险金额与累积红利保险金额，当前缺少对应保单年度红利值');
+    decisionSource = 'structured_semantic';
   } else if (basisKey === 'cash_value' || basisKey === 'account_value') {
     calculationKey = basisKey;
     calculationEligible = false;
     calculationReason = '依赖现金价值或账户价值，不能只靠指标和保单基础字段计算';
+    decisionSource = 'code_safety_rule';
+  } else if (basisKey === 'policy_anniversary_basic_amount') {
+    calculationKey = 'schedule_or_policy_table';
+    calculationEligible = false;
+    calculationReason = '给付基数为对应保单生效日的基本责任保险金额，需按该年度保额记录核算；分红型还需计入当年已分配的增额红利';
     decisionSource = 'code_safety_rule';
   } else if (basisKey === 'schedule_or_policy_table') {
     calculationKey = 'schedule_or_policy_table';
@@ -290,6 +338,9 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationEligible = false;
     calculationReason = '津贴型责任依赖实际天数或保险单位数';
     decisionSource = 'code_safety_rule';
+  } else if (legacyEffectiveAmountMultiple) {
+    basisKey = 'basic_amount';
+    calculationKey = 'multiple_of_basic_amount';
   } else if (hasStructuredDecision) {
     calculationKey = modelCalculationKey;
     calculationEligible = indicator.calculationEligible !== false;
@@ -343,6 +394,7 @@ const FORMULA_VARIABLE_LABELS = {
   basic_amount: '基本保险金额',
   basic_insured_amount: '基本保险金额',
   basic_insurance_amount: '基本保险金额',
+  basic_sum_insured: '基本保险金额',
   basic_sum_assured: '基本责任保险金额',
   basic_responsibility_insured_amount: '基本责任保险金额',
   initial_basic_insured_amount: '初始基本保险金额',
@@ -364,11 +416,20 @@ const FORMULA_VARIABLE_LABELS = {
   deductible: '免赔额',
   third_party_paid_amount: '其他途径已补偿金额',
   remaining_liability_limit: '剩余责任限额',
+  monthly_conversion_factor: '月领折算系数',
 };
 
 function formulaNumber(value) {
   const number = finiteNumber(value);
   return number === null ? null : number;
+}
+
+function paymentPeriodsFromInputs(inputs = {}) {
+  const explicit = formulaNumber(inputs.paymentPeriods);
+  if (explicit !== null && explicit > 0) return explicit;
+  const years = formulaNumber(inputs.paymentYears);
+  if (years === null || years <= 0) return null;
+  return displayText(inputs.paymentFrequency) === 'monthly' ? years * 12 : years;
 }
 
 function formulaValueForVariable(name, inputs = {}) {
@@ -377,20 +438,35 @@ function formulaValueForVariable(name, inputs = {}) {
     : {};
   if (Object.prototype.hasOwnProperty.call(values, name)) return values[name];
 
-  if (['basic_amount', 'basic_insured_amount', 'basic_insurance_amount', 'basic_sum_assured', 'basic_responsibility_insured_amount', 'initial_basic_insured_amount'].includes(name)) return inputs.baseAmount;
+  if (['basic_amount', 'basic_insured_amount', 'basic_insurance_amount', 'basic_sum_insured', 'basic_sum_assured', 'basic_responsibility_insured_amount', 'initial_basic_insured_amount'].includes(name)) return inputs.baseAmount;
   if (['first_premium', 'annual_premium'].includes(name)) return inputs.firstPremium;
   if (['total_paid_premium', 'paid_premium'].includes(name)) {
     const premium = formulaNumber(inputs.firstPremium);
-    const years = formulaNumber(inputs.paymentYears);
-    return premium !== null && years !== null ? premium * years : undefined;
+    const periods = paymentPeriodsFromInputs(inputs);
+    return premium !== null && periods !== null ? premium * periods : undefined;
   }
   if (name === 'payment_years') return inputs.paymentYears;
+  if (name === 'effective_insured_amount') return inputs.effectiveInsuranceAmount;
+  if (name === 'accumulated_dividend_insured_amount') return inputs.accumulatedDividendInsuredAmount;
+  if (name === 'monthly_conversion_factor') return inputs.monthlyConversionFactor;
   if (name === 'policy_year' || name === 'n') return inputs.policyYear;
   return undefined;
 }
 
 function formulaLabel(name) {
   return FORMULA_VARIABLE_LABELS[name] || name.replace(/_/gu, ' ');
+}
+
+function formulaResultLabel(indicator = {}, fallback = '') {
+  const liability = displayText(indicator.liability);
+  if (liability) return liability;
+  const formulaText = displayText(indicator.formulaText);
+  const equalsIndex = formulaText.indexOf('=');
+  if (equalsIndex > 0 && formulaText.indexOf('=', equalsIndex + 1) < 0) {
+    const label = formulaText.slice(0, equalsIndex).trim();
+    if (label && label.length <= 32 && !/[。；;：:]/u.test(label)) return label;
+  }
+  return formulaLabel(fallback);
 }
 
 export function formulaVariablesFromIndicators(indicators = []) {
@@ -719,7 +795,7 @@ function resolveNormalizedFormula(indicator = {}, inputs = {}) {
   const expression = expandFormulaVariables(parts.length === 2 ? parts[1] : source, inputs);
   const ast = parseFormulaExpression(expression);
   if (!ast) return null;
-  const label = displayText(indicator.liability) || formulaLabel(parts.length === 2 ? parts[0].trim() : source);
+  const label = formulaResultLabel(indicator, parts.length === 2 ? parts[0].trim() : source);
   const evaluated = evaluateFormulaAst(ast);
   if (evaluated.known && Number.isFinite(evaluated.value)) {
     const amount = roundMoney(evaluated.value);
@@ -743,6 +819,55 @@ function resolveNormalizedFormula(indicator = {}, inputs = {}) {
     minimumAmount,
     isMinimumEstimate: minimumAmount > 0,
     calculationText: `${label} = ${displayFormulaExpression(displayExpression)}${minimumAmount > 0 ? `；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入${unresolvedLabels || '待补充金额'}）` : `；缺少${unresolvedLabels || '待补充输入'}，暂不计算`}`,
+  };
+}
+
+function resolveEffectiveInsuredAmountFallback(indicator = {}, inputs = {}, meta = {}) {
+  if (meta.basisKey !== 'effective_insured_amount') return null;
+
+  const effectiveAmount = formulaNumber(inputs.effectiveInsuranceAmount);
+  const baseAmount = formulaNumber(inputs.baseAmount);
+  const factor = formulaNumber(meta.value);
+  const unit = displayText(meta.unit);
+  const multiplier = factor !== null
+    ? (unit === '%' ? factor / 100 : unit === '倍' ? factor : factor)
+    : 1;
+  if (!(multiplier > 0)) return null;
+
+  if (effectiveAmount !== null && effectiveAmount >= 0) {
+    const amount = roundMoney(effectiveAmount * multiplier);
+    return {
+      resolved: amount > 0,
+      amount,
+      meta,
+      calculationText: factor !== null
+        ? `有效保险金额${formatMoney(effectiveAmount)}元 × ${unit === '%' ? `${factor}%` : `${factor}${unit || '倍'}`} = ${formatMoney(amount)}元`
+        : `有效保险金额${formatMoney(effectiveAmount)}元 = ${formatMoney(amount)}元`,
+    };
+  }
+
+  if (baseAmount !== null && baseAmount > 0) {
+    const minimumAmount = roundMoney(baseAmount * multiplier);
+    const factorText = factor !== null
+      ? ` × ${unit === '%' ? `${factor}%` : `${factor}${unit || '倍'}`}`
+      : '';
+    return {
+      resolved: false,
+      partial: true,
+      amount: 0,
+      minimumAmount,
+      isMinimumEstimate: true,
+      meta,
+      calculationText: `有效保险金额 = 基本保险金额${formatMoney(baseAmount)}元 + 累计红利保险金额（待补充）${factorText}；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入累计红利保险金额）`,
+    };
+  }
+
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    calculationText: '有效保险金额缺少有效保额输入或基本保险金额，暂不计算',
   };
 }
 
@@ -805,36 +930,198 @@ function effectiveInsuredAmountDefinition(indicator = {}) {
   return {
     key: 'contract_defined_effective_insured_amount',
     label: '有效保险金额',
-    formulaText: '基本保险金额 + 累计红利保险金额',
-    requiredInputs: ['policy.basicInsuredAmount', 'policy.accumulatedDividendInsuredAmount'],
+    formulaText: '基本保险金额 + 累积红利保险金额',
+    normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
+    requiredInputs: ['policy.amount', 'policyYearOrAge', 'manualFormulaInputs'],
+    requiredInputDetails: [
+      { input: 'policy.amount', meaning: '保单基本保险金额' },
+      { input: 'policyYearOrAge', meaning: '给付对应的保单年度或被保险人年龄' },
+      { input: 'manualFormulaInputs', meaning: '该保单生效对应日的累积红利保险金额或官方保单年度表值' },
+    ],
     sourceUrl: displayText(indicator.sourceUrl),
     sourceExcerpt: displayText(indicator.sourceExcerpt),
   };
 }
 
+function effectiveInsuredAmountFactor(clause = '', liability = '') {
+  const compactClause = normalizeText(clause);
+  const candidates = [...compactClause.matchAll(/二者之和的?(\d+(?:\.\d+)?)(%|％|倍)给付([^。；;]*)/gu)];
+  const match = candidates.find((candidate) => candidate[3].includes(normalizeText(liability))) || candidates[0];
+  if (!match) return null;
+  return {
+    value: Number(match[1]),
+    unit: match[2] === '％' ? '%' : match[2],
+  };
+}
+
+function payoutFrequencyBranchesFromFormulaText(indicator = {}) {
+  if (Array.isArray(indicator.branches) && indicator.branches.length > 0) return null;
+  const clause = normalizeText([
+    indicator.formulaText,
+    indicator.basis,
+    indicator.sourceExcerpt,
+  ].filter(Boolean).join(' '));
+  const annual = /按年领取[^。；;]{0,72}?每年领取金额为基本(?:责任)?保险金额/u.test(clause);
+  const monthly = /按月领取[^。；;]{0,96}?每月领取金额为基本(?:责任)?保险金额[×xX*]月领折算系数/u.test(clause);
+  if (!annual || !monthly) return null;
+  const factorMatch = clause.match(/月领折算系数(?:的数值)?为(0(?:\.\d+)?|1(?:\.0+)?)/u);
+  const monthlyFactor = factorMatch ? Number(factorMatch[1]) : null;
+  return {
+    ...indicator,
+    basis: '基本保险金额',
+    normalizedFormula: 'benefit_amount = basic_insured_amount',
+    branches: [
+      {
+        branchId: 'annual',
+        condition: '按年领取',
+        formulaText: '每年领取金额 = 基本保险金额',
+        normalizedFormula: 'benefit_amount = basic_insured_amount',
+      },
+      {
+        branchId: 'monthly',
+        condition: '按月领取',
+        formulaText: `每月领取金额 = 基本保险金额 × ${monthlyFactor ?? '月领折算系数'}`,
+        normalizedFormula: `benefit_amount = basic_insured_amount * ${monthlyFactor ?? 'monthly_conversion_factor'}`,
+      },
+    ],
+    branchSemanticContract: 'official-payout-frequency-branches',
+  };
+}
+
+function policyParameterRatioBranchesFromFormulaText(indicator = {}) {
+  if (Array.isArray(indicator.branches) && indicator.branches.length > 0) return null;
+  const liability = displayText(indicator.liability || indicator.coverageType);
+  const clause = normalizeText([
+    indicator.formulaText,
+    indicator.basis,
+    indicator.sourceExcerpt,
+  ].filter(Boolean).join(' '));
+  if (!liability || !/(?:给付|赔付)比例/u.test(clause)) return null;
+  const firstPremium = /首次交纳(?:的)?(?:保险费|保费)(?:的)?金额?/u.test(clause);
+  const basicAmount = /基本(?:责任)?保险金额|基本保险金|基本保额/u.test(clause);
+  if (!firstPremium && !basicAmount) return null;
+  const branches = [...clause.matchAll(/保险单上载明的(交费方式|交费期间|缴费期间|保险期间)为(一次交清|趸交|\d+年)[，,]?则[^。；;]{0,96}?(?:给付|赔付)比例为(\d+(?:\.\d+)?)\s*[%％]/gu)]
+    .map((match) => {
+      const field = match[1];
+      const condition = `保险单载明的${field}为${match[2]}`;
+      const rate = Number(match[3]);
+      const variable = firstPremium ? 'first_premium' : 'basic_insured_amount';
+      const basis = firstPremium ? '首次交纳保险费的金额' : '基本保险金额';
+      return {
+        branchId: `${field}-${match[2]}`,
+        condition,
+        formulaText: `${liability} = ${basis} × ${rate}%`,
+        normalizedFormula: `benefit_amount = ${variable} * ${rate / 100}`,
+      };
+    });
+  if (!branches.length) return null;
+  const variable = firstPremium ? 'first_premium' : 'basic_insured_amount';
+  const basis = firstPremium ? '首次交纳保险费的金额' : '基本保险金额';
+  return {
+    ...indicator,
+    basis,
+    formulaText: `${liability} = ${basis} × ${liability}给付比例`,
+    normalizedFormula: `benefit_amount = ${variable} * payout_ratio`,
+    basisKey: firstPremium ? 'first_premium' : 'basic_amount',
+    calculationKey: 'policy_parameter_branches',
+    calculationEligible: false,
+    calculationReason: '需根据保单录入的缴费期间、交费方式或保险期间选择官方给付比例',
+    requiredInputs: [firstPremium ? 'policy.firstPremium' : 'policy.amount', 'policy.paymentPeriod', 'policy.coveragePeriod'],
+    branches,
+    branchSemanticContract: 'official-policy-parameter-branches',
+    responsibilityRepairVersion: '2026-08-03-official-policy-parameter-branches',
+  };
+}
+
 function repairIndicatorFormulaFromOfficialExcerpt(indicator = {}) {
-  if (indicator.__skipOfficialFormulaRepair === true || !displayText(indicator.sourceUrl)) return indicator;
+  if (indicator.__skipOfficialFormulaRepair === true) return indicator;
+  const payoutFrequencyIndicator = payoutFrequencyBranchesFromFormulaText(indicator);
+  if (payoutFrequencyIndicator) return payoutFrequencyIndicator;
+  const policyParameterRatioIndicator = policyParameterRatioBranchesFromFormulaText(indicator);
+  if (policyParameterRatioIndicator) return policyParameterRatioIndicator;
+  if (!displayText(indicator.sourceUrl)) return indicator;
   const liability = displayText(indicator.liability || indicator.coverageType);
   const clause = officialClauseForLiability(indicator);
   if (!liability || !clause) return indicator;
-  const hasEffectiveAmountSum = /(?:基本保险金额|基本保险金|基本保额)(?:与|及|和)(?:累计|累积)红利保险金额(?:二者)?之和/u.test(clause);
-  const isScheduledBenefit = /满期|生存|年金|祝寿|教育|婚嫁|关爱|养老/u.test(liability);
-  if (isScheduledBenefit) {
-    if (!hasEffectiveAmountSum) return indicator;
+  const isOptionalResponsibility = displayText(indicator.responsibilityScope) === 'optional';
+  const optionalAmountMatch = clause.match(/按(?:该保单生效对应日)?([^。；]{0,32}?可选责任的保险金额)给付祝寿金/u);
+  if (isOptionalResponsibility && /祝寿金/u.test(liability) && optionalAmountMatch) {
+    const basis = displayText(optionalAmountMatch[1]);
     return {
       ...indicator,
-      basis: '有效保险金额',
-      formulaText: `${liability} = 基本保险金额 + 累计红利保险金额`,
-      payoutSummary: `${liability} = 基本保险金额 + 累计红利保险金额`,
-      normalizedFormula: 'benefit_amount = basic_insured_amount + accumulated_dividend_insured_amount',
-      basisDefinition: effectiveInsuredAmountDefinition(indicator),
+      basis,
+      formulaText: `${liability} = ${basis} × 100%`,
+      payoutSummary: `${liability} = ${basis} × 100%`,
+      normalizedFormula: 'benefit_amount = optional_responsibility_insured_amount',
+      value: 100,
+      valueText: '100',
+      unit: '%',
+      basisKey: 'basic_amount',
+      calculationKey: 'basic_amount',
+      requiredInputs: ['optionalResponsibilityCoverageAmount'],
+      calculationEligible: true,
+      calculationReason: '',
+      responsibilityRepairVersion: '2026-08-03-optional-responsibility-formula-safety',
+    };
+  }
+
+  const hasComparisonFormula = /较大者|最大者|较高者|较高值/u.test(clause) && /现金价值/u.test(clause);
+  const hasStructuredComparison = Array.isArray(indicator.branches) && indicator.branches.length >= 2;
+  const looksLikeGenericAmountFormula = /保险金额\s*[×xX*]\s*100\s*[%％]/u.test(displayText(indicator.formulaText))
+    || !/(?:max|min|较大者|最大者|较高者|较高值)/u.test(displayText(indicator.formulaText));
+  if (isOptionalResponsibility
+    && /身故|全残|死亡/u.test(liability)
+    && hasComparisonFormula
+    && !hasStructuredComparison
+    && looksLikeGenericAmountFormula) {
+    return {
+      ...indicator,
+      basis: '条款比较项与对应现金价值',
+      formulaText: `${liability} = 条款比较公式（完整比较项待补齐）`,
+      payoutSummary: `${liability}按条款约定的多个比较项及对应现金价值计算，当前官方文本片段不完整`,
+      normalizedFormula: '',
       value: null,
       valueText: '',
       unit: '公式',
+      basisKey: 'manual_formula',
+      calculationKey: 'manual_formula',
+      requiredInputs: ['manualFormulaInputs'],
+      calculationEligible: false,
+      calculationReason: '官方文本缺少完整比较项，禁止按保险金额100%代算',
+      responsibilityRepairVersion: '2026-08-03-optional-responsibility-formula-safety',
+    };
+  }
+  const hasEffectiveAmountSum = /(?:基本保险金额|基本保险金|基本保额)(?:与|及|和)(?:累计|累积)红利保险金额(?:二者)?之和/u.test(clause);
+  const isScheduledBenefit = /满期|生存|年金|祝寿|教育|深造|立业|婚嫁|关爱|养老/u.test(liability);
+  if (isScheduledBenefit) {
+    if (!hasEffectiveAmountSum) return indicator;
+    const factor = effectiveInsuredAmountFactor(clause, liability);
+    const factorText = factor ? `）× ${factor.value}${factor.unit}` : '';
+    const normalizedFactor = factor
+      ? ` * ${factor.unit === '%' ? factor.value / 100 : factor.value}`
+      : '';
+    return {
+      ...indicator,
+      basis: '有效保险金额',
+      formulaText: factor
+        ? `${liability} = （基本保险金额 + 累积红利保险金额${factorText}`
+        : `${liability} = 基本保险金额 + 累积红利保险金额`,
+      payoutSummary: factor
+        ? `${liability} = （基本保险金额 + 累积红利保险金额${factorText}`
+        : `${liability} = 基本保险金额 + 累积红利保险金额`,
+      normalizedFormula: `benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount)${normalizedFactor}`,
+      basisDefinition: effectiveInsuredAmountDefinition(indicator),
+      value: factor?.value ?? null,
+      valueText: factor ? String(factor.value) : '',
+      unit: factor?.unit || '公式',
       basisKey: 'effective_insured_amount',
-      calculationKey: 'unknown',
-      calculationEligible: true,
-      calculationReason: '',
+      calculationKey: 'manual_formula',
+      requiredInputs: ['policy.amount', 'policyYearOrAge', 'manualFormulaInputs'],
+      requiredInputDetails: [
+        { input: 'manualFormulaInputs', meaning: '该保单生效对应日的累积红利保险金额或官方保单年度表值' },
+      ],
+      calculationEligible: false,
+      calculationReason: '缺少该保单生效对应日的累积红利保险金额；需补充对应保单年度/年龄的官方保单红利保险金额值或保单年度表格后才能得出精确金额',
       responsibilityRepairVersion: '2026-07-31-official-clause-formula-repair',
     };
   }
@@ -948,19 +1235,122 @@ function resolveClaimEventBranchScenarios(indicator = {}, inputs = {}, meta = {}
   };
 }
 
+function scheduledBranchMinimumCalculationText(branch = {}, result = {}, inputs = {}) {
+  const formula = displayText(branch.formulaText || branch.normalizedFormula);
+  const percentage = formula.match(/(\d+(?:\.\d+)?)\s*[%％]/u);
+  const normalizedFormula = displayText(branch.normalizedFormula);
+  const usesEffectiveAmount = /有效保险金额|基本保险金额[^。；;，,]{0,30}(?:累计|累积)红利保险金额/u.test(formula)
+    || /accumulated_dividend_insured_amount/u.test(normalizedFormula);
+  if (!percentage || !usesEffectiveAmount || !(Number(result.minimumAmount) > 0)) {
+    return displayText(result.calculationText);
+  }
+  const minimumAmount = formatMoney(result.minimumAmount);
+  return `（基本保险金额${formatMoney(inputs.baseAmount)}元 + 累积红利保险金额（待补充）） × ${formatMoney(Number(percentage[1]))}% = ${minimumAmount}元`;
+}
+
 function resolveScheduledBenefitBranchScenarios(indicator = {}, inputs = {}, meta = {}) {
   const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
   const baseAmount = Number(inputs.baseAmount || 0) || 0;
   if (!branches.length || !(baseAmount > 0)) return null;
+  const requestedFrequency = displayText(inputs.benefitFrequency);
+  if (['annual', 'monthly'].includes(requestedFrequency)) {
+    const selectedBranch = branches.find((branch) => (
+      requestedFrequency === 'annual'
+        ? /年领|annual/u.test(displayText(branch.conditionText || branch.condition || branch.branchId))
+        : /月领|monthly/u.test(displayText(branch.conditionText || branch.condition || branch.branchId))
+    ));
+    if (selectedBranch) {
+      const normalizedFormula = displayText(selectedBranch.normalizedFormula || indicator.normalizedFormula);
+      const branchResult = resolveNormalizedFormula({
+        ...indicator,
+        ...selectedBranch,
+        liability: '',
+        coverageType: '',
+        sourceExcerpt: '',
+        branches: [],
+        normalizedFormula,
+        __skipOfficialFormulaRepair: true,
+      }, inputs);
+      if (branchResult?.resolved) {
+        return {
+          ...branchResult,
+          meta,
+          hasBranchScenarios: true,
+          scenarioKind: 'scheduled_benefit',
+          calculationText: `${displayText(selectedBranch.conditionText || selectedBranch.condition)}：${branchResult.calculationText}`,
+        };
+      }
+    }
+  }
+  const branchResults = branches.map((branch) => {
+    const normalizedFormula = displayText(branch.normalizedFormula || indicator.normalizedFormula);
+    if (!normalizedFormula) return null;
+    return resolveNormalizedFormula({
+      ...indicator,
+      ...branch,
+      liability: '',
+      coverageType: '',
+      sourceExcerpt: '',
+      branches: [],
+      normalizedFormula,
+      __skipOfficialFormulaRepair: true,
+    }, inputs);
+  });
   const lines = branches.map((branch) => {
     const condition = displayText(branch.conditionText || branch.condition) || '约定领取阶段';
     const formula = displayText(branch.formulaText || branch.normalizedFormula);
     const percentage = formula.match(/(\d+(?:\.\d+)?)\s*[%％]/u);
-    if (!percentage) return `${condition}：${formula}`;
+    const branchIndex = branches.indexOf(branch);
+    const branchResult = branchResults[branchIndex];
+    if (branchResult?.isMinimumEstimate) {
+      return `${condition}：${scheduledBranchMinimumCalculationText(branch, branchResult, inputs)}`;
+    }
+    if (!percentage && branchResult?.resolved) {
+      const normalizedFormula = displayText(branch.normalizedFormula);
+      if (/^benefit_amount\s*=\s*basic_insured_amount$/u.test(normalizedFormula)) {
+        return `${condition}：基本保险金额${formatMoney(baseAmount)}元 = ${formatMoney(branchResult.amount)}元`;
+      }
+      return `${condition}：${branchResult.calculationText}`;
+    }
+    if (!percentage) return `${condition}：${branchResult?.partial ? branchResult.calculationText : formula}`;
     const rate = Number(percentage[1]);
     const amount = roundMoney(baseAmount * rate / 100);
     return `${condition}：基本责任保险金额${formatMoney(baseAmount)}元 × ${formatMoney(rate)}% = ${formatMoney(amount)}元`;
   });
+  const singleBranchMinimum = branches.length === 1 && branchResults[0]?.isMinimumEstimate === true;
+  const payoutFrequencyMinimum = displayText(indicator.branchSemanticContract) === 'official-payout-frequency-branches'
+    && branchResults.length === branches.length
+    && branchResults.every((result) => result?.resolved === true);
+  if (payoutFrequencyMinimum) {
+    const minimumAmount = Math.min(...branchResults.map((result) => Number(result.amount || 0)));
+    return {
+      resolved: false,
+      partial: true,
+      amount: minimumAmount,
+      minimumAmount,
+      isMinimumEstimate: true,
+      meta,
+      hasBranchScenarios: true,
+      scenarioKind: 'scheduled_benefit',
+      uncertaintyNote: '年领和月领为互斥领取方式，已按官方分支计算结果的最低值统计；实际金额取决于保单约定的领取频率。',
+      calculationText: `领取频率分支测算（按最低值统计）：\n${lines.join('\n')}；最低可确认金额 ${formatMoney(minimumAmount)}元（年领/月领互斥，未合并两种方式）`,
+    };
+  }
+  if (singleBranchMinimum) {
+    const minimumAmount = branchResults[0].minimumAmount;
+    return {
+      resolved: false,
+      partial: true,
+      amount: minimumAmount,
+      minimumAmount,
+      isMinimumEstimate: true,
+      meta,
+      hasBranchScenarios: true,
+      scenarioKind: 'scheduled_benefit',
+      uncertaintyNote: '已按每个领取阶段的条款公式统计基本保险金额对应最低值，未计入待补充的累积红利保险金额。',
+      calculationText: `领取阶段测算（按最低值统计）：\n${lines.join('\n')}；最低可确认金额 ${formatMoney(minimumAmount)}元（未计入累积红利保险金额）`,
+    };
+  }
   return {
     resolved: false,
     partial: true,
@@ -973,11 +1363,75 @@ function resolveScheduledBenefitBranchScenarios(indicator = {}, inputs = {}, met
   };
 }
 
+function policyParameterBranchMatches(branch = {}, inputs = {}) {
+  const condition = displayText(branch.conditionText || branch.condition);
+  const paymentPeriod = displayText(inputs.paymentPeriod);
+  const coveragePeriod = displayText(inputs.coveragePeriod);
+  if (/交费方式/u.test(condition)) {
+    return /(?:一次交清|趸交)/u.test(condition) && /(?:一次交清|趸交)/u.test(paymentPeriod);
+  }
+  const expectedYears = condition.match(/(?:交费期间|缴费期间|保险期间)为\s*(\d+)\s*年/u);
+  if (!expectedYears) return false;
+  const currentValue = /保险期间/u.test(condition) ? coveragePeriod : paymentPeriod;
+  return new RegExp(`${expectedYears[1]}\\s*年`, 'u').test(currentValue);
+}
+
+function resolvePolicyParameterBranchScenarios(indicator = {}, inputs = {}, meta = {}) {
+  const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
+  if (!branches.length) return null;
+  const selectedBranch = branches.find((branch) => policyParameterBranchMatches(branch, inputs));
+  if (selectedBranch) {
+    const result = resolveNormalizedFormula({
+      ...indicator,
+      ...selectedBranch,
+      liability: '',
+      coverageType: '',
+      sourceExcerpt: '',
+      branches: [],
+      branchSemanticContract: '',
+      __skipOfficialFormulaRepair: true,
+    }, inputs);
+    if (result) {
+      const rateMatch = displayText(selectedBranch.formulaText).match(/(?:×|x|X|\*)\s*(\d+(?:\.\d+)?)\s*[%％]/u);
+      const rate = rateMatch ? Number(rateMatch[1]) : null;
+      const premium = Number(inputs.firstPremium || 0) || 0;
+      const baseAmount = Number(inputs.baseAmount || 0) || 0;
+      const basisAmount = /首次交纳|首期|首年|保费/u.test(displayText(selectedBranch.formulaText)) ? premium : baseAmount;
+      const basisLabel = /首次交纳|首期|首年|保费/u.test(displayText(selectedBranch.formulaText)) ? '首次交纳保险费' : '基本保险金额';
+      return {
+        ...result,
+        meta,
+        hasBranchScenarios: true,
+        scenarioKind: 'policy_parameter',
+        calculationText: rate !== null && basisAmount > 0
+          ? `${displayText(selectedBranch.condition)}：${basisLabel}${formatMoney(basisAmount)}元 × ${formatMoney(rate)}% = ${formatMoney(result.amount)}元`
+          : `${displayText(selectedBranch.condition)}：${result.calculationText}`,
+      };
+    }
+  }
+  const paymentPeriod = displayText(inputs.paymentPeriod) || '未录入';
+  const coveragePeriod = displayText(inputs.coveragePeriod) || '未录入';
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    hasBranchScenarios: true,
+    scenarioKind: 'policy_parameter',
+    uncertaintyNote: `当前保单缴费期间${paymentPeriod}、保险期间${coveragePeriod}未匹配官方给付条件；请核对保单信息。`,
+    calculationText: `官方给付条件：\n${branches.map((branch) => `${displayText(branch.condition)}：${displayText(branch.formulaText)}`).join('\n')}`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const repairedIndicator = repairIndicatorFormulaFromOfficialExcerpt(indicator);
   const meta = normalizeIndicatorCalculation(repairedIndicator);
   if (meta.calculationKey === 'scheduled_branch_scenarios') {
     const branchScenarios = resolveScheduledBenefitBranchScenarios(repairedIndicator, inputs, meta);
+    if (branchScenarios) return branchScenarios;
+  }
+  if (meta.calculationKey === 'policy_parameter_branches') {
+    const branchScenarios = resolvePolicyParameterBranchScenarios(repairedIndicator, inputs, meta);
     if (branchScenarios) return branchScenarios;
   }
   if (meta.calculationKey === 'claim_event_facts') {
@@ -992,14 +1446,19 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
       calculationText: `${displayText(repairedIndicator.liability || repairedIndicator.coverageType)}需根据出险原因和出险日期选择条款给付分支，当前未提供，暂不计算`,
     };
   }
+  if (meta.basisKey === 'policy_anniversary_basic_amount') {
+    return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
+  }
   const normalizedFormulaResult = resolveNormalizedFormula(repairedIndicator, inputs);
   if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
   if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
+  const effectiveAmountFallback = resolveEffectiveInsuredAmountFallback(repairedIndicator, inputs, meta);
+  if (effectiveAmountFallback) return effectiveAmountFallback;
 
   const baseAmount = Number(inputs.baseAmount || 0) || 0;
   const firstPremium = Number(inputs.firstPremium || 0) || 0;
   const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
-  const totalPremium = firstPremium * paymentYears;
+  const totalPremium = firstPremium * (paymentPeriodsFromInputs(inputs) || paymentYears);
   const value = Number(meta.value || 0);
 
   const pendingProjection = pendingFormulaProjection(repairedIndicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);

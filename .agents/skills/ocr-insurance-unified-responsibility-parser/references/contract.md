@@ -52,6 +52,22 @@ Build exactly one title inventory per `sourceDigest`. Its ledger contains:
 Downstream Skills may enrich fields but cannot add, remove, rename, split, or
 merge inventory items. Send a disputed boundary back to inventory review.
 
+### Trigger conditions do not create responsibilities
+
+Use official headings and insurer obligations to determine responsibility
+cardinality. If one heading is `身故或身体全残保险金`,
+`身故和身体全残保险金`, or an equivalent combined heading, disease,
+accident, waiting-period, age, and payment-period wording are trigger or formula
+branches under that one responsibility. They do not create a second
+`疾病全残` responsibility or indicator.
+
+Preserve separate items only when the exact-version source gives independent
+headings and obligations. For historical projections, suppress a legacy
+`疾病全残` alias only when exact evidence ties it to the combined heading and
+the rows share the same non-empty `sourceDigest`, or both lack a digest and
+share the same normalized official URL. Different non-empty digests are
+`version_conflict`, never an automatic merge.
+
 ## 3. Ownership invariant
 
 Define the immutable responsibility key as:
@@ -199,6 +215,9 @@ model/runner success, equal counts, card presence, importer success, and
 Readback compares stable IDs, official titles, source URL/digest, formula text,
 normalized formula, required inputs, operands, branches, selection state,
 topology relationships, payment profiles, and customer wording.
+For a combined death/full-disability heading, readback must contain one owning
+card and one stable indicator decision; cause-specific disease/accident
+conditions must survive as branches rather than sibling indicators.
 
 ## 9. Mutually exclusive terminal status
 

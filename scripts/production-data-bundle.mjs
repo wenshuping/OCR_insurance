@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import { createGunzip, createGzip } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -506,7 +507,11 @@ export async function installProductionDataBundle({
 } = {}) {
   if (!bundlePath) throw new Error('bundlePath is required');
   const resolvedBundlePath = path.resolve(bundlePath);
-  const resolvedTargetDbPath = path.resolve(targetDbPath);
+  const resolvedTargetDbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    profile: 'prod',
+    requestedPath: targetDbPath,
+  });
   const resolvedManifestPath = path.resolve(manifestPath || defaultManifestPath(resolvedBundlePath));
   const resolvedBackupDir = path.resolve(backupDir || path.join(path.dirname(resolvedTargetDbPath), 'backups'));
   const manifest = await validateBundleFile({ resolvedBundlePath, resolvedManifestPath });
@@ -576,7 +581,11 @@ export async function installKnowledgeDataBundle({
 } = {}) {
   if (!bundlePath) throw new Error('bundlePath is required');
   const resolvedBundlePath = path.resolve(bundlePath);
-  const resolvedTargetDbPath = path.resolve(targetDbPath);
+  const resolvedTargetDbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    profile: 'prod',
+    requestedPath: targetDbPath,
+  });
   const resolvedManifestPath = path.resolve(manifestPath || defaultManifestPath(resolvedBundlePath));
   const resolvedBackupDir = path.resolve(backupDir || path.join(path.dirname(resolvedTargetDbPath), 'backups'));
   await validateBundleFile({ resolvedBundlePath, resolvedManifestPath });

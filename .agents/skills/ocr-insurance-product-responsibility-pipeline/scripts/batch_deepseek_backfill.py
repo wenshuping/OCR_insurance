@@ -1318,6 +1318,46 @@ def create_batch_backup(db_path, backup_path):
         source.close()
 
 
+def resolve_database_path(requested_path, project_root):
+    profile = (os.environ.get("POLICY_OCR_PROFILE") or "").strip().lower()
+    production = profile in {"prod", "production"} or (
+        not profile and os.environ.get("NODE_ENV") == "production"
+    )
+    config_path = project_root / ".runtime" / "local" / "policy-ocr-env.json"
+    configured_development_path = ""
+    try:
+        configured_development_path = str(
+            json.loads(config_path.read_text(encoding="utf-8")).get("POLICY_OCR_APP_DB_PATH") or ""
+        ).strip()
+    except (OSError, ValueError, TypeError):
+        configured_development_path = ""
+
+    legacy_path = (project_root / ".runtime" / "local" / "policy-ocr.sqlite").resolve()
+    default_development_path = Path.home() / "OCR_insurance_ssd" / ".runtime" / "local" / "policy-ocr.sqlite"
+    development_path = Path(
+        configured_development_path
+        or os.environ.get("POLICY_OCR_APP_DB_PATH")
+        or default_development_path
+    ).expanduser().resolve()
+    if production:
+        target = Path(
+            requested_path
+            or os.environ.get("POLICY_OCR_APP_DB_PATH")
+            or project_root / ".runtime" / "policy-ocr.sqlite"
+        ).expanduser().resolve()
+        if target == development_path:
+            raise RuntimeError(f"production publication cannot use development SSD database: {target}")
+    else:
+        target = Path(requested_path or development_path).expanduser().resolve()
+        if target != development_path:
+            raise RuntimeError(
+                f"development database target mismatch: configured={development_path} requested={target}"
+            )
+    if target == legacy_path:
+        raise RuntimeError(f"refusing legacy development database: {target}")
+    return target
+
+
 def publish_approved(skill_dir, db_path, backup_path, result):
     command = [
         "node", str(skill_dir / "scripts" / "publish_development_artifact.mjs"),
@@ -1422,7 +1462,7 @@ def launch_offline_packetized_shadow(args, approved):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--db-path", type=Path, default=Path(".runtime/local/policy-ocr.sqlite"))
+    parser.add_argument("--db-path", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--env-file", type=Path, default=Path(".env.local"))
     parser.add_argument("--manifest", type=Path)
@@ -1470,6 +1510,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     skill_dir = Path(__file__).resolve().parent.parent
+    project_root = skill_dir.parents[2]
+    args.db_path = resolve_database_path(args.db_path, project_root)
     args.output_dir.mkdir(parents=True, exist_ok=True)
     products = load_manifest(args.manifest) if args.manifest else select_from_database(
         args.db_path,

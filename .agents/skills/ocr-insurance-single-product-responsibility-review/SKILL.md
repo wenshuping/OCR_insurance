@@ -19,7 +19,7 @@ Use `$ocr-insurance-product-responsibility-pipeline` as the single entry point. 
 - Never substitute premium for insured amount or simplify unsupported formula branches.
 - Existing database rows are comparison targets, not completeness evidence.
 - Back up SQLite before any write.
-- Default to `.runtime/local/policy-ocr.sqlite`; use production only when explicitly requested.
+- In development, use the SSD database configured by `.runtime/local/policy-ocr-env.json`; use production only when explicitly requested.
 - Keep customer-facing cards free of internal audit keys, model names, and implementation commentary.
 - Write Feishu only when explicitly requested and prove readback separately.
 
@@ -40,7 +40,7 @@ Use `$ocr-insurance-product-responsibility-pipeline` as the single entry point. 
 ## Development Database Inspection
 
 ```bash
-sqlite3 .runtime/local/policy-ocr.sqlite "
+sqlite3 "$POLICY_OCR_APP_DB_PATH" "
   select count(*) from product_responsibility_cards
    where company='<公司>' and product_name='<产品>';
   select id, url, length(json_extract(payload,'$.pageText'))
@@ -57,7 +57,7 @@ sqlite3 .runtime/local/policy-ocr.sqlite "
 ```bash
 RUN_DIR=".runtime/single-product-responsibility-$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$RUN_DIR"
-sqlite3 .runtime/local/policy-ocr.sqlite \
+sqlite3 "$POLICY_OCR_APP_DB_PATH" \
   "VACUUM INTO '$RUN_DIR/policy-ocr-before.sqlite';"
 ```
 

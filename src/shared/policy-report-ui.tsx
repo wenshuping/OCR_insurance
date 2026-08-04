@@ -1,5 +1,5 @@
 import type { OptionalResponsibility, Policy, PolicyFormData, ResponsibilityCard } from '../api';
-import { hasQuantifiedCalculationSignal, resolveIndicatorAmountFromCalculation } from '../indicator-calculation.mjs';
+import { formulaVariablesFromIndicators, hasQuantifiedCalculationSignal, resolveIndicatorAmountFromCalculation } from '../indicator-calculation.mjs';
 
 export type ResponsibilitySourceLink = {
   title: string;
@@ -245,12 +245,22 @@ export function ResponsibilityCardList({
   baseAmount = 0,
   firstPremium = 0,
   paymentPeriod = '',
+  paymentFrequency = '',
+  benefitFrequency = '',
+  monthlyConversionFactor = '',
+  effectiveInsuranceAmount = '',
+  accumulatedDividendInsuredAmount = '',
 }: {
   cards?: ResponsibilityCard[];
   optionalResponsibilities?: OptionalResponsibility[];
   baseAmount?: string | number;
   firstPremium?: string | number;
   paymentPeriod?: string | number;
+  paymentFrequency?: string;
+  benefitFrequency?: string;
+  monthlyConversionFactor?: string | number;
+  effectiveInsuranceAmount?: string | number;
+  accumulatedDividendInsuredAmount?: string | number;
 }) {
   const visibleCards = getVisibleResponsibilityCards(cards, optionalResponsibilities);
   const paymentYears = paymentYearsFromPeriod(paymentPeriod);
@@ -311,6 +321,12 @@ export function ResponsibilityCardList({
                           baseAmount,
                           firstPremium,
                           paymentYears,
+                          paymentFrequency,
+                          benefitFrequency,
+                          monthlyConversionFactor,
+                          effectiveInsuranceAmount,
+                          accumulatedDividendInsuredAmount,
+                          formulaVariables: formulaVariablesFromIndicators(card.indicators || []),
                         });
                         return (
                           <div key={indicator.id || `${indicator.liability}-${indicatorIndex}`} className="text-xs font-bold leading-5 text-slate-600">

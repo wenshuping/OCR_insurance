@@ -9,6 +9,7 @@ import {
 import {
   buildOptionalResponsibilityId as buildGovernanceOptionalResponsibilityId,
   buildOptionalResponsibilityRecords as buildGovernanceOptionalResponsibilityRecords,
+  isOptionalResponsibilityParameterLabel,
   isSelectedQuantifiedIndicator,
   normalizeOptionalResponsibilityRecord as normalizeGovernanceOptionalResponsibilityRecord,
   normalizeQuantificationStatus,
@@ -19,6 +20,8 @@ import {
   isFormalResponsibilityEvidence,
 } from './evidence-classification.service.mjs';
 import { sameResponsibilityProduct } from './product-responsibility-identity.mjs';
+import { removeSupersededDiseaseDisabilityAliases } from './responsibility-indicator-aliases.mjs';
+import { repairIndicatorFormulaFromOfficialExcerptForDisplay } from '../src/indicator-calculation.mjs';
 
 export function createInitialState() {
   return {
@@ -172,6 +175,22 @@ export function normalizeBeneficiary(value) {
   return raw;
 }
 
+function normalizePaymentFrequency(value, paymentPeriod = '') {
+  const explicit = String(value || '').trim();
+  if (explicit === 'annual' || explicit === 'monthly') return explicit;
+  const source = `${explicit}${String(paymentPeriod || '').trim()}`;
+  if (/月交|月缴|月付/u.test(source)) return 'monthly';
+  if (/年交|年缴|年付/u.test(source)) return 'annual';
+  return '';
+}
+
+function normalizeMonthlyConversionFactor(value) {
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  const number = Number(text);
+  return Number.isFinite(number) && number > 0 ? number : '';
+}
+
 export function normalizePolicyScanData(data = {}) {
   const insuredIdNumber = normalizeIdNumber(data.insuredIdNumber || data.insuredIdentityNumber || data.insuredIdCard);
   const normalized = {
@@ -189,7 +208,14 @@ export function normalizePolicyScanData(data = {}) {
     insuredBirthday: normalizeDateOnly(data.insuredBirthday || data.insuredBirthDate) || birthdayFromIdNumber(insuredIdNumber),
     date: String(data.date || '').trim(),
     paymentPeriod: String(data.paymentPeriod || '').trim(),
+    paymentFrequency: normalizePaymentFrequency(data.paymentFrequency || data.paymentMode, data.paymentPeriod),
     coveragePeriod: String(data.coveragePeriod || '').trim(),
+    benefitFrequency: ['annual', 'monthly'].includes(String(data.benefitFrequency || '').trim())
+      ? String(data.benefitFrequency).trim()
+      : '',
+    monthlyConversionFactor: normalizeMonthlyConversionFactor(data.monthlyConversionFactor),
+    effectiveInsuranceAmount: normalizeMonthlyConversionFactor(data.effectiveInsuranceAmount),
+    accumulatedDividendInsuredAmount: normalizeMonthlyConversionFactor(data.accumulatedDividendInsuredAmount),
     amount: Number(data.amount || 0) || 0,
     firstPremium: Number(data.firstPremium || 0) || 0,
   };
@@ -349,7 +375,9 @@ function optionalResponsibilityText(value = {}) {
 }
 
 function indicatorLooksOptional(indicator = {}) {
-  if (String(indicator?.responsibilityScope || '').trim() === 'optional') return true;
+  const responsibilityScope = String(indicator?.responsibilityScope || '').trim();
+  if (responsibilityScope === 'optional') return true;
+  if (responsibilityScope === 'basic') return false;
   if (normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId)) return true;
   const directText = [
     indicator?.liability,
@@ -517,15 +545,26 @@ function optionalResponsibilityCoverageAmount(item = {}) {
 }
 
 function policyOptionalResponsibilityForIndicator(policy = {}, indicator = {}) {
+  if (String(indicator?.responsibilityScope || '').trim() === 'basic') return null;
   const liability = normalizeLookupText(indicator?.liability || indicator?.coverageType);
   if (!liability) return null;
   const indicatorOptionalResponsibilityId = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId);
-  return (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : []).find((item) => (
+  const items = Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [];
+  const inferredIndicatorId = indicator?.optionalResponsibilityIdInferred === true;
+  const byId = indicatorOptionalResponsibilityId
+    ? items.find((item) => normalizeOptionalResponsibilityId(item?.id) === indicatorOptionalResponsibilityId)
+    : null;
+  if (byId) return byId;
+  if (indicatorOptionalResponsibilityId && !inferredIndicatorId) return null;
+  const exact = items.find((item) => (
     normalizeLookupText(item?.liability || item?.title || item?.coverageType) === liability
-    && (!indicatorOptionalResponsibilityId
-      || !normalizeOptionalResponsibilityId(item?.id)
-      || normalizeOptionalResponsibilityId(item?.id) === indicatorOptionalResponsibilityId)
-  )) || null;
+  ));
+  if (exact) return exact;
+  const genericGroups = items.filter((item) => (
+    normalizeLookupText(item?.liability || item?.title || item?.coverageType) === '可选责任'
+    && normalizeLookupText(item?.sourceExcerpt).includes(liability)
+  ));
+  return genericGroups.length === 1 ? genericGroups[0] : null;
 }
 
 function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
@@ -541,14 +580,20 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
       selectionEvidence: 'official_terms',
     };
   }
-  const explicitOptionalResponsibilityId = normalizeOptionalResponsibilityId(
-    indicator?.optionalResponsibilityId || policyOptionalResponsibility?.id,
-  );
+  const indicatorOptionalResponsibilityId = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId);
+  const policyOptionalResponsibilityId = normalizeOptionalResponsibilityId(policyOptionalResponsibility?.id);
+  const knownIndicatorId = indicatorOptionalResponsibilityId
+    && (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : [])
+      .some((item) => normalizeOptionalResponsibilityId(item?.id) === indicatorOptionalResponsibilityId);
+  const explicitOptionalResponsibilityId = knownIndicatorId
+    ? indicatorOptionalResponsibilityId
+    : policyOptionalResponsibilityId || indicatorOptionalResponsibilityId;
   const id = explicitOptionalResponsibilityId || buildOptionalResponsibilityId(indicator);
-  const selection = policyOptionalResponsibility
+  const policySelectionStatus = normalizeResponsibilitySelectionStatus(policyOptionalResponsibility?.selectionStatus);
+  const selection = policyOptionalResponsibility && policySelectionStatus !== 'unknown'
     ? {
       optionalResponsibilityId: explicitOptionalResponsibilityId || id,
-      selectionStatus: normalizeResponsibilitySelectionStatus(policyOptionalResponsibility.selectionStatus),
+      selectionStatus: policySelectionStatus,
       selectionEvidence: String(policyOptionalResponsibility.selectionEvidence || 'manual').trim() || 'manual',
       ...(explicitOptionalResponsibilityId ? { selectedOptionalResponsibilityId: explicitOptionalResponsibilityId } : {}),
     }
@@ -558,6 +603,7 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
     ...indicator,
     ...(canonicalProductId ? { canonicalProductId } : {}),
     optionalResponsibilityId: id,
+    optionalResponsibilityIdInferred: !indicatorOptionalResponsibilityId && !policyOptionalResponsibilityId,
     responsibilityScope: 'optional',
     quantificationStatus: normalizeQuantificationStatus(
       policyOptionalResponsibility?.quantificationStatus,
@@ -612,6 +658,7 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
   const productName = String(candidate?.productName || '').trim();
   const coverageType = String(candidate?.coverageType || '').trim();
   const liability = String(candidate?.liability || '').trim();
+  if (isOptionalResponsibilityParameterLabel(liability)) return;
   const hasMergeCanonicalProductId = Object.prototype.hasOwnProperty.call(candidate || {}, 'mergeCanonicalProductId');
   const mergeCanonicalProductId = hasMergeCanonicalProductId
     ? String(candidate?.mergeCanonicalProductId || '').trim()
@@ -642,6 +689,7 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
     ),
     quantificationReason: String(candidate?.quantificationReason || '').trim(),
     indicatorIds: (Array.isArray(candidate?.indicatorIds) ? candidate.indicatorIds : []).map((item) => String(item || '').trim()).filter(Boolean),
+    customerSummary: String(candidate?.customerSummary || '').trim().slice(0, 500),
     sourceExcerpt: String(candidate?.sourceExcerpt || '').trim().slice(0, 500),
     mergeCanonicalProductId,
   };
@@ -680,6 +728,7 @@ function mergeOptionalResponsibilityCandidate(candidates, candidate) {
     coverageType: keepExistingOptionalLabel ? existing.coverageType : normalized.coverageType || existing.coverageType,
     liability: keepExistingOptionalLabel ? existing.liability : normalized.liability || existing.liability,
     title: keepExistingOptionalLabel ? existing.title : normalized.title || existing.title,
+    customerSummary: normalized.customerSummary || existing.customerSummary,
     sourceExcerpt: existing.sourceExcerpt || normalized.sourceExcerpt,
     selectionStatus: useCandidateSelection ? candidateStatus : existing.selectionStatus,
     selectionEvidence: useCandidateSelection ? normalized.selectionEvidence : existing.selectionEvidence,
@@ -829,16 +878,43 @@ function buildOptionalResponsibilitiesFromKnowledge(policy = {}, knowledgeRecord
 }
 
 export function buildOptionalResponsibilityReview(policy = {}, indicators = [], knowledgeRecords = [], optionalResponsibilityRecords = []) {
-  const annotated = (Array.isArray(indicators) ? indicators : []).map((indicator) =>
-    annotateCoverageIndicatorSelection(policy, indicator),
-  );
-  const candidates = new Map();
-  for (const record of buildGovernanceOptionalResponsibilityRecords({
+  const inputIndicators = Array.isArray(indicators) ? indicators : [];
+  const governanceShells = buildGovernanceOptionalResponsibilityRecords({
     policy,
     knowledgeRecords,
-    indicators: annotated,
+    indicators: [],
     existingRecords: optionalResponsibilityRecords,
-  })) {
+  });
+  const governanceIds = new Set(governanceShells.map((record) => String(record.id || '').trim()).filter(Boolean));
+  const governanceIndicators = inputIndicators.map((indicator) => {
+    const id = String(indicator?.optionalResponsibilityId || '').trim();
+    if (!id || governanceIds.has(id) || indicator?.optionalResponsibilityIdInferred !== true) return indicator;
+    const { optionalResponsibilityId, selectedOptionalResponsibilityId, ...withoutUnmatchedId } = indicator;
+    return withoutUnmatchedId;
+  });
+  const governanceRecords = buildGovernanceOptionalResponsibilityRecords({
+    policy,
+    knowledgeRecords,
+    indicators: governanceIndicators,
+    existingRecords: optionalResponsibilityRecords,
+  });
+  const policyWithGovernance = {
+    ...policy,
+    optionalResponsibilities: [
+      ...(Array.isArray(policy?.optionalResponsibilities)
+        ? policy.optionalResponsibilities.filter((item) => normalizeResponsibilitySelectionStatus(item?.selectionStatus) !== 'unknown')
+        : []),
+      ...governanceRecords,
+      ...(Array.isArray(policy?.optionalResponsibilities)
+        ? policy.optionalResponsibilities.filter((item) => normalizeResponsibilitySelectionStatus(item?.selectionStatus) === 'unknown')
+        : []),
+    ],
+  };
+  const annotated = inputIndicators.map((indicator) =>
+    annotateCoverageIndicatorSelection(policyWithGovernance, indicator),
+  );
+  const candidates = new Map();
+  for (const record of governanceRecords) {
     mergeOptionalResponsibilityCandidate(candidates, {
       ...record,
       mergeCanonicalProductId: mergeCanonicalProductIdForPolicyCandidate(policy, record),
@@ -883,7 +959,7 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
       selectionEvidence: String(indicator.selectionEvidence || 'official_terms').trim() || 'official_terms',
       quantificationStatus,
       quantificationReason: quantificationStatus === 'pending_review' ? '缺少可计算结构化指标' : '',
-      indicatorIds: String(indicator.id || '').trim() && quantificationStatus === 'quantified' ? [String(indicator.id).trim()] : [],
+      indicatorIds: String(indicator.id || '').trim() ? [String(indicator.id).trim()] : [],
       sourceExcerpt: String(indicator.sourceExcerpt || '').trim().slice(0, 500),
     };
     mergeOptionalResponsibilityCandidate(
@@ -924,7 +1000,59 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
     });
   }
 
-  return [...candidates.values()].map(({ mergeCanonicalProductId, ...candidate }) => candidate).sort(
+  const indicatorById = new Map(annotated.map((indicator) => [String(indicator?.id || '').trim(), indicator]));
+  const reviewed = [...candidates.values()].map(({ mergeCanonicalProductId, ...candidate }) => {
+    const candidateIndicatorIds = (Array.isArray(candidate.indicatorIds) ? candidate.indicatorIds : [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+    const indicatorIds = [...new Set(inputIndicators.length
+      ? candidateIndicatorIds.filter((id) => indicatorById.has(id))
+      : candidateIndicatorIds)];
+    const linked = indicatorIds.map((id) => indicatorById.get(id)).filter(Boolean);
+    const hasPendingIndicator = linked.some((indicator) => indicatorQuantificationStatus(indicator) === 'pending_review');
+    const childLiabilities = [...new Set(linked
+      .map((indicator) => String(indicator?.liability || indicator?.coverageType || '').trim())
+      .filter((liability) => liability
+        && normalizeLookupText(liability) !== '可选责任'
+        && !isOptionalResponsibilityParameterLabel(liability)))];
+    const customerSummary = normalizeLookupText(candidate.liability) === '可选责任' && childLiabilities.length
+      ? `可选责任包含${childLiabilities.join('、')}，使用投保时单独约定的可选责任基本保险金额；具体给付金额按合同约定计算。`
+      : String(candidate.customerSummary || '').trim();
+    return {
+      ...candidate,
+      indicatorIds,
+      ...(customerSummary ? { customerSummary } : {}),
+      quantificationStatus: hasPendingIndicator
+        ? 'pending_review'
+        : indicatorIds.length
+          ? 'quantified'
+          : candidate.quantificationStatus,
+    };
+  });
+  const genericPackages = reviewed.filter((candidate) =>
+    normalizeLookupText(candidate?.liability || candidate?.title || candidate?.coverageType) === '可选责任'
+      && Array.isArray(candidate?.indicatorIds)
+      && candidate.indicatorIds.length > 0
+  );
+  const collapsed = reviewed.filter((candidate) => {
+    if (normalizeLookupText(candidate?.liability || candidate?.title || candidate?.coverageType) === '可选责任') {
+      return true;
+    }
+    const childIndicatorIds = (Array.isArray(candidate?.indicatorIds) ? candidate.indicatorIds : [])
+      .map((id) => String(id || '').trim())
+      .filter(Boolean);
+    if (!childIndicatorIds.length) return true;
+    return !genericPackages.some((group) => {
+      if (!sameResponsibilityProduct(group, candidate)) return false;
+      const groupIndicatorIds = new Set(
+        (Array.isArray(group.indicatorIds) ? group.indicatorIds : [])
+          .map((id) => String(id || '').trim())
+          .filter(Boolean),
+      );
+      return childIndicatorIds.every((id) => groupIndicatorIds.has(id));
+    });
+  });
+  return collapsed.sort(
     (left, right) =>
       left.productName.localeCompare(right.productName, 'zh-CN') ||
       left.coverageType.localeCompare(right.coverageType, 'zh-CN') ||
@@ -935,7 +1063,7 @@ export function buildOptionalResponsibilityReview(policy = {}, indicators = [], 
 function dedupePolicyIndicatorRows(rows = []) {
   const seen = new Set();
   const result = [];
-  for (const row of Array.isArray(rows) ? rows : []) {
+  for (const row of removeSupersededDiseaseDisabilityAliases(rows)) {
     const key = [
       row?.id,
       row?.company,
@@ -1056,7 +1184,7 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
 // Derived policy results may retain an older, reduced projection of an
 // indicator. Rehydrate it from the current product record by id so current
 // formula semantics (for example a compound basis definition) are not lost.
-export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecords = []) {
+export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecords = [], responsibilities = []) {
   const indicatorId = (value) => String(value || '').trim();
   const expandPayload = (record) => {
     if (!record || typeof record !== 'object') return {};
@@ -1076,17 +1204,48 @@ export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecord
       .filter((record) => indicatorId(record?.id))
       .map((record) => [indicatorId(record.id), record]),
   );
+  const responsibilityRows = Array.isArray(responsibilities) ? responsibilities : [];
+  const compact = (value) => String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
+  const responsibilityEvidenceFor = (indicator) => {
+    const indicatorLiability = compact(indicator?.liability || indicator?.coverageType);
+    const indicatorSourceUrl = String(indicator?.sourceUrl || '').trim();
+    const indicatorText = compact([indicator?.formulaText, indicator?.sourceExcerpt, indicatorLiability].filter(Boolean).join(' '));
+    return responsibilityRows
+      .map((responsibility) => {
+        const title = compact(responsibility?.title || responsibility?.coverageType);
+        const scenario = String(responsibility?.scenario || responsibility?.description || '').trim();
+        const sourceUrl = String(responsibility?.sourceUrl || '').trim();
+        if (!scenario) return null;
+        let score = scenario.length;
+        if (title && indicatorLiability && (title === indicatorLiability || title.includes(indicatorLiability) || indicatorLiability.includes(title))) score += 100000;
+        if (sourceUrl && indicatorSourceUrl && sourceUrl === indicatorSourceUrl) score += 50000;
+        if (/首次交纳|首期|首年/u.test(indicatorText) && /首次交纳|首期|首年/u.test(compact(scenario))) score += 20000;
+        if (/基本(?:责任)?保险金额|基本保额/u.test(indicatorText) && /基本(?:责任)?保险金额|基本保额/u.test(compact(scenario))) score += 10000;
+        return { scenario, score };
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score)[0]?.scenario || '';
+  };
+
   return (Array.isArray(indicators) ? indicators : []).map((indicator) => {
     const latest = latestById.get(indicatorId(indicator?.id));
-    if (!latest) return indicator;
-    return {
+    const hydrated = latest ? {
       ...latest,
       responsibilityScope: indicatorId(indicator.responsibilityScope) || latest.responsibilityScope,
       selectionStatus: indicatorId(indicator.selectionStatus) || latest.selectionStatus,
       selectionEvidence: indicatorId(indicator.selectionEvidence) || latest.selectionEvidence,
       quantificationStatus: indicatorId(indicator.quantificationStatus) || latest.quantificationStatus,
       canonicalProductId: indicatorId(indicator.canonicalProductId) || latest.canonicalProductId,
-    };
+    } : indicator;
+    const responsibilityExcerpt = responsibilityEvidenceFor(hydrated);
+    const currentExcerpt = String(hydrated?.sourceExcerpt || '').trim();
+    const evidenceEnriched = responsibilityExcerpt.length > currentExcerpt.length + 20
+      ? { ...hydrated, sourceExcerpt: responsibilityExcerpt }
+      : hydrated;
+    // Derived policy rows may predate the structured branch repair. Re-project
+    // only from the indicator's own official excerpt so the current calculation
+    // path sees the same verified branches as the responsibility-card path.
+    return repairIndicatorFormulaFromOfficialExcerptForDisplay(evidenceEnriched);
   });
 }
 
@@ -1095,11 +1254,18 @@ export function attachPolicyCoverageIndicators(policy = {}, indicatorRecords = [
     ...policy,
     plans: normalizePolicyPlans(policy?.plans, policy?.company || ''),
   };
-  const coverageIndicators = findPolicyCoverageIndicators(normalizedPolicy, indicatorRecords);
+  const initialCoverageIndicators = findPolicyCoverageIndicators(normalizedPolicy, indicatorRecords);
+  const optionalResponsibilities = buildOptionalResponsibilityReview(normalizedPolicy, initialCoverageIndicators, knowledgeRecords, optionalResponsibilityRecords);
+  const coverageIndicators = initialCoverageIndicators.map((indicator) => repairIndicatorFormulaFromOfficialExcerptForDisplay(
+    annotateCoverageIndicatorSelection({
+      ...normalizedPolicy,
+      optionalResponsibilities,
+    }, indicator),
+  ));
   return {
     ...normalizedPolicy,
     coverageIndicators,
-    optionalResponsibilities: buildOptionalResponsibilityReview(normalizedPolicy, coverageIndicators, knowledgeRecords, optionalResponsibilityRecords),
+    optionalResponsibilities,
   };
 }
 
@@ -1214,7 +1380,10 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     insuredBirthday: data.insuredBirthday,
     date: data.date,
     paymentPeriod: data.paymentPeriod,
+    paymentFrequency: data.paymentFrequency,
     coveragePeriod: data.coveragePeriod,
+    benefitFrequency: data.benefitFrequency,
+    monthlyConversionFactor: data.monthlyConversionFactor,
     amount: data.amount,
     firstPremium: data.firstPremium,
     canonicalProductId,

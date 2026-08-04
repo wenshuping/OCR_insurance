@@ -101,7 +101,7 @@ test('buildOptionalResponsibilityRecords handles optional liability names with r
   }));
 });
 
-test('buildOptionalResponsibilityRecords repairs generic optional sections into concrete benefit records', () => {
+test('buildOptionalResponsibilityRecords keeps a generic optional section as one selectable package', () => {
   const productName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
   const records = buildOptionalResponsibilityRecords({
     policy: { company: '新华保险', name: productName },
@@ -145,13 +145,9 @@ test('buildOptionalResponsibilityRecords repairs generic optional sections into 
     ],
   });
 
-  assert.deepEqual(
-    records.map((record) => record.liability),
-    ['狂犬病疫苗接种医疗费用保险金', '微创美容缝合医疗费用保险金'],
-  );
+  assert.deepEqual(records.map((record) => record.liability), ['可选责任']);
   assert.deepEqual(records[0].indicatorIds, ['ind_rabies']);
   assert.equal(records[0].quantificationStatus, 'quantified');
-  assert.equal(records.some((record) => record.liability === '可选责任'), false);
 });
 
 test('buildOptionalResponsibilityRecords keeps optional sections when terms include conditional not-selected wording', () => {

@@ -3,13 +3,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const DEFAULT_DB_PATHS = [
-  path.join(runtimeDir, 'policy-ocr.sqlite'),
-  path.join(runtimeDir, 'local', 'policy-ocr.sqlite'),
+  resolvePolicyOcrWriteDatabasePath({ projectRoot }),
 ];
 const VERSION = '2026-05-31-pending-optional-responsibility-repair';
 
@@ -1188,7 +1188,7 @@ export function repairPendingOptionalResponsibilityIndicators({ dbPath, dryRun =
 async function main() {
   const explicitDbPath = trim(readArg('db-path'));
   const dbPaths = explicitDbPath
-    ? [path.resolve(explicitDbPath)]
+    ? [resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: explicitDbPath })]
     : DEFAULT_DB_PATHS;
   const dryRun = hasFlag('dry-run');
   const now = new Date().toISOString();

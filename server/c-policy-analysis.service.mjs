@@ -3,6 +3,7 @@ import { jsonrepair } from 'jsonrepair';
 import { z } from 'zod';
 import { buildKnowledgeSearchArtifacts } from './policy-knowledge.service.mjs';
 import { sanitizeDeepSeekRequestBody } from './deepseek-privacy-gateway.mjs';
+import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-flash';
@@ -64,6 +65,60 @@ const POLICY_ANALYSIS_SKILLS = {
     promptRule:
       '现金价值、减保、保单贷款、自动垫交等仅作为责任公式或客户参考资料，不得单独作为 coverageTable 责任行；若某责任公式依赖现金价值，写入 basis 和 requiredInputs。',
   },
+  universal_account_domain: {
+    label: '万能账户专属解析',
+    routerDescription: '分开处理普通保险责任与万能账户的利率、结算、费用、账户价值和领取规则。',
+    promptRule:
+      '先提取身故等正式保险责任；最低保证利率、结算利率、初始费用、管理费、部分领取和退保规则不是独立责任。若账户价值参与保险金比较，必须完整保留年龄比例、max/min 分支和 accountValue 输入；没有同版本官方证据不得补数字。',
+  },
+  incremental_whole_life_domain: {
+    label: '增额终身寿险专属解析',
+    routerDescription: '核对保额递增公式、递增比例及身故/全残给付比较关系。',
+    promptRule:
+      '不得只凭产品名认定增额寿；仅在官方公式明确关联基本保额、保单年度和复利因子时保留递增结构。递增比例只是保额因子，不得表述为收益率；身故/全残责任须保留已交保费、现金价值及基本保额的完整比较分支。',
+  },
+  annuity_endowment_domain: {
+    label: '年金与两全保险专属解析',
+    routerDescription: '拆分生存金、年金、祝寿金、满期金及领取频率和计划表。',
+    promptRule:
+      '按官方标题分别保留年金、生存金、祝寿金和满期金；写明首次领取日、频率、终止条件、领取公式及 schedule/table 输入。年领和月领不可合并，月领折算系数必须有同版本官方数字证据；可选责任不得混入基本责任。',
+  },
+  critical_illness_domain: {
+    label: '重疾保险专属解析',
+    routerDescription: '保留轻中重疾层级、疾病分组、多次给付、间隔期、额外给付和豁免拓扑。',
+    promptRule:
+      '以官方责任标题为父级，疾病名称、分组、给付次数和年龄阶段是分支而非重复责任；完整保留轻症/中症/重疾层级、间隔期、累计限额、额外给付、互斥规则和保费豁免。疾病定义和等待期不得单独生成责任卡。',
+  },
+  medical_domain: {
+    label: '医疗保险专属解析',
+    routerDescription: '拆解免赔额、报销比例、医疗费用范围、第三方补偿、限额和津贴规则。',
+    promptRule:
+      '医疗责任必须保留费用范围、免赔额、报销比例、医保/第三方补偿、年度或责任限额及医院范围；报销型公式按实际费用链路表达，津贴型按日额、天数和日限额表达。就医服务和理赔程序不是保险责任。',
+  },
+  accident_domain: {
+    label: '意外保险专属解析',
+    routerDescription: '区分意外身故、伤残、医疗、津贴及交通工具额外责任。',
+    promptRule:
+      '意外身故、伤残、医疗和津贴按官方标题分别归属；伤残须保留等级比例表，交通工具/航空等额外给付保留适用场景和叠加关系。救援服务、除外责任和事故通知程序不得生成责任。',
+  },
+  long_term_care_domain: {
+    label: '护理保险专属解析',
+    routerDescription: '识别护理状态、观察期、给付频率、持续条件、次数和终止规则。',
+    promptRule:
+      '护理责任须保留护理状态判定、观察期或持续期、给付频率、日/月金额、次数或期限及终止条件；失能等级和护理阶段属于责任分支，除非条款明确命名为独立责任。',
+  },
+  life_domain: {
+    label: '定期与终身寿险专属解析',
+    routerDescription: '解析身故/全残责任及保额、保费、现金价值比较分支。',
+    promptRule:
+      '身故与全残按官方责任标题确定一个父责任或多个独立责任，不得因条件分支重复造指标；完整保留基本保额、已交保费、现金价值、年龄比例及 max/min 比较，责任免除和理赔程序不得生成责任。',
+  },
+  rider_group_domain: {
+    label: '附加险与团体保险拓扑',
+    routerDescription: '锁定主险、附加险、团险责任及基本/可选责任的归属边界。',
+    promptRule:
+      '每条责任必须归属到准确产品和责任范围；附加险不得并入主险，团险计划/人员档位不得复制成重复责任，可选责任与基本责任保持互斥并保留单独保额或保费输入。',
+  },
 };
 const POLICY_ANALYSIS_SKILL_KEYS = Object.keys(POLICY_ANALYSIS_SKILLS);
 const NEW_CHINA_PRODUCT_DISCLOSURE_URLS = [
@@ -75,6 +130,13 @@ const ACTUAL_COVERAGE_TYPE_PATTERN =
   /保险金(?!额)|豁免|给付|赔付|报销|津贴|身故|全残|重大疾病|重疾|轻症|中症|疾病|意外|医疗|住院|门诊|年金|生存金|满期|祝寿金|养老金|教育金/u;
 const PRODUCT_MECHANISM_TYPE_PATTERN =
   /^(?:保单)?(?:红利|分红|红利分配|累积红利|现金红利)|^有效(?:保险金额|保额)|(?:保险金额|保额)(?:递增|增长)|现金价值|减保|保单贷款|自动垫交|减额交清|账户价值/u;
+const MULTI_WORKER_COMPLEX_CATEGORIES = new Set(['critical_illness', 'medical', 'accident', 'long_term_care']);
+const COMPLEX_RESPONSIBILITY_WORKER_ROLES = ['facts', 'calculation', 'topology'];
+const SIMPLE_RESPONSIBILITY_WORKER_ROLES = ['calculation', 'facts', 'topology'];
+const MIN_RESPONSIBILITY_WORKERS = 1;
+const MAX_RESPONSIBILITY_WORKERS = 4;
+const MAX_RESPONSIBILITY_VALIDATION_ATTEMPTS = 5;
+const NON_RESPONSIBILITY_TITLE_PATTERN = /^(?:等待期|责任免除|除外责任|免责(?:事项|条款)?|理赔(?:申请|流程|程序)?|保险金申请|申请领取保险金|诉讼时效|如实告知|合同解除|合同终止)$/u;
 const INSURER_OFFICIAL_PROFILES = [
   {
     id: 'new_china_life',
@@ -873,11 +935,18 @@ function normalizePolicyForPrompt(policy = {}) {
     responsibilities: Array.isArray(policy.responsibilities)
       ? policy.responsibilities
           .map((item) => ({
-            name: trimString(item?.name),
-            desc: trimString(item?.desc),
+            coverageType: trimString(item?.coverageType || item?.liability || item?.title || item?.name),
+            scenario: trimString(item?.scenario || item?.triggerCondition || item?.desc),
+            payout: trimString(item?.payout || item?.benefitExplanation),
+            formulaText: trimString(item?.formulaText || item?.normalizedFormula),
+            basis: trimString(item?.basis),
+            requiredInputs: Array.isArray(item?.requiredInputs)
+              ? item.requiredInputs.map((value) => trimString(value)).filter(Boolean)
+              : [],
             limit: toNumberString(item?.limit),
           }))
-          .filter((item) => item.name)
+          .filter((item) => item.coverageType)
+          .slice(0, 60)
       : [],
   };
 }
@@ -1310,6 +1379,326 @@ function mergeRefinedCoverageRows(baseRows = [], refinedRows = []) {
       ...normalizedCoverageRowExtras(refined),
     };
   });
+}
+
+function coverageIdentity(value) {
+  return trimString(value).normalize('NFKC').replace(/[\s《》（）()【】\[\]·,，。:：;；、-]/gu, '');
+}
+
+function configuredResponsibilityWorkerCount({ productCategory, complex, env }) {
+  const categoryKey = `POLICY_ANALYSIS_WORKERS_${String(productCategory || 'other').toUpperCase()}`;
+  const fallbackKey = complex ? 'POLICY_ANALYSIS_WORKERS_COMPLEX' : 'POLICY_ANALYSIS_WORKERS_SIMPLE';
+  const fallback = complex ? 4 : 2;
+  const configured = Number.parseInt(env?.[categoryKey] || env?.[fallbackKey] || '', 10);
+  if (!Number.isFinite(configured)) return fallback;
+  return Math.min(MAX_RESPONSIBILITY_WORKERS, Math.max(MIN_RESPONSIBILITY_WORKERS, configured));
+}
+
+export function responsibilityAnalysisWorkerPlan({
+  policy = {},
+  analysisInput = {},
+  searchArtifacts = {},
+  env = process.env,
+} = {}) {
+  const routing = routeInsuranceProductCategory({
+    productName: trimString(policy.name),
+    records: Array.isArray(searchArtifacts.sources) ? searchArtifacts.sources : [],
+    sourceSections: {
+      mainResponsibilityText: [analysisInput.searchContext, analysisInput.ocrText].map(trimString).filter(Boolean).join('\n'),
+    },
+  });
+  const complex = MULTI_WORKER_COMPLEX_CATEGORIES.has(routing.productCategory);
+  const workerCount = configuredResponsibilityWorkerCount({
+    productCategory: routing.productCategory,
+    complex,
+    env,
+  });
+  const roles = complex ? COMPLEX_RESPONSIBILITY_WORKER_ROLES : SIMPLE_RESPONSIBILITY_WORKER_ROLES;
+  return {
+    ...routing,
+    workerCount,
+    detailRoles: roles.slice(0, Math.max(0, workerCount - 1)),
+  };
+}
+
+const RESPONSIBILITY_WORKER_ROLE_INSTRUCTIONS = {
+  facts: '只复核每项责任的触发条件、保险人给付义务、等待期适用范围、次数、期间及终止影响；不得新增、删除或改名责任。',
+  calculation: '只复核每项责任的给付金额、比例、倍数、免赔额、限额、max/min比较、公式、计算基准和requiredInputs；不得新增、删除或改名责任。',
+  topology: '只复核共享约束、疾病分组、多次给付间隔、社保结算、医院范围、可选责任、互斥关系及parent/branch边界；不得新增、删除或改名责任。',
+};
+
+function buildParallelCoverageWorkerMessages({ policy, analysisInput, analysis, role }) {
+  const rows = Array.isArray(analysis?.coverageTable) ? analysis.coverageTable : [];
+  const titles = rows.map((row) => trimString(row?.coverageType)).filter(Boolean);
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是保险责任专项复核worker，只输出合法JSON：{"coverageTable":[]}',
+        RESPONSIBILITY_WORKER_ROLE_INSTRUCTIONS[role] || '',
+        'coverageTable必须逐项使用输入中的原责任名称；只返回有证据支持的字段，不得使用外部知识。',
+        '每行可以包含coverageType、scenario、payout、note、liability、triggerCondition、formulaText、basis、basisKey、calculationKey、value、unit、requiredInputs、cashflowTreatment、calculationStatus、calculationEligible、calculationReason、sourceExcerpt、responsibilityScope、selectionStatus、selectionEvidence。',
+      ].filter(Boolean).join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `保险公司：${policy.company || '未识别'}`,
+        `产品名称：${policy.name || '未识别'}`,
+        `锁定责任名称：${JSON.stringify(titles)}`,
+        `当前责任表：${JSON.stringify(rows)}`,
+        analysisInput.searchContext ? `官方产品资料：${analysisInput.searchContext}` : '',
+        analysisInput.ocrText ? `保单/OCR资料：${analysisInput.ocrText}` : '',
+      ].filter(Boolean).join('\n\n'),
+    },
+  ];
+}
+
+const RESPONSIBILITY_WORKER_OWNED_FIELDS = {
+  facts: ['scenario', 'note', 'triggerCondition', 'sourceExcerpt'],
+  calculation: [
+    'payout', 'formulaText', 'basis', 'basisKey', 'calculationKey', 'value', 'valueText', 'unit',
+    'requiredInputs', 'cashflowTreatment', 'calculationStatus', 'calculationEligible', 'calculationReason', 'sourceExcerpt',
+  ],
+  topology: ['responsibilityScope', 'selectionStatus', 'selectionEvidence', 'note', 'sourceExcerpt'],
+};
+
+export function mergeResponsibilityAnalysisWorkerRows(baseRows = [], workerResults = []) {
+  const output = (Array.isArray(baseRows) ? baseRows : []).map((row) => ({ ...row }));
+  const outputByIdentity = new Map();
+  for (const row of output) {
+    const identity = coverageIdentity(row.coverageType);
+    const matches = outputByIdentity.get(identity) || [];
+    matches.push(row);
+    outputByIdentity.set(identity, matches);
+  }
+  for (const worker of Array.isArray(workerResults) ? workerResults : []) {
+    const ownedFields = RESPONSIBILITY_WORKER_OWNED_FIELDS[worker?.role] || [];
+    const candidateOffsets = new Map();
+    for (const candidate of Array.isArray(worker?.rows) ? worker.rows : []) {
+      const identity = coverageIdentity(candidate?.coverageType);
+      const targets = outputByIdentity.get(identity) || [];
+      const offset = candidateOffsets.get(identity) || 0;
+      const target = targets[Math.min(offset, Math.max(0, targets.length - 1))];
+      candidateOffsets.set(identity, offset + 1);
+      if (!target) continue;
+      for (const field of ownedFields) {
+        const value = candidate?.[field];
+        if (Array.isArray(value)) {
+          if (value.length) target[field] = [...value];
+        } else if (typeof value === 'boolean') {
+          target[field] = value;
+        } else if (typeof value === 'number' && Number.isFinite(value)) {
+          target[field] = value;
+        } else if (trimString(value)) {
+          target[field] = value;
+        }
+      }
+    }
+  }
+  return output;
+}
+
+function distinctText(values = []) {
+  return [...new Set(values.map(trimString).filter(Boolean))];
+}
+
+function mergeConditionText(values = []) {
+  const unique = distinctText(values);
+  if (unique.length <= 1) return unique[0] || '';
+  return unique.map((value, index) => `情形${index + 1}：${value}`).join('；');
+}
+
+export function mergeResponsibilityConditionBranches(rows = []) {
+  const groups = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const identity = coverageIdentity(row?.coverageType);
+    if (!identity) continue;
+    const group = groups.get(identity);
+    if (group) group.push(row);
+    else groups.set(identity, [row]);
+  }
+
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return { ...group[0] };
+    const output = { ...group[0] };
+    for (const field of ['scenario', 'triggerCondition', 'payout', 'formulaText', 'note', 'calculationReason', 'sourceExcerpt']) {
+      const merged = mergeConditionText(group.map((row) => row?.[field]));
+      if (merged) output[field] = merged;
+    }
+    const requiredInputs = distinctText(group.flatMap((row) => Array.isArray(row?.requiredInputs) ? row.requiredInputs : []));
+    if (requiredInputs.length) output.requiredInputs = requiredInputs;
+    output.calculationEligible = group.every((row) => row?.calculationEligible === true);
+    return output;
+  });
+}
+
+export function validateResponsibilityPreviewRows(rows = []) {
+  const issues = [];
+  const identities = new Set();
+  const input = Array.isArray(rows) ? rows : [];
+  if (!input.length) {
+    issues.push({ code: 'RESPONSIBILITY_INVENTORY_EMPTY', responsibility: '', fields: ['coverageTable'] });
+  }
+  input.forEach((row, index) => {
+    const title = trimString(row?.coverageType);
+    const identity = coverageIdentity(title);
+    if (!title || !identity) {
+      issues.push({ code: 'RESPONSIBILITY_TITLE_MISSING', responsibility: title, fields: ['coverageType'], index });
+    } else if (identities.has(identity)) {
+      issues.push({ code: 'DUPLICATE_RESPONSIBILITY_TITLE', responsibility: title, fields: ['coverageType'], index });
+    } else {
+      identities.add(identity);
+    }
+    if (NON_RESPONSIBILITY_TITLE_PATTERN.test(title)) {
+      issues.push({ code: 'NON_RESPONSIBILITY_TITLE', responsibility: title, fields: ['coverageType'], index });
+    }
+    for (const field of ['scenario', 'payout', 'note']) {
+      if (!trimString(row?.[field])) {
+        issues.push({ code: 'RESPONSIBILITY_FIELD_MISSING', responsibility: title, fields: [field], index });
+      }
+    }
+    const liability = trimString(row?.liability);
+    if (liability && coverageIdentity(liability) !== identity) {
+      issues.push({ code: 'RESPONSIBILITY_LIABILITY_MISMATCH', responsibility: title, fields: ['liability'], index });
+    }
+  });
+  return { ok: issues.length === 0, issues };
+}
+
+function buildResponsibilityValidationRepairMessages({ policy, analysisInput, rows, issues, attempt }) {
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是保险责任校验修复worker，只输出合法JSON：{"coverageTable":[]}',
+        '只修复校验原因指出的责任和字段；不得新增官方资料没有明确命名的责任。',
+        '同一官方责任下的等待期、事故类型、年龄、保单年度和公式差异必须保留在同一责任行内，不得拆成重复责任。',
+        '等待期、免责、理赔申请、诉讼时效、合同程序不得作为保险责任。',
+        '必须完整返回当前责任表；只使用提供的官方资料，不得使用外部知识。',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: [
+        `第${attempt}次校验失败。`,
+        `保险公司：${policy.company || '未识别'}`,
+        `产品名称：${policy.name || '未识别'}`,
+        `失败原因：${JSON.stringify(issues)}`,
+        `当前责任表：${JSON.stringify(rows)}`,
+        analysisInput.searchContext ? `官方产品资料：${analysisInput.searchContext}` : '',
+        analysisInput.ocrText ? `保单/OCR资料：${analysisInput.ocrText}` : '',
+      ].filter(Boolean).join('\n\n'),
+    },
+  ];
+}
+
+async function runResponsibilityValidationLoop({ config, model, policy, analysisInput, coverageTable, fetchImpl }) {
+  let rows = mergeResponsibilityConditionBranches(coverageTable);
+  const attempts = [];
+  const repairWorkers = [];
+  for (let attempt = 1; attempt <= MAX_RESPONSIBILITY_VALIDATION_ATTEMPTS; attempt += 1) {
+    const validation = validateResponsibilityPreviewRows(rows);
+    attempts.push({ attempt, ok: validation.ok, issues: validation.issues });
+    if (validation.ok || attempt === MAX_RESPONSIBILITY_VALIDATION_ATTEMPTS) break;
+    try {
+      const payload = await requestPolicyAnalysis({
+        config,
+        model,
+        fetchImpl,
+        messages: buildResponsibilityValidationRepairMessages({
+          policy,
+          analysisInput,
+          rows,
+          issues: validation.issues,
+          attempt,
+        }),
+        options: {
+          temperature: 0.05,
+          maxTokens: DEFAULT_ANALYSIS_MAX_TOKENS,
+          thinking: false,
+          jsonObject: true,
+        },
+      });
+      const rawText = trimString(payload?.choices?.[0]?.message?.content);
+      const parsed = extractJson(rawText);
+      const repairedRows = normalizeCoverageTable(parsed?.coverageTable, {
+        preferDirectContractLanguage: analysisInput.evidenceMode === 'detail_ocr',
+      });
+      if (repairedRows.length) rows = mergeResponsibilityConditionBranches(repairedRows);
+      repairWorkers.push({
+        attempt,
+        model: trimString(payload?.model || model) || trimString(model),
+        status: repairedRows.length ? 'passed' : 'failed',
+        errorCode: repairedRows.length ? '' : 'POLICY_ANALYSIS_EMPTY',
+        rawText,
+        responsibilityCount: repairedRows.length,
+      });
+    } catch (error) {
+      repairWorkers.push({
+        attempt,
+        model: trimString(model),
+        status: 'failed',
+        errorCode: trimString(error?.code || error?.message || 'POLICY_ANALYSIS_VALIDATION_REPAIR_FAILED'),
+        rawText: '',
+        responsibilityCount: 0,
+      });
+    }
+  }
+  const finalValidation = attempts.at(-1) || { attempt: 0, ok: false, issues: [] };
+  return {
+    coverageTable: rows,
+    status: finalValidation.ok ? 'passed' : 'needs_review',
+    attempts,
+    repairWorkers,
+    maxAttempts: MAX_RESPONSIBILITY_VALIDATION_ATTEMPTS,
+  };
+}
+
+async function runParallelResponsibilityWorkers({ config, model, policy, analysisInput, analysis, searchArtifacts, fetchImpl }) {
+  const plan = responsibilityAnalysisWorkerPlan({ policy, analysisInput, searchArtifacts });
+  const settled = await Promise.allSettled(plan.detailRoles.map(async (role) => {
+    const payload = await requestPolicyAnalysis({
+      config,
+      model,
+      fetchImpl,
+      messages: buildParallelCoverageWorkerMessages({ policy, analysisInput, analysis, role }),
+      options: {
+        temperature: 0.05,
+        maxTokens: DEFAULT_ANALYSIS_MAX_TOKENS,
+        thinking: false,
+        jsonObject: true,
+      },
+    });
+    const rawText = trimString(payload?.choices?.[0]?.message?.content);
+    const parsed = extractJson(rawText);
+    return {
+      role,
+      model: trimString(payload?.model || model) || trimString(model),
+      rawText,
+      rows: normalizeCoverageTable(parsed?.coverageTable, {
+        preferDirectContractLanguage: analysisInput.evidenceMode === 'detail_ocr',
+      }),
+    };
+  }));
+  const workers = settled.map((item, index) => item.status === 'fulfilled'
+    ? { ...item.value, status: 'passed', errorCode: '' }
+    : {
+        role: plan.detailRoles[index],
+        model: trimString(model),
+        rawText: '',
+        rows: [],
+        status: 'failed',
+        errorCode: trimString(item.reason?.code || item.reason?.message || 'POLICY_ANALYSIS_WORKER_FAILED'),
+      });
+  return {
+    plan,
+    workers,
+    coverageTable: mergeResponsibilityAnalysisWorkerRows(
+      analysis.coverageTable,
+      workers.filter((worker) => worker.status === 'passed'),
+    ),
+  };
 }
 
 function normalizeAnalysis(payload, model, options = {}) {
@@ -2170,9 +2559,39 @@ function inferPolicyAnalysisDocumentType(analysisInput = {}) {
   return 'unknown';
 }
 
-function buildLocalPolicyAnalysisSkillPlan({ analysisInput = {}, searchArtifacts = {}, hasOfficialSource = false, hasExternalSource = false } = {}) {
+function policyDomainSkillKeys({ policy = {}, analysisInput = {}, searchArtifacts = {} } = {}) {
+  const evidenceText = [
+    trimString(analysisInput.ocrText),
+    trimString(searchArtifacts.context),
+  ].filter(Boolean).join('\n');
+  const routing = routeInsuranceProductCategory({
+    productName: trimString(policy.name || policy.productName),
+    cards: evidenceText ? [{ title: trimString(policy.name || policy.productName), sourceExcerpt: evidenceText }] : [],
+  });
+  const byCategory = {
+    universal_life: 'universal_account_domain',
+    investment_linked: 'universal_account_domain',
+    incremental_whole_life: 'incremental_whole_life_domain',
+    annuity: 'annuity_endowment_domain',
+    endowment: 'annuity_endowment_domain',
+    critical_illness: 'critical_illness_domain',
+    medical: 'medical_domain',
+    accident: 'accident_domain',
+    long_term_care: 'long_term_care_domain',
+    ordinary_whole_life: 'life_domain',
+    term_life: 'life_domain',
+    participating_life: 'life_domain',
+  };
+  const skills = [byCategory[routing.productCategory]].filter(Boolean);
+  const identityAndEvidence = `${trimString(policy.name || policy.productName)} ${evidenceText}`;
+  if (/(?:附加|团体|可选责任|选择责任)/u.test(identityAndEvidence)) skills.push('rider_group_domain');
+  return normalizePolicyAnalysisSkillKeys(skills);
+}
+
+function buildLocalPolicyAnalysisSkillPlan({ policy = {}, analysisInput = {}, searchArtifacts = {}, hasOfficialSource = false, hasExternalSource = false } = {}) {
   const ocrText = trimString(analysisInput.ocrText);
   const documentType = inferPolicyAnalysisDocumentType(analysisInput);
+  const domainSkills = policyDomainSkillKeys({ policy, analysisInput, searchArtifacts });
   const skills = ['responsibility_extraction', 'indicator_quantification'];
   if (hasOfficialSource) skills.push('official_rag_grounding');
   if (hasExternalSource && !hasOfficialSource) skills.push('external_reference_review');
@@ -2185,10 +2604,12 @@ function buildLocalPolicyAnalysisSkillPlan({ analysisInput = {}, searchArtifacts
   if (/现金价值|保单贷款|减保|自动垫交|减额交清/u.test(ocrText)) {
     skills.push('cash_value_reference');
   }
+  skills.push(...domainSkills);
   const sourceCount = Array.isArray(searchArtifacts?.sources) ? searchArtifacts.sources.length : 0;
   return {
     documentType,
     skills: normalizePolicyAnalysisSkillKeys(skills),
+    domainSkills,
     promptDirectives: [],
     reason: hasOfficialSource
       ? '已命中官方资料，结合上传OCR核对责任'
@@ -2215,11 +2636,16 @@ function normalizePromptDirectives(value = []) {
 }
 
 function normalizePolicyAnalysisSkillPlanPayload(payload = {}, fallback = {}) {
-  const skills = normalizePolicyAnalysisSkillKeys(payload?.skills);
-  if (!skills.length) return fallback;
+  const proposedSkills = normalizePolicyAnalysisSkillKeys(payload?.skills);
+  if (!proposedSkills.length) return fallback;
+  const skills = normalizePolicyAnalysisSkillKeys([
+    ...proposedSkills,
+    ...(Array.isArray(fallback?.domainSkills) ? fallback.domainSkills : []),
+  ]);
   return {
     documentType: trimString(payload?.documentType) || fallback.documentType || 'unknown',
     skills,
+    domainSkills: normalizePolicyAnalysisSkillKeys(fallback?.domainSkills),
     promptDirectives: normalizePromptDirectives(payload?.promptDirectives || payload?.directives || payload?.nextPromptDirectives),
     reason: trimString(payload?.reason).slice(0, 120) || fallback.reason || '',
     selectedBy: 'deepseek',
@@ -2275,6 +2701,7 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts?.sources);
   const hasExternalSource = hasExternalReviewSource(searchArtifacts?.sources);
   const fallback = buildLocalPolicyAnalysisSkillPlan({
+    policy,
     analysisInput,
     searchArtifacts,
     hasOfficialSource,
@@ -2294,6 +2721,8 @@ async function selectPolicyAnalysisSkillPlan({ config, model, policy, analysisIn
       options: {
         maxTokens: DEFAULT_SKILL_ROUTER_MAX_TOKENS,
         temperature: 0.05,
+        thinking: false,
+        jsonObject: true,
       },
     });
     const content = trimString(payload?.choices?.[0]?.message?.content);
@@ -2363,7 +2792,11 @@ async function discoverOfficialSourceResults({ config, policy, fetchImpl }) {
       model: config.model,
       fetchImpl,
       messages: buildOfficialSourceDiscoveryMessages(policy),
-      options: { maxTokens: DEFAULT_DISCOVERY_MAX_TOKENS },
+      options: {
+        maxTokens: DEFAULT_DISCOVERY_MAX_TOKENS,
+        thinking: false,
+        jsonObject: true,
+      },
     });
     const content = trimString(payload?.choices?.[0]?.message?.content);
     return normalizeDiscoveredSourcePayload(extractJson(content));
@@ -2476,6 +2909,11 @@ function buildMessages({ policy, analysisInput, externalReviewMode = false, skil
   if (analysisInput.ocrText) {
     contextLines.push(`保单详情OCR（客户上传识别）：\n${analysisInput.ocrText}`);
   }
+  if (Array.isArray(policy.responsibilities) && policy.responsibilities.length) {
+    contextLines.push(
+      `本地库已有责任与指标（只能作为召回参考，必须逐项由本次官方产品资料确认；无官方证据的旧项不得保留，官方资料中的新增责任必须补齐，同名责任必须去重）：\n${JSON.stringify(policy.responsibilities, null, 2)}`,
+    );
+  }
   const contextBlock = contextLines.length
     ? `\n\n内部上下文只用于核对保险责任。上下文来源已明确区分为“产品资料（后端搜索获得）”和“保单详情OCR（客户上传识别）”：产品资料用于核对公开保险责任和条款口径，OCR用于核对这张客户保单的关系信息、保费、保额、缴费期和保险期间等个单信息；客户姓名、身份证号、手机号等敏感信息不得出现在上下文或输出中。\n\n${contextLines.join('\n\n')}`
     : '';
@@ -2520,10 +2958,12 @@ async function requestPolicyAnalysis({ config, model, messages, fetchImpl, optio
       messages,
     };
     if (isDeepSeekV4Model(model)) {
-      body.thinking = { type: 'enabled' };
-      body.reasoning_effort = DEFAULT_DEEPSEEK_REASONING_EFFORT;
+      const thinkingEnabled = options.thinking !== false;
+      body.thinking = { type: thinkingEnabled ? 'enabled' : 'disabled' };
+      if (thinkingEnabled) body.reasoning_effort = DEFAULT_DEEPSEEK_REASONING_EFFORT;
     }
-    if (!usesDeepSeekThinkingMode(model)) {
+    if (options.jsonObject === true) body.response_format = { type: 'json_object' };
+    if (!usesDeepSeekThinkingMode(model) || options.thinking === false) {
       body.temperature = options.temperature ?? 0.15;
     }
     const response = await fetchImpl(url, {
@@ -2564,6 +3004,8 @@ async function refineCoverageTableWithDetailOcr({ config, model, policy, analysi
     options: {
       temperature: 0.05,
       maxTokens: 2200,
+      thinking: false,
+      jsonObject: true,
     },
   });
   const refinementRawText = trimString(payload?.choices?.[0]?.message?.content);
@@ -2675,6 +3117,7 @@ export async function analyzeInsurancePolicyResponsibilities({
   const hasOfficialSource = hasOfficialSearchSource(searchArtifacts.sources);
   const hasExternalSource = allowExternalReferences && hasExternalReviewSource(searchArtifacts.sources);
   const localSkillPlan = buildLocalPolicyAnalysisSkillPlan({
+    policy: externalPolicy,
     analysisInput,
     searchArtifacts,
     hasOfficialSource,
@@ -2714,8 +3157,15 @@ export async function analyzeInsurancePolicyResponsibilities({
           skillPlan,
         }),
         options: hasExternalSource && !hasOfficialSource
-          ? { maxTokens: DEFAULT_EXTERNAL_ANALYSIS_MAX_TOKENS }
-          : {},
+          ? {
+              maxTokens: DEFAULT_EXTERNAL_ANALYSIS_MAX_TOKENS,
+              thinking: false,
+              jsonObject: true,
+            }
+          : {
+              thinking: false,
+              jsonObject: true,
+            },
       });
       const content = trimString(payload?.choices?.[0]?.message?.content);
       let parsedPayload = null;
@@ -2730,12 +3180,68 @@ export async function analyzeInsurancePolicyResponsibilities({
         sensitiveTerms: analysisInput.sensitiveTerms,
         externalReviewMode: hasExternalSource && !hasOfficialSource,
       });
+      let parallelWorkers = null;
+      if (
+        isDeepSeekV4Model(model)
+        && hasOfficialSource
+        && !hasExternalSource
+        && normalized.coverageTable.length
+      ) {
+        parallelWorkers = await runParallelResponsibilityWorkers({
+          config,
+          model,
+          policy: externalPolicy,
+          analysisInput: enrichedAnalysisInput,
+          analysis: normalized,
+          searchArtifacts,
+          fetchImpl,
+        });
+        normalized = {
+          ...normalized,
+          coverageTable: parallelWorkers.coverageTable,
+        };
+      }
+      let validationLoop = null;
+      if (isDeepSeekV4Model(model) && hasOfficialSource && !hasExternalSource) {
+        validationLoop = await runResponsibilityValidationLoop({
+          config,
+          model,
+          policy: externalPolicy,
+          analysisInput: enrichedAnalysisInput,
+          coverageTable: normalized.coverageTable,
+          fetchImpl,
+        });
+        normalized = {
+          ...normalized,
+          coverageTable: validationLoop.coverageTable,
+        };
+      }
       const modelOutput = {
         model: trimString(payload?.model || model) || trimString(model),
         rawText: redactSensitiveAnalysisText(content, analysisInput.sensitiveTerms),
         refinementModel: '',
         refinementRawText: '',
         skillPlan,
+        workerPlan: parallelWorkers?.plan || null,
+        workers: parallelWorkers?.workers.map((worker) => ({
+          role: worker.role,
+          model: worker.model,
+          status: worker.status,
+          errorCode: worker.errorCode,
+          rawText: redactSensitiveAnalysisText(worker.rawText, analysisInput.sensitiveTerms),
+          responsibilityCount: worker.rows.length,
+        })) || [],
+        responsibilityValidation: validationLoop
+          ? {
+              status: validationLoop.status,
+              maxAttempts: validationLoop.maxAttempts,
+              attempts: validationLoop.attempts,
+              repairWorkers: validationLoop.repairWorkers.map((worker) => ({
+                ...worker,
+                rawText: redactSensitiveAnalysisText(worker.rawText, analysisInput.sensitiveTerms),
+              })),
+            }
+          : null,
       };
       const result = {
         analysis: normalized,

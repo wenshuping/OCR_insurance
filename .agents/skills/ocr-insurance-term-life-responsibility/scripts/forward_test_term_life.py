@@ -137,6 +137,38 @@ def validate_fixtures(fixtures_dir: Path) -> dict[str, Any]:
                         )
         if len(ids) != len(set(ids)):
             issues.append({"fixture": path.name, "issue": "duplicate_responsibility_id"})
+        if shape == "combined_death_total_disability_cause_branches":
+            if len(responsibilities) != 1:
+                issues.append(
+                    {
+                        "fixture": path.name,
+                        "issue": "combined_death_disability_must_have_one_responsibility",
+                    }
+                )
+            else:
+                responsibility = responsibilities[0]
+                branches = responsibility.get("branches") or []
+                conditions = [
+                    str(branch.get("conditionText") or "")
+                    for branch in branches
+                    if isinstance(branch, dict)
+                ]
+                if responsibility.get("indicatorDecisionCount") != 1:
+                    issues.append(
+                        {
+                            "fixture": path.name,
+                            "issue": "combined_death_disability_must_have_one_indicator",
+                        }
+                    )
+                if not any("疾病" in condition for condition in conditions) or not any(
+                    "意外" in condition for condition in conditions
+                ):
+                    issues.append(
+                        {
+                            "fixture": path.name,
+                            "issue": "cause_conditions_must_remain_branches",
+                        }
+                    )
 
     required_topologies = TOPOLOGIES - set(topology_counts)
     for topology in sorted(required_topologies):

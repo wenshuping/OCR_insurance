@@ -794,6 +794,238 @@ test('reviewed artifact import preserves reviewed policy-data status on cards', 
   }
 });
 
+test('approved artifact semantic projection keeps multi-indicator fields isolated and lossless', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'review-semantic-projection.jsonl');
+    const company = '测试保险公司';
+    const productName = '分红年金投影回归样本';
+    const sourceUrl = 'https://example.test/semantic-projection.pdf';
+    const sourceDigest = 'sha256:semantic-projection-fixture';
+    const sourceExcerptA = '  生存保险金  本公司按周年日基本责任保险金额给付。  ';
+    const sourceExcerptB = '满期保险金 本公司按基本保险金额与累积红利保险金额之和给付。';
+    fs.writeFileSync(artifactPath, `${JSON.stringify({
+      company,
+      productName,
+      productIdentity: { sourceUrl, sourceDigest },
+      sourceRecords: [{ sourceRecordId: 'semantic-1', sourceUrl, sourceTitle: `${productName}条款` }],
+      responsibilities: [{
+        responsibilityId: 'annuity_benefit',
+        liability: '年金责任',
+        title: '年金责任',
+        coverageType: '现金流',
+        triggerCondition: '达到约定日期仍生存',
+        sourceUrl,
+        sourceExcerpt: '责任边界正文',
+        indicators: [{
+          indicatorName: '周年日生存金',
+          formulaText: '生存金 = 周年日基本责任保险金额 × 9%',
+          normalizedFormula: 'policy_anniversary_basic_amount * 0.09',
+          basis: '周年日基本责任保险金额',
+          basisKey: 'policy_anniversary_basic_amount',
+          calculationKey: 'schedule_or_policy_table',
+          calculationEligible: false,
+          requiredInputs: ['policyScheduleTable', 'policyYearOrAge'],
+          operands: [{ operandId: 'anniversary_amount', formulaText: '周年日基本责任保险金额' }],
+          branches: [],
+          ruleRefs: ['anniversary_rule'],
+          sourceExcerpt: sourceExcerptA,
+          evidenceSegments: [{ sourcePage: '2', sourceExcerpt: sourceExcerptA }],
+          payoutSummary: '按周年日基本责任保险金额的9%给付。',
+          customerSummary: '达到约定日期仍生存时按周年日金额给付。',
+          plainSummary: '周年日生存金。',
+          sourceUrl,
+          sourceDigest,
+          responsibilitySourceDigest: sourceDigest,
+          calculationReason: '需查保单年度表',
+        }, {
+          indicatorName: '满期红利金',
+          formulaText: '满期金 = 基本保险金额 + 累积红利保险金额',
+          normalizedFormula: 'basic_amount + accumulated_dividend_insured_amount',
+          basis: '基本保险金额与累积红利保险金额之和',
+          basisKey: 'basic_amount_plus_accumulated_dividend',
+          calculationKey: 'schedule_or_policy_table',
+          calculationEligible: false,
+          requiredInputs: ['policyScheduleTable', 'accumulatedDividendInsuredAmount'],
+          operands: [{ operandId: 'dividend_amount', formulaText: '累积红利保险金额' }],
+          branches: [{ branchId: 'maturity', formulaText: '基本保险金额 + 累积红利保险金额' }],
+          ruleRefs: ['dividend_rule'],
+          sourceExcerpt: sourceExcerptB,
+          evidenceSegments: [{ sourcePage: '8', sourceExcerpt: sourceExcerptB }],
+          payoutSummary: '按基本保险金额与累积红利保险金额之和给付。',
+          customerSummary: '满期时给付基本金额及累积红利金额。',
+          plainSummary: '满期红利金。',
+          sourceUrl,
+          sourceDigest,
+          responsibilitySourceDigest: sourceDigest,
+          calculationReason: '需查保单红利表',
+        }],
+      }],
+    })}\n`);
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-31T00:00:00.000Z',
+    });
+    assert.equal(result.validationIssueCount, 0);
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const standalone = db.prepare('SELECT id, payload FROM insurance_indicator_records WHERE company = ? AND product_name = ? ORDER BY id').all(company, productName);
+      const card = db.prepare('SELECT payload FROM product_responsibility_cards WHERE company = ? AND product_name = ? AND title = ?').get(company, productName, '年金责任');
+      const nested = JSON.parse(card.payload).indicators;
+      assert.equal(standalone.length, 2);
+      assert.equal(nested.length, 2);
+      const fields = ['formulaText', 'normalizedFormula', 'basisKey', 'calculationKey', 'calculationEligible', 'requiredInputs', 'operands', 'branches', 'ruleRefs', 'sourceExcerpt', 'evidenceSegments', 'payoutSummary', 'customerSummary', 'plainSummary'];
+      const standaloneByName = new Map(standalone.map((row) => [JSON.parse(row.payload).indicatorName, JSON.parse(row.payload)]));
+      const nestedByName = new Map(nested.map((row) => [row.indicatorName, row]));
+      for (const name of standaloneByName.keys()) {
+        const a = standaloneByName.get(name);
+        const b = nestedByName.get(name);
+        assert.ok(b, `missing nested indicator: ${name}`);
+        assert.equal(a.id, b.id);
+        for (const field of fields) assert.deepEqual(b[field], a[field], `${name}.${field}`);
+      }
+      assert.equal(JSON.parse(standalone.find((row) => JSON.parse(row.payload).indicatorName === '周年日生存金').payload).sourceExcerpt, sourceExcerptA);
+      assert.deepEqual(nested.find((row) => row.indicatorName === '满期红利金').evidenceSegments, [{ sourcePage: '8', sourceExcerpt: sourceExcerptB }]);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('approved artifact projection isolates sparse rule refs and prefers indicator evidence segments', () => {
+  const { dir, dbPath } = makeTempDb();
+  try {
+    const artifactPath = path.join(dir, 'approved-evidence-projection-regression.json');
+    const products = [
+      {
+        company: '三峡人寿保险股份有限公司',
+        productName: '三峡团体臻选百万医疗保险',
+        productIdentity: {
+          sourceUrl: 'https://official.example.com/sanxia-group.pdf',
+          sourceDigest: 'sha256:sanxia-group-regression',
+        },
+        responsibilities: [{
+          responsibilityId: 'resp_opt_proton',
+          liability: '质子重离子医疗保险金',
+          sourceUrl: 'https://official.example.com/sanxia-group.pdf',
+          sourceExcerpt: '责任旧正文，不应覆盖指标证据。',
+          indicators: [{
+            indicatorName: '累计限额',
+            formulaText: '100万元',
+            ruleRefs: ['rule_proton_limit'],
+            sourceExcerpt: '质子重离子累计限额。',
+          }, {
+            indicatorName: '赔付比例',
+            formulaText: '100%',
+            sourceExcerpt: '旧 derived 指标正文，不应覆盖 approved evidenceSegments。',
+            evidenceSegments: [{ sourcePage: '5', sourceExcerpt: '质子重离子费用赔付比例为100%。' }],
+          }],
+        }],
+      },
+      {
+        company: '上海人寿保险股份有限公司',
+        productName: '上海人寿享赢添添F款养老年金保险',
+        productIdentity: {
+          sourceUrl: 'https://official.example.com/xiangying-f.pdf',
+          sourceDigest: 'sha256:xiangying-f-regression',
+        },
+        responsibilities: [{
+          responsibilityId: 'death_benefit',
+          liability: '身故保险金',
+          sourceUrl: 'https://official.example.com/xiangying-f.pdf',
+          sourceExcerpt: '旧 knowledge 责任全文，不应投影到指标。',
+          indicators: [{
+            indicatorName: '身故保险金金额',
+            formulaText: '累计已交保险费与现金价值较大者',
+            evidenceSegments: [{ sourcePage: '4', sourceExcerpt: 'approved 身故保险金证据。' }],
+          }],
+        }],
+      },
+      {
+        company: '上海人寿保险股份有限公司',
+        productName: '上海人寿养乐嘟（永康版）养老年金保险',
+        productIdentity: {
+          sourceUrl: 'https://official.example.com/yangletu-yongkang.pdf',
+          sourceDigest: 'sha256:yangletu-yongkang-regression',
+        },
+        responsibilities: [{
+          responsibilityId: 'accident_disability',
+          liability: '客运交通工具意外伤害全残保险金',
+          sourceUrl: 'https://official.example.com/yangletu-yongkang.pdf',
+          evidenceSegments: [{ sourcePage: '5', sourceExcerpt: '责任 evidence segment。' }],
+          indicators: [{
+            indicatorName: '客运交通工具意外伤害全残保险金金额',
+            formulaText: '累计已交保险费',
+            evidenceSegments: [{ sourcePage: '5', sourceExcerpt: 'approved 全残保险金证据。' }],
+          }],
+        }],
+      },
+    ];
+    fs.writeFileSync(artifactPath, JSON.stringify(products));
+
+    const result = importReviewedResponsibilityArtifacts({
+      artifacts: [artifactPath],
+      dbPath,
+      write: true,
+      now: '2026-07-31T00:00:00.000Z',
+    });
+    assert.equal(result.validationIssueCount, 0);
+    assert.equal(result.acceptedResponsibilities, 4);
+    assert.equal(result.materializedCards, 3);
+
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const readIndicator = (company, productName, indicatorName) => {
+        const row = db.prepare(`
+          SELECT payload FROM insurance_indicator_records
+           WHERE company = ? AND product_name = ?
+        `).all(company, productName)
+          .map((item) => JSON.parse(item.payload))
+          .find((item) => item.indicatorName === indicatorName);
+        assert.ok(row, `missing indicator: ${productName}/${indicatorName}`);
+        return row;
+      };
+      const readNested = (company, productName, indicatorName) => {
+        const card = db.prepare(`
+          SELECT payload FROM product_responsibility_cards
+           WHERE company = ? AND product_name = ?
+        `).get(company, productName);
+        assert.ok(card, `missing card: ${productName}`);
+        const indicator = JSON.parse(card.payload).indicators.find((item) => item.indicatorName === indicatorName);
+        assert.ok(indicator, `missing nested indicator: ${productName}/${indicatorName}`);
+        return indicator;
+      };
+
+      const protonLimit = readIndicator('三峡人寿保险股份有限公司', '三峡团体臻选百万医疗保险', '累计限额');
+      const protonRatio = readIndicator('三峡人寿保险股份有限公司', '三峡团体臻选百万医疗保险', '赔付比例');
+      assert.deepEqual(protonLimit.ruleRefs, ['rule_proton_limit']);
+      assert.deepEqual(protonRatio.ruleRefs ?? [], []);
+      assert.equal(protonRatio.sourceExcerpt, '质子重离子费用赔付比例为100%。');
+      assert.equal(readNested('三峡人寿保险股份有限公司', '三峡团体臻选百万医疗保险', '赔付比例').sourceExcerpt, protonRatio.sourceExcerpt);
+
+      const xiangying = readIndicator('上海人寿保险股份有限公司', '上海人寿享赢添添F款养老年金保险', '身故保险金金额');
+      assert.equal(xiangying.sourceExcerpt, 'approved 身故保险金证据。');
+      assert.deepEqual(xiangying.evidenceSegments, [{ sourcePage: '4', sourceExcerpt: 'approved 身故保险金证据。' }]);
+      assert.equal(readNested('上海人寿保险股份有限公司', '上海人寿享赢添添F款养老年金保险', '身故保险金金额').sourceExcerpt, xiangying.sourceExcerpt);
+
+      const yangletu = readIndicator('上海人寿保险股份有限公司', '上海人寿养乐嘟（永康版）养老年金保险', '客运交通工具意外伤害全残保险金金额');
+      assert.equal(yangletu.sourceExcerpt, 'approved 全残保险金证据。');
+      assert.deepEqual(yangletu.evidenceSegments, [{ sourcePage: '5', sourceExcerpt: 'approved 全残保险金证据。' }]);
+      assert.equal(readNested('上海人寿保险股份有限公司', '上海人寿养乐嘟（永康版）养老年金保险', '客运交通工具意外伤害全残保险金金额').sourceExcerpt, yangletu.sourceExcerpt);
+    } finally {
+      db.close();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('reviewed artifact import prunes stale non-responsibility indicators', () => {
   const { dir, dbPath } = makeTempDb();
   try {

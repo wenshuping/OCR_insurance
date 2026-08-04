@@ -3,14 +3,14 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const VERSION = '2026-05-31-remaining-optional-responsibility-quantification';
 const DB_PATHS = [
-  path.join(runtimeDir, 'policy-ocr.sqlite'),
-  path.join(runtimeDir, 'local', 'policy-ocr.sqlite'),
+  resolvePolicyOcrWriteDatabasePath({ projectRoot }),
 ];
 
 const GREATLIFE_TERMS_URLS = {
@@ -1290,7 +1290,9 @@ async function runForDb(dbPath, dryRun, now) {
 async function main() {
   const dryRun = hasFlag('dry-run');
   const requestedDbPath = readArg('db-path');
-  const dbPaths = requestedDbPath ? [path.resolve(requestedDbPath)] : DB_PATHS;
+  const dbPaths = requestedDbPath
+    ? [resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath })]
+    : DB_PATHS;
   const now = new Date().toISOString();
   const backups = {};
   if (!dryRun) {

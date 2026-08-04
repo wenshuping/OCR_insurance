@@ -1,0 +1,6 @@
+interface:
+  display_name: "分红年金语义审计"
+  short_description: "扫描分红年金责任指标口径错配并执行受控修复"
+  default_prompt: "Use $ocr-insurance-participating-annuity-semantic-audit to audit participating annuity responsibility semantics before any SSD database repair."
+policy:
+  allow_implicit_invocation: true

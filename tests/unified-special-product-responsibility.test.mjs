@@ -223,6 +223,153 @@ test('universal lane omits unsupported fields and reports blockers', () => {
   assert.ok(result.blockers.includes('missing_account_field:additionalPremiumInitialCharge'));
 });
 
+test('official PDF fields remain displayable without an approved persistence chain', () => {
+  const result = routeUnifiedSpecialProductResponsibility({
+    company: '中国平安',
+    productName: '平安招财宝终身寿险（万能型）',
+    cards: [{
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      title: '身故保险金',
+      plainSummary: '被保险人身故，按合同约定给付。',
+    }],
+    sourceRecords: [{
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      url: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=853&versionNo=853-1&attachmentType=1',
+      sourceType: 'pdf',
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceDigest: 'sha256:853-1',
+      sourceAcquisition: { strategy: 'bound_official_pdf', identityVerified: true, pdfMagicVerified: true },
+      pageText: [
+        '第十条 本合同设置万能账户，账户价值按条款规则计算。',
+        '第十一条 最低保证利率为年利率2%。',
+        '第十二条 结算利率按月公布。',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.category, 'blocked');
+  assert.equal(result.universalAccount.eligible, false);
+  assert.equal(result.universalAccount.status, 'display_only');
+  assert.equal(result.fieldEvidenceDisplay.mode, 'display-only');
+  assert.equal(result.fieldEvidenceDisplay.persistenceStatus, 'persistence-not-aligned');
+  assert.equal(result.fieldEvidenceDisplay.calculationEligible, false);
+  assert.match(result.fieldEvidenceDisplay.fields.minimumGuaranteedRate.value, /2%/u);
+  assert.equal(result.fieldEvidenceDisplay.fields.singlePremiumInitialCharge, undefined);
+  assert.equal(result.ordinaryResponsibilities.length, 1);
+  assert.equal(result.ordinaryResponsibilities[0].title, '身故保险金');
+  assert.ok(result.blockers.includes('source_chain_not_aligned'));
+});
+
+test('official materials from the same plan version merge for display instead of becoming a version conflict', () => {
+  const baseUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=853&versionNo=853-1';
+  const result = routeUnifiedSpecialProductResponsibility({
+    company: '中国平安',
+    productName: '平安招财宝终身寿险（万能型）',
+    cards: [{
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      title: '身故保险金',
+      plainSummary: '被保险人身故，按合同约定给付。',
+    }],
+    sourceRecords: [{
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      url: `${baseUrl}&attachmentType=7`,
+      sourceType: 'pdf',
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceDigest: 'sha256:product-description',
+      sourceAcquisition: { strategy: 'bound_official_pdf', identityVerified: true, pdfMagicVerified: true },
+      pageText: '第十条 本合同设置万能账户。第十一条 结算利率按月公布。',
+    }, {
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      url: `${baseUrl}&attachmentType=1`,
+      sourceType: 'pdf',
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceDigest: 'sha256:policy-terms',
+      sourceAcquisition: { strategy: 'bound_official_pdf', identityVerified: true, pdfMagicVerified: true },
+      pageText: '第十二条 最低保证利率为年利率1.75%。第十三条 部分领取须满足合同约定。',
+    }],
+  });
+
+  assert.equal(result.category, 'blocked');
+  assert.equal(result.fieldEvidenceDisplay.status, 'display_only');
+  assert.equal(result.fieldEvidenceDisplay.sourceDigest, 'sha256:policy-terms');
+  assert.match(result.fieldEvidenceDisplay.fields.minimumGuaranteedRate.value, /1\.75%/u);
+  assert.match(result.fieldEvidenceDisplay.fields.settlement.value, /按月公布/u);
+  assert.equal(result.fieldEvidenceDisplay.blockers.includes('version_conflict'), false);
+});
+
+test('source-only field evidence keeps line-level excerpts instead of copying the whole PDF projection', () => {
+  const result = routeUnifiedSpecialProductResponsibility({
+    company: '中国平安',
+    productName: '平安招财宝终身寿险（万能型）',
+    sourceRecords: [{
+      company: '中国平安',
+      productName: '平安招财宝终身寿险（万能型）',
+      url: 'https://life.pingan.com/terms.pdf',
+      sourceType: 'pdf',
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceDigest: 'sha256:line-level-evidence',
+      sourceAcquisition: { strategy: 'bound_official_pdf', identityVerified: true, pdfMagicVerified: true },
+      pageText: [
+        '本产品提供最低保证利率，保单账户价值按不低于保证利率累积',
+        '本行不应进入最低保证利率字段，结算利率按月公布',
+        '部分领取须在犹豫期后申请，领取后账户价值不得低于最低余额',
+      ].join('\n'),
+    }],
+  });
+
+  assert.equal(result.fieldEvidenceDisplay.fields.minimumGuaranteedRate.value, '本产品提供最低保证利率，保单账户价值按不低于保证利率累积');
+  assert.doesNotMatch(result.fieldEvidenceDisplay.fields.minimumGuaranteedRate.value, /本行不应进入/u);
+  assert.match(result.fieldEvidenceDisplay.fields.withdrawalEligibilityAndLimits.value, /部分领取须在犹豫期后申请/u);
+  assert.doesNotMatch(result.fieldEvidenceDisplay.fields.withdrawalEligibilityAndLimits.value, /结算利率/u);
+});
+
+test('cross-insurance display evidence is projected field by field from one official PDF digest', () => {
+  const result = routeUnifiedSpecialProductResponsibility({
+    company,
+    productName: '示例综合保障保险',
+    sourceRecords: [{
+      company,
+      productName: '示例综合保障保险',
+      url: 'https://official.example.test/composite.pdf',
+      sourceType: 'pdf',
+      official: true,
+      evidenceLevel: 'insurer_official',
+      sourceDigest: 'sha256:composite-v1',
+      pageText: [
+        '第十条 医疗保险金年度免赔额为1万元，赔付比例为80%，限二级及以上医院。',
+        '第十一条 重大疾病分为六组，最多给付六次，相邻两次间隔期为180日，并豁免后续保险费。',
+        '第十二条 意外伤残按伤残等级对应的给付比例给付，航空意外另行给付。',
+        '第十三条 当年度有效保险金额等于基本保险金额×(1+3%)^(n-1)。',
+        '第十四条 年金可按年领取或按月领取，月领折算系数为0.085，期满给付满期保险金。',
+      ].join('\n'),
+    }],
+  });
+
+  const fields = result.fieldEvidenceDisplay.fields;
+  assert.match(fields.medicalDeductible.value, /1万元/u);
+  assert.match(fields.medicalPaymentRatio.value, /80%/u);
+  assert.match(fields.medicalHospitalScope.value, /二级及以上医院/u);
+  assert.match(fields.criticalDiseaseGrouping.value, /六组/u);
+  assert.match(fields.criticalPaymentCount.value, /六次/u);
+  assert.match(fields.criticalInterval.value, /180日/u);
+  assert.match(fields.criticalPremiumWaiver.value, /豁免/u);
+  assert.match(fields.accidentDisabilityGrade.value, /伤残等级/u);
+  assert.match(fields.effectiveInsuredAmountFormula.value, /1\+3%/u);
+  assert.match(fields.annuityPaymentFrequency.value, /按年领取/u);
+  assert.match(fields.annuityMonthlyFactor.value, /0\.085/u);
+  assert.match(fields.maturityBenefit.value, /满期保险金/u);
+  assert.equal(fields.medicalWaitingPeriod, undefined);
+});
+
 test('customer database fast path emits productFunctions without model work and preserves ordinary responsibility', () => {
   const evidence = universalChain();
   const summary = {

@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import {
   FileBlob,
   SpreadsheetFile,
@@ -23,7 +24,7 @@ const DEFAULT_WORKBOOK_PATH = path.join(
 const DEFAULT_FEISHU_CONFIG_PATH = path.join(runtimeDir, 'feishu-insurance-indicators-20260527.json');
 const DEFAULT_SOURCE_FEISHU_CONFIG_PATH = path.join(runtimeDir, 'feishu-knowledge.json');
 const DEFAULT_TABLE_NAME = '保险量化指标_20260527';
-const DEFAULT_DB_PATH = path.join(runtimeDir, 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 
 const FIELD_NAMES = [
   '指标ID',
@@ -262,7 +263,10 @@ function buildStats(records) {
 }
 
 function saveLocalIndicatorRecords({ records, stats, version, workbookPath }) {
-  const dbPath = path.resolve(readArg('db-path', process.env.POLICY_OCR_APP_DB_PATH || DEFAULT_DB_PATH));
+  const dbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    requestedPath: readArg('db-path', DEFAULT_DB_PATH),
+  });
   const generatedAt = new Date().toISOString();
   const indicatorRecords = records.map((record) => ({
     id: record.indicatorId,

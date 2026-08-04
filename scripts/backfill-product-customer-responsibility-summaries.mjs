@@ -1,14 +1,17 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
 import {
   CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
   generateProductCustomerResponsibilitySummary,
 } from '../server/product-customer-responsibility-summary.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
-const DEFAULT_DB_PATH = '.runtime/local/policy-ocr.sqlite';
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SUPPORTED_SUMMARY_VERSION = CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION;
 
 function text(value) {
@@ -89,7 +92,7 @@ export function parseBackfillArgs(argv = process.argv.slice(2)) {
     limit: 50,
     company: '',
     category: '',
-    dbPath: DEFAULT_DB_PATH,
+    dbPath: '',
     dryRun: false,
   };
 
@@ -144,7 +147,7 @@ export function selectBackfillProducts({ knowledgeRecords = [], company = '', ca
 }
 
 export async function backfillProductCustomerResponsibilitySummaries({
-  dbPath = DEFAULT_DB_PATH,
+  dbPath = '',
   summaryVersion = SUPPORTED_SUMMARY_VERSION,
   limit = 50,
   company = '',
@@ -241,6 +244,10 @@ export async function backfillProductCustomerResponsibilitySummaries({
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = parseBackfillArgs();
+  args.dbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    requestedPath: args.dbPath,
+  });
   const report = await backfillProductCustomerResponsibilitySummaries(args);
   console.log(JSON.stringify(report, null, 2));
 }

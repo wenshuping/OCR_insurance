@@ -1779,7 +1779,7 @@ test('backfills high-confidence and parameterized knowledge responsibility indic
       assert.equal(careAnnuityPayload.formulaText, '关爱年金 = 首次交纳的基本责任的保险费 × 1%');
       assert.equal(careAnnuityPayload.coverageType, '现金流');
       const survivalPayload = JSON.parse(rows.find((row) => row.liability === '生存保险金').payload);
-      assert.equal(survivalPayload.formulaText, '生存保险金 = 基本责任保险金额 × 9%');
+      assert.equal(survivalPayload.formulaText, '生存保险金 = 保单生效对应日基本责任保险金额 × 9%');
       assert.equal(survivalPayload.coverageType, '现金流');
       const directoryMedicalPayload = JSON.parse(rows.find((row) => row.liability === '目录内医疗费用保险金').payload);
       assert.equal(directoryMedicalPayload.formulaText, '目录内医疗费用保险金 = 实际合理医疗费用扣除已获补偿后按合同约定给付');

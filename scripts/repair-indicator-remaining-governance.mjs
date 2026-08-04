@@ -1,10 +1,11 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 
 function trim(value) {
   return String(value ?? '').trim();
@@ -685,7 +686,10 @@ export function repairRemainingIndicatorGovernance({ dbPath = DEFAULT_DB_PATH, d
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const dbPath = path.resolve(readArg('db-path', DEFAULT_DB_PATH));
+  const dbPath = resolvePolicyOcrWriteDatabasePath({
+    projectRoot,
+    requestedPath: readArg('db-path', DEFAULT_DB_PATH),
+  });
   const dryRun = hasFlag('dry-run');
   const result = repairRemainingIndicatorGovernance({ dbPath, dryRun });
   console.log(JSON.stringify(result, null, 2));

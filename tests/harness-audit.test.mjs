@@ -14,11 +14,13 @@ import {
   auditFeatureTestGate,
   auditHighRiskScriptDefaults,
   auditOptionalResponsibilityDatabase,
+  auditProductIdentityMatchGate,
   auditRouteSqlPersistence,
   auditSensitivePathChanges,
   parseGitStatus,
   patternMatches,
 } from '../scripts/harness-audit.mjs';
+import { auditProductIdentityMatching, matchProductIdentity } from '../scripts/product-identity-harness.mjs';
 
 async function makeTempDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'policy-ocr-harness-audit-'));
@@ -62,6 +64,51 @@ test('parseGitStatus normalizes changed and renamed paths', () => {
     'scripts/harness-audit.mjs',
     'docs/harness-test-map.json',
   ]);
+});
+
+test('product identity matching is key-first and does not fall back across keys', () => {
+  assert.equal(matchProductIdentity(
+    { canonicalProductId: 'product-a', company: '甲', productName: '同名产品', sourceDigest: 'digest-a' },
+    { canonicalProductId: 'product-a', company: '甲', productName: '不同名称', sourceDigest: 'digest-b' },
+  ), true);
+  assert.equal(matchProductIdentity(
+    { canonicalProductId: 'product-a', company: '甲', productName: '同名产品', sourceDigest: 'digest-a' },
+    { canonicalProductId: 'product-b', company: '甲', productName: '同名产品', sourceDigest: 'digest-a' },
+  ), false);
+});
+
+test('legacy identity fallback requires exact official source or version and product name', () => {
+  const base = { company: '甲', productName: '同名产品' };
+  assert.equal(matchProductIdentity({ ...base, sourceDigest: 'digest-a' }, { ...base, sourceDigest: 'digest-a' }), true);
+  assert.equal(matchProductIdentity({ ...base, sourceUrl: 'https://official.test/a.pdf' }, { ...base, sourceUrl: 'https://official.test/a.pdf' }), true);
+  assert.equal(matchProductIdentity({ ...base, publisherVersion: '2025-01' }, { ...base, publisherVersion: '2025-01' }), true);
+  assert.equal(matchProductIdentity(base, { ...base, sourceDigest: 'digest-a' }), false);
+  assert.equal(matchProductIdentity({ ...base, sourceDigest: 'digest-a' }, { ...base, sourceDigest: 'digest-b' }), false);
+});
+
+test('product identity harness rejects name-only matching and accepts guarded legacy matching', () => {
+  const bad = auditProductIdentityMatching({
+    projectRoot: '/repo',
+    changedFiles: ['server/example-product-matcher.mjs'],
+    readFile: () => 'SELECT * FROM product_responsibility_cards WHERE company = ? AND product_name = ?',
+  });
+  assert.equal(bad.ok, false);
+
+  const good = auditProductIdentityMatching({
+    projectRoot: '/repo',
+    changedFiles: ['scripts/legacy-product-matcher.mjs'],
+    readFile: () => 'legacy missing key: productKey canonicalProductId sourceDigest sourceUrl publisherVersion; WHERE company = ? AND product_name = ?',
+  });
+  assert.equal(good.ok, true);
+});
+
+test('harness report exposes the product identity match gate', () => {
+  const report = auditProductIdentityMatchGate({
+    projectRoot: '/repo',
+    changedFiles: [],
+  });
+  assert.equal(report.failed.length, 0);
+  assert.equal(report.passed.length, 1);
 });
 
 test('sensitive path audit fails production paths and allows development runtime paths', () => {

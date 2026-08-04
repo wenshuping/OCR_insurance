@@ -56,8 +56,22 @@ test('optional responsibility indicators render and calculate only after the res
   const reviewSource = customerPolicyComponentsSource.slice(start, end);
 
   assert.match(reviewSource, /status === 'selected' && linkedIndicators\.length \? \(/);
-  assert.match(reviewSource, /resolveIndicatorAmountFromCalculation\(indicator, \{ baseAmount: coverageAmount, firstPremium, paymentYears \}\)/);
+  assert.match(reviewSource, /resolveIndicatorAmountFromCalculation\(indicator, \{ baseAmount: coverageAmount, firstPremium, paymentYears, effectiveInsuranceAmount, accumulatedDividendInsuredAmount \}\)/);
   assert.doesNotMatch(reviewSource, /4,?493\.85|8,?987\.70/);
+});
+
+test('optional responsibility card prefers the bounded customer summary over raw clause text', () => {
+  assert.match(
+    customerPolicyComponentsSource,
+    /String\(item\.customerSummary \|\| item\.sourceExcerpt \|\| ''\)/,
+  );
+});
+
+test('generic optional responsibility keeps its group title instead of borrowing a child benefit title', () => {
+  const start = customerPolicyComponentsSource.indexOf('function optionalResponsibilityDisplayName');
+  const end = customerPolicyComponentsSource.indexOf('function optionalResponsibilityContentText', start);
+  const displayNameSource = customerPolicyComponentsSource.slice(start, end);
+  assert.doesNotMatch(displayNameSource, /numberedHeading|inlineHeading/);
 });
 
 test('entry optional responsibility choices survive local draft refreshes', () => {

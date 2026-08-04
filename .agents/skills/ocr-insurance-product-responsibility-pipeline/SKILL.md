@@ -578,15 +578,15 @@ Return the execution receipt and renderer output without rewriting ages, percent
 
 ## Database Publication
 
-Generation, repair, and backfill runs must write their approved result to the development SQLite database. Review-only and comparison-only runs must not write unless publication is explicitly requested. Production publication always requires a separate, explicit user authorization; never infer it from development publication.
+Generation, repair, and backfill runs must write their approved result to the configured development SSD SQLite database. Review-only and comparison-only runs must not write unless publication is explicitly requested. Production publication always requires a separate, explicit user authorization and must target the configured production database; never infer it from development publication.
 
-The only permitted default target is the development database at `<project-root>/.runtime/local/policy-ocr.sqlite`. Do not use `<project-root>/.runtime/policy-ocr.sqlite`, `/data/policy-ocr.sqlite`, a production bundle, or Feishu as a substitute. Do not read or edit `.env.local` to discover or change this target.
+For development, resolve the exact SSD target from `<project-root>/.runtime/local/policy-ocr-env.json` or `POLICY_OCR_APP_DB_PATH`. The legacy `<project-root>/.runtime/local/policy-ocr.sqlite` target is forbidden even when a worktree symlink makes it appear local. For an explicitly authorized production publication, use `POLICY_OCR_PROFILE=prod` and the configured production `POLICY_OCR_APP_DB_PATH`; otherwise the production default is `<project-root>/.runtime/policy-ocr.sqlite`. Do not read or edit `.env.local` to discover or change either target.
 
 After canonicalization, validation, and rendering succeed, run:
 
 ```bash
-PROJECT_ROOT='<absolute OCR_insurance checkout containing .runtime/local>'
-DEVELOPMENT_DB_PATH="$PROJECT_ROOT/.runtime/local/policy-ocr.sqlite"
+PROJECT_ROOT='<absolute OCR_insurance checkout>'
+DEVELOPMENT_DB_PATH='<exact configured SSD policy-ocr.sqlite path>'
 node "$PIPELINE_SKILL_DIR/scripts/publish_development_artifact.mjs" \
   --artifact="$CANONICAL_ARTIFACT_PATH" \
   --source-document="$SOURCE_DOCUMENT_PATH" \
@@ -599,7 +599,8 @@ node "$PIPELINE_SKILL_DIR/scripts/publish_development_artifact.mjs" \
 Publication requirements:
 
 - refuse publication unless the bundled deterministic validator exits `0` for the same canonical artifact and source files;
-- refuse any database path outside the current checkout's `.runtime/local/` directory;
+- resolve symlinks before comparison, refuse the legacy local database, and require the exact configured SSD target in development;
+- when `POLICY_OCR_PROFILE=prod`, require a production target and refuse the configured development SSD database;
 - create a timestamped SQLite backup before the first write;
 - store the complete approved artifact and exact source provenance;
 - replace the exact product's responsibility cards, indicators, and optional-responsibility records in one transaction;

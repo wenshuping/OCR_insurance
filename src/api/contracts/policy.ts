@@ -35,7 +35,12 @@ export type Policy = {
   insuredBirthday?: string;
   date: string;
   paymentPeriod: string;
+  paymentFrequency?: 'annual' | 'monthly' | '' | string;
   coveragePeriod: string;
+  benefitFrequency?: 'annual' | 'monthly' | '' | string;
+  monthlyConversionFactor?: number | string;
+  effectiveInsuranceAmount?: number | string;
+  accumulatedDividendInsuredAmount?: number | string;
   amount: number;
   firstPremium: number;
   plans?: PolicyPlan[];
@@ -78,7 +83,7 @@ export type ResponsibilityCalculation = {
   isMinimumEstimate: boolean;
   isPending?: boolean;
   hasBranchScenarios?: boolean;
-  scenarioKind?: 'scheduled_benefit' | 'claim_event';
+  scenarioKind?: 'scheduled_benefit' | 'claim_event' | 'policy_parameter';
   calculationText: string;
   uncertaintyNote?: string;
 };
@@ -189,7 +194,12 @@ export type PolicyScanData = {
   insuredBirthday?: string;
   date: string;
   paymentPeriod: string;
+  paymentFrequency?: 'annual' | 'monthly' | '' | string;
   coveragePeriod: string;
+  benefitFrequency?: 'annual' | 'monthly' | '' | string;
+  monthlyConversionFactor?: number | string;
+  effectiveInsuranceAmount?: number | string;
+  accumulatedDividendInsuredAmount?: number | string;
   amount: number | string;
   firstPremium: number | string;
   plans?: PolicyPlan[];
@@ -312,7 +322,12 @@ export type PolicyFormData = {
   insuredBirthday: string;
   date: string;
   paymentPeriod: string;
+  paymentFrequency?: 'annual' | 'monthly' | '' | string;
   coveragePeriod: string;
+  benefitFrequency?: 'annual' | 'monthly' | '' | string;
+  monthlyConversionFactor?: string;
+  effectiveInsuranceAmount?: string;
+  accumulatedDividendInsuredAmount?: string;
   amount: string;
   firstPremium: string;
   plans?: PolicyPlan[];
@@ -346,7 +361,13 @@ export function scanPolicy(input: {
   scan?: PolicyScanResult | null;
   analysis?: PolicyAnalysisResult | null;
 }) {
-  return request<{ ok: true; policy: Policy; registrationRequiredNext: boolean }>('/api/policies/scan', {
+  return request<{
+    ok: true;
+    policy: Policy;
+    registrationRequiredNext: boolean;
+    ocrFallbackUsed?: boolean;
+    ocrWarning?: string;
+  }>('/api/policies/scan', {
     token: input.token,
     body: {
       guestId: input.guestId,
@@ -464,8 +485,8 @@ export function deletePolicy(input: { token?: string; guestId?: string; id: numb
 }
 
 export function regeneratePolicyReport(input: { token?: string; guestId?: string; id: number }) {
-  return request<{ ok: true; policy: Policy; skipped?: boolean }>(`/api/policies/${input.id}/report${authQuery(input)}`, {
+  return request<{ ok: true; policy: Policy; skipped?: boolean; refreshMode?: 'official_fresh' }>(`/api/policies/${input.id}/report${authQuery(input)}`, {
     token: input.token,
-    body: {},
+    body: { forceFresh: true },
   });
 }

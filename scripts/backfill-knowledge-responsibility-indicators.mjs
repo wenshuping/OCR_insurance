@@ -4,10 +4,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { indicatorCalculationPayloadFields } from '../src/indicator-calculation.mjs';
 import { deriveIndicatorProductKeys } from '../server/policy-derived-results.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-06-14-knowledge-responsibility-indicator-backfill';
 
 function trim(value) {
@@ -93,6 +94,7 @@ const PAID_PREMIUM_PATTERN = '已\\s*交(?:\\s*纳)?(?:保险费|保费)|累计�
 function canonicalAmountBasis(rawBasis, context = '') {
   const basis = normalizeSpaces(rawBasis);
   const compact = normalizeSpaces(context).replace(/\s+/gu, '');
+  if (/保单生效对应日(?:的)?基本责任(?:的)?保险金额/u.test(compact)) return '保单生效对应日基本责任保险金额';
   if (/基本保险金额(?:与|和)累积红利保险金额(?:二者)?之和/u.test(compact)) return '有效保险金额';
   return basis;
 }
@@ -933,9 +935,7 @@ export function formulaFor(liability, sectionText) {
     if (amountPercentBeforeLiability?.[1] && amountPercentBeforeLiability?.[2] && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
       const percentValue = Number(amountPercentBeforeLiability[2]);
       if (Number.isFinite(percentValue) && percentValue > 0) {
-        const basis = /基本责任.{0,18}保险金额/u.test(leadWindow) && amountPercentBeforeLiability[1] !== '有效保险金额'
-          ? '基本责任保险金额'
-          : canonicalAmountBasis(amountPercentBeforeLiability[1], leadWindow);
+        const basis = canonicalAmountBasis(amountPercentBeforeLiability[1], leadWindow);
         return {
           value: percentValue,
           valueText: amountPercentBeforeLiability[2],
@@ -1598,6 +1598,7 @@ export function formulaFor(liability, sectionText) {
   }
   if (/保险金额/u.test(text)
     && /(?:按|按照)[^。；，,]{0,32}保险金额[^。；，,]{0,24}给付|保险金额[^。；，,]{0,8}[×xX*]\s*100\s*[％%]/u.test(text)
+    && !/现金价值|较高者|较高值|最大者|较大者|较大值|两者|三者|两项|三项|比较项|之和/u.test(text)
     && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
     return {
       value: 100,
@@ -2286,8 +2287,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .map((item) => trim(item))
     .filter(Boolean);
   const knowledgeIds = parseIdList(readArg('knowledge-ids', ''));
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = backfillKnowledgeResponsibilityIndicators({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     sampleLimit: Number(readArg('sample-limit', 20)) || 20,
     minKnowledgeId: Number(readArg('min-knowledge-id', 0)) || 0,

@@ -3,13 +3,13 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const runtimeDir = path.join(projectRoot, '.runtime');
 const DEFAULT_DB_PATHS = [
-  path.join(runtimeDir, 'policy-ocr.sqlite'),
-  path.join(runtimeDir, 'local', 'policy-ocr.sqlite'),
+  resolvePolicyOcrWriteDatabasePath({ projectRoot }),
 ];
 const crawlerPath = path.join(projectRoot, 'server', 'scrapling-policy-crawler.py');
 const scraplingPython = process.env.SCRAPLING_PYTHON_BIN || '/Users/wenshuping/Documents/Scrapling/.venv/bin/python';
@@ -70,7 +70,11 @@ async function backupSqlite(dbPath) {
 function dbPathsFromArgs() {
   const arg = trim(readArg('db-paths')) || trim(readArg('db-path'));
   if (!arg) return DEFAULT_DB_PATHS;
-  return arg.split(',').map((item) => path.resolve(item)).filter(Boolean);
+  return arg
+    .split(',')
+    .map((item) => trim(item))
+    .filter(Boolean)
+    .map((requestedPath) => resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath }));
 }
 
 function knowledgeText(payload = {}) {

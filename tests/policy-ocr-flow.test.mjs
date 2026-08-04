@@ -8115,6 +8115,367 @@ test('ready policy with empty responsibilities can be regenerated', async () => 
   }
 });
 
+test('explicit policy report regeneration recovers persisted generating state and refreshes official knowledge', async () => {
+  let crawlerCalls = 0;
+  let analyzerCalls = 0;
+  const persisted = [];
+  const persistedPolicies = [];
+  let app;
+  app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [
+        {
+          id: 4,
+          userId: null,
+          guestId: 'guest-force-refresh-report',
+          company: '测试人寿',
+          name: '测试养老年金保险',
+          amount: 100000,
+          ocrText: '测试人寿 测试养老年金保险',
+          responsibilities: [{ coverageType: '养老年金', payout: '旧给付规则' }],
+          coverageIndicators: [{
+            title: '养老年金',
+            formulaText: '基本保险金额×月领折算系数',
+            requiredInputs: ['monthlyConversionFactor'],
+          }],
+          report: '旧报告',
+          sources: [{ url: 'https://official.test/annuity.pdf' }],
+          reportStatus: 'generating',
+          reportError: '',
+          createdAt: '2026-08-03T00:00:00.000Z',
+          updatedAt: '2026-08-03T00:00:00.000Z',
+        },
+      ],
+      knowledgeRecords: [
+        {
+          id: 1,
+          company: '测试人寿',
+          productName: '测试养老年金保险',
+          title: '测试养老年金保险条款',
+          url: 'https://official.test/annuity.pdf',
+          pageText: '每月领取金额为基本保险金额×月领折算系数。',
+          official: true,
+          evidenceLevel: 'insurer_official',
+        },
+      ],
+      insuranceIndicatorRecords: [{
+        id: 'indicator-refresh-reference',
+        company: '测试人寿',
+        productName: '测试养老年金保险',
+        liability: '养老年金',
+        formulaText: '基本保险金额×月领折算系数',
+        requiredInputs: ['monthlyConversionFactor'],
+      }],
+      pendingScans: [],
+      sourceRecords: [],
+      nextId: 5,
+    },
+    crawlOfficialKnowledge: async ({ policy }) => {
+      crawlerCalls += 1;
+      assert.equal(policy.company, '测试人寿');
+      assert.equal(policy.name, '测试养老年金保险');
+      assert.equal(policy.boundSources[0].url, 'https://official.test/annuity.pdf');
+      return [{
+        company: policy.company,
+        productName: policy.name,
+        title: '测试养老年金保险条款',
+        url: 'https://official.test/annuity.pdf',
+        pageText: '每月领取金额为基本保险金额×月领折算系数。上述月领折算系数的数值为0.085。',
+        official: true,
+        evidenceLevel: 'insurer_official',
+      }];
+    },
+    persistResponsibilityLookupArtifacts: async (input) => {
+      persisted.push(input);
+      return { knowledgeRecordCount: input.knowledgeRecords?.length || 0 };
+    },
+    persistPolicyState: async ({ policy }) => {
+      persistedPolicies.push(structuredClone(policy));
+    },
+    analyzer: async ({ scan, preferLocalKnowledgeAnswer, maxAttempts }) => {
+      analyzerCalls += 1;
+      assert.equal(preferLocalKnowledgeAnswer, false);
+      assert.equal(maxAttempts, 1);
+      assert.equal(crawlerCalls, 1);
+      assert.match(app.locals.state.knowledgeRecords[0].pageText, /0\.085/u);
+      assert.deepEqual(scan.data.responsibilities, [{
+        coverageType: '养老年金',
+        scenario: '',
+        payout: '旧给付规则',
+        formulaText: '基本保险金额×月领折算系数',
+        basis: '',
+        requiredInputs: ['monthlyConversionFactor'],
+      }]);
+      return {
+        report: '已使用最新官方条款重新生成。',
+        coverageTable: [{
+          coverageType: '养老年金',
+          scenario: '按月领取',
+          payout: '基本保险金额 × 0.085',
+        }],
+        sources: [{ title: '测试养老年金保险条款', url: 'https://official.test/annuity.pdf', official: true }],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const retry = await jsonFetch(server.baseUrl, '/api/policies/4/report?guestId=guest-force-refresh-report', {
+      method: 'POST',
+      body: JSON.stringify({ forceFresh: true }),
+    });
+
+    assert.equal(retry.response.status, 202);
+    assert.equal(retry.payload.skipped, undefined);
+    assert.equal(retry.payload.refreshMode, 'official_fresh');
+    assert.equal(retry.payload.policy.reportStatus, 'generating');
+    assert.equal(retry.payload.policy.report, '旧报告');
+    assert.equal(retry.payload.policy.responsibilities[0].payout, '旧给付规则');
+    assert.equal(retry.payload.policy.sources[0].url, 'https://official.test/annuity.pdf');
+    await waitUntil(() => {
+      const policy = app.locals.state.policies.find((row) => Number(row.id) === 4);
+      assert.equal(crawlerCalls, 1);
+      assert.equal(analyzerCalls, 1);
+      assert.notEqual(policy.reportStatus, 'failed', policy.reportError);
+      assert.equal(policy.reportStatus, 'ready');
+      assert.equal(policy.report, '已使用最新官方条款重新生成。');
+      assert.match(app.locals.state.knowledgeRecords[0].pageText, /0\.085/u);
+      assert.equal(persisted.length, 1);
+      assert.equal(persistedPolicies[0].reportStatus, 'generating');
+      assert.equal(persistedPolicies[0].report, '旧报告');
+      assert.equal(persistedPolicies.at(-1).reportStatus, 'ready');
+      assert.equal(persistedPolicies.at(-1).report, '已使用最新官方条款重新生成。');
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('explicit policy refresh reuses the exact official PDF cache when catalog rediscovery is empty', async () => {
+  const sourceUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=853&versionNo=853-1&attachmentType=1';
+  let analyzerCalls = 0;
+  let crawlerCalls = 0;
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [{
+        id: 41,
+        userId: null,
+        guestId: 'guest-pingan-cached-refresh',
+        company: '中国平安',
+        name: '平安招财宝终身寿险（万能型）',
+        report: '原报告',
+        responsibilities: [{ coverageType: '身故保险金', payout: '原给付规则' }],
+        sources: [{ title: '平安招财宝终身寿险（万能型）产品条款', url: sourceUrl, official: true }],
+        reportStatus: 'ready',
+        reportError: '',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        updatedAt: '2026-08-03T00:00:00.000Z',
+      }],
+      knowledgeRecords: [{
+        id: 19958,
+        company: '中国平安',
+        productName: '平安招财宝终身寿险（万能型）',
+        title: '平安招财宝终身寿险（万能型）产品条款',
+        url: sourceUrl,
+        pageText: '1.3 保险责任 在本合同保险期间内，我们承担如下保险责任：身故保险金。',
+        sourceType: 'pdf',
+        materialType: 'terms',
+        official: true,
+        evidenceLevel: 'insurer_official',
+        officialDomain: 'life.pingan.com',
+        sourceDigest: 'sha256:cached-853-1',
+      }],
+      insuranceIndicatorRecords: [],
+      pendingScans: [],
+      sourceRecords: [],
+      nextId: 42,
+    },
+    crawlOfficialKnowledge: async () => {
+      crawlerCalls += 1;
+      return [];
+    },
+    analyzer: async () => {
+      analyzerCalls += 1;
+      return {
+        report: '已从保存的平安官方条款重新生成。',
+        coverageTable: [{ coverageType: '身故保险金', payout: '按条款约定给付' }],
+        sources: [{ title: '平安招财宝终身寿险（万能型）产品条款', url: sourceUrl, official: true }],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const retry = await jsonFetch(server.baseUrl, '/api/policies/41/report?guestId=guest-pingan-cached-refresh', {
+      method: 'POST',
+      body: JSON.stringify({ forceFresh: true }),
+    });
+    assert.equal(retry.response.status, 202);
+
+    await waitUntil(() => {
+      const policy = app.locals.state.policies.find((row) => Number(row.id) === 41);
+      assert.equal(analyzerCalls, 1);
+      assert.equal(crawlerCalls, 0);
+      assert.equal(policy.reportStatus, 'ready');
+      assert.equal(policy.report, '已从保存的平安官方条款重新生成。');
+      assert.equal(policy.sources[0].url, sourceUrl);
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy report regeneration fails instead of remaining generating after the overall timeout', async () => {
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [{
+        id: 5,
+        userId: null,
+        guestId: 'guest-report-timeout',
+        company: '测试人寿',
+        name: '测试年金保险',
+        reportStatus: 'failed',
+        reportError: '上一次失败',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        updatedAt: '2026-08-03T00:00:00.000Z',
+      }],
+      pendingScans: [],
+      sourceRecords: [],
+      nextId: 6,
+    },
+    policyReportGenerationTimeoutMs: 25,
+    analyzer: async () => new Promise(() => {}),
+  });
+  const server = await listen(app);
+
+  try {
+    const retry = await jsonFetch(server.baseUrl, '/api/policies/5/report?guestId=guest-report-timeout', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+
+    assert.equal(retry.response.status, 202);
+    await waitUntil(() => {
+      const policy = app.locals.state.policies.find((row) => Number(row.id) === 5);
+      assert.equal(policy.reportStatus, 'failed');
+      assert.match(policy.reportError, /生成超时/u);
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('failed refresh restores the previous report and responsibility data unchanged', async () => {
+  const persisted = [];
+  const originalUpdatedAt = '2026-08-03T00:00:00.000Z';
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [{
+        id: 7,
+        userId: null,
+        guestId: 'guest-refresh-rollback',
+        company: '测试人寿',
+        name: '测试终身寿险',
+        report: '原来的客户报告',
+        responsibilities: [{ coverageType: '身故保险金', payout: '原来的给付规则' }],
+        sources: [{ title: '原条款', url: 'https://official.test/original.pdf' }],
+        reportStatus: 'ready',
+        reportError: '',
+        createdAt: originalUpdatedAt,
+        updatedAt: originalUpdatedAt,
+      }],
+      pendingScans: [],
+      sourceRecords: [],
+      nextId: 8,
+    },
+    crawlOfficialKnowledge: async () => [{
+      company: '测试人寿',
+      productName: '测试终身寿险',
+      title: '测试终身寿险条款',
+      url: 'https://official.test/fresh.pdf',
+      pageText: '身故保险金按合同约定给付。',
+      official: true,
+    }],
+    persistPolicyState: async ({ policy }) => persisted.push(structuredClone(policy)),
+    analyzer: async () => {
+      throw new Error('模型临时不可用');
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const retry = await jsonFetch(server.baseUrl, '/api/policies/7/report?guestId=guest-refresh-rollback', {
+      method: 'POST',
+      body: JSON.stringify({ forceFresh: true }),
+    });
+    assert.equal(retry.response.status, 202);
+    assert.equal(retry.payload.policy.reportStatus, 'generating');
+
+    await waitUntil(() => {
+      const policy = app.locals.state.policies.find((row) => Number(row.id) === 7);
+      assert.equal(policy.reportStatus, 'ready');
+      assert.equal(policy.reportError, '');
+      assert.equal(policy.report, '原来的客户报告');
+      assert.deepEqual(policy.responsibilities, [{ coverageType: '身故保险金', payout: '原来的给付规则' }]);
+      assert.deepEqual(policy.sources, [{ title: '原条款', url: 'https://official.test/original.pdf' }]);
+      assert.equal(policy.updatedAt, originalUpdatedAt);
+      assert.equal(persisted.at(-1).reportStatus, 'ready');
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test('persisted generating policy without a live task is exposed as interrupted instead of polling forever', async () => {
+  const persisted = [];
+  const app = createPolicyOcrApp({
+    state: {
+      users: [],
+      sessions: [],
+      smsCodes: [],
+      policies: [{
+        id: 6,
+        userId: null,
+        guestId: 'guest-stale-generating',
+        company: '测试人寿',
+        name: '测试终身寿险',
+        reportStatus: 'generating',
+        reportError: '',
+        createdAt: '2026-08-03T00:00:00.000Z',
+        updatedAt: '2026-08-03T00:00:00.000Z',
+      }],
+      pendingScans: [],
+      sourceRecords: [],
+      nextId: 7,
+    },
+    persistPolicyState: async ({ policy }) => persisted.push(structuredClone(policy)),
+  });
+  const server = await listen(app);
+
+  try {
+    const fetched = await jsonFetch(server.baseUrl, '/api/policies/6?guestId=guest-stale-generating');
+
+    assert.equal(fetched.response.status, 200);
+    assert.equal(fetched.payload.policy.reportStatus, 'failed');
+    assert.match(fetched.payload.policy.reportError, /任务已中断/u);
+    assert.equal(persisted.at(-1).reportStatus, 'failed');
+  } finally {
+    await server.close();
+  }
+});
+
 test('policy update preserves responsibilities when insurer and product are unchanged', async () => {
   let analyzerCalls = 0;
   const state = {
@@ -17303,6 +17664,59 @@ test('manual policy entry saves without calling OCR when no image or OCR text is
     assert.equal(result.payload.policy.company, '新华保险');
     assert.equal(result.payload.policy.name, '手动录入测试保单');
     assert.equal(result.payload.policy.amount, 500000);
+    assert.equal(state.policies.length, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy save falls back to completed manual fields when uploaded image OCR is unavailable', async () => {
+  const state = createInitialState();
+  let scannerCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => {
+      scannerCalls += 1;
+      const error = new Error('POLICY_SCAN_FAILED');
+      error.code = 'POLICY_SCAN_FAILED';
+      throw error;
+    },
+    analyzer: async () => ({ report: '后台报告', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-manual-fallback',
+        uploadItem: {
+          name: 'policy.png',
+          type: 'image/png',
+          size: 12,
+          dataUrl: `data:image/png;base64,${Buffer.from('fake-image').toString('base64')}`,
+        },
+        manualData: {
+          company: '华贵人寿',
+          name: '华贵安心住2022定期寿险（互联网专属）',
+          applicant: '张三',
+          insured: '张三',
+          date: '2026-08-02',
+          paymentPeriod: '10年交',
+          coveragePeriod: '20年',
+          amount: '500000',
+          firstPremium: '1200',
+        },
+        analysis: { report: '已生成责任', coverageTable: [] },
+      }),
+    });
+
+    assert.equal(result.response.status, 201);
+    assert.equal(result.payload.ocrFallbackUsed, true);
+    assert.match(result.payload.ocrWarning, /已按你填写的保单信息保存/u);
+    assert.equal(scannerCalls, 1);
+    assert.equal(result.payload.policy.company, '华贵人寿');
+    assert.equal(result.payload.policy.name, '华贵安心住2022定期寿险（互联网专属）');
     assert.equal(state.policies.length, 1);
   } finally {
     await server.close();

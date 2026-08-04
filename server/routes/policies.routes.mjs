@@ -9,9 +9,20 @@ import {
   sanitizeCustomerPolicyPhotoKnowledgeText,
 } from '../customer-policy-photo-knowledge.service.mjs';
 import { parseCustomerUploadResponsibilityArtifact } from '../customer-upload-responsibility-pipeline.service.mjs';
-import { evidenceVerificationFields } from '../evidence-classification.service.mjs';
+import {
+  evidenceVerificationFields,
+  isFormalResponsibilityEvidence,
+} from '../evidence-classification.service.mjs';
 import { hydratePolicyCoverageIndicators } from '../policy-ocr.domain.mjs';
 import { isCurrentResponsibilityProjection } from '../policy-derived-results.service.mjs';
+import { mergeResponsibilityCardIndicators } from '../responsibility-card-standardizer.mjs';
+import {
+  productIdentityMatches,
+} from '../product-responsibility-identity.mjs';
+import {
+  derivedProjectionNeedsOfficialPayoutFactorRefresh,
+  loadProjectionKnowledgeRecordsForPolicy,
+} from '../policy-knowledge-projection.mjs';
 
 function recognizePendingScanKey({ user, guestId }) {
   const userId = String(user?.id || '').trim();
@@ -32,6 +43,7 @@ export function createPolicyRoutes(context) {
   const router = express.Router();
   const {
     state,
+    db,
     persist,
     persistPolicyScanSave,
     persistPendingScan,
@@ -57,6 +69,7 @@ export function createPolicyRoutes(context) {
     buildRecognizedPolicyAnalysisDraft,
     buildEffectiveOfficialDomainProfiles,
     buildKnowledgeSearchArtifacts,
+    crawlOfficialKnowledge,
     findKnowledgeProductCandidates,
     withPolicyProductMatchStatus,
     upsertKnowledgeRecords,
@@ -77,10 +90,12 @@ export function createPolicyRoutes(context) {
     recordPolicySourceRecords,
     clearGuestPendingScans,
     computeAndStoreCashflow,
+    computeCurrentPolicyCashflow,
     computePolicyResponsibilityCalculations,
     hydrateCashflowIndicatorsFromCurrentProductIndex,
     loadCurrentPolicyIndicators,
     startPolicyReportGeneration,
+    policyReportGenerationTimeoutMs,
     attachPolicyCoverageIndicators,
     buildPolicyDerivedResult,
     mergePolicyDerivedResult,
@@ -107,6 +122,75 @@ export function createPolicyRoutes(context) {
     nowIso,
   } = context;
   const familyPersistOptions = { refreshOptionalResponsibilityGovernance: false };
+  const activePolicyReportGenerationIds = new Set();
+
+  function startTrackedPolicyReportGeneration(input) {
+    const generationId = Number(input?.policy?.id || 0);
+    if (!generationId || input?.policy?.reportStatus === 'ready' || activePolicyReportGenerationIds.has(generationId)) {
+      return false;
+    }
+    activePolicyReportGenerationIds.add(generationId);
+    try {
+      const onSettled = input.onSettled;
+      startPolicyReportGeneration({
+        ...input,
+        generationTimeoutMs: policyReportGenerationTimeoutMs,
+        onSettled: (result) => {
+          activePolicyReportGenerationIds.delete(generationId);
+          if (typeof onSettled === 'function') onSettled(result);
+        },
+      });
+      return true;
+    } catch (error) {
+      activePolicyReportGenerationIds.delete(generationId);
+      throw error;
+    }
+  }
+
+  function recoverInterruptedPolicyGeneration(policy) {
+    const generationId = Number(policy?.id || 0);
+    if (policy?.reportStatus !== 'generating' || activePolicyReportGenerationIds.has(generationId)) return false;
+    policy.reportStatus = 'failed';
+    policy.reportError = '上一次保险责任生成任务已中断，请点击刷新重试';
+    policy.updatedAt = new Date().toISOString();
+    return true;
+  }
+
+  const refreshReportStateKeys = [
+    'report',
+    'responsibilities',
+    'responsibilityCards',
+    'coverageIndicators',
+    'optionalResponsibilities',
+    'sources',
+    'reportStatus',
+    'reportError',
+    'updatedAt',
+  ];
+
+  function captureRefreshReportState(policy) {
+    return refreshReportStateKeys.map((key) => ({
+      key,
+      exists: Object.prototype.hasOwnProperty.call(policy, key),
+      value: structuredClone(policy[key]),
+    }));
+  }
+
+  function restoreRefreshReportState(policy, snapshot) {
+    for (const item of snapshot) {
+      if (item.exists) policy[item.key] = structuredClone(item.value);
+      else delete policy[item.key];
+    }
+  }
+
+  function hasRefreshReportContent(policy) {
+    return Boolean(
+      routeText(policy?.report)
+      || (Array.isArray(policy?.responsibilities) && policy.responsibilities.length)
+      || (Array.isArray(policy?.responsibilityCards) && policy.responsibilityCards.length)
+      || (Array.isArray(policy?.coverageIndicators) && policy.coverageIndicators.length),
+    );
+  }
 
   function responsibilityReportFor({ current = '', rows = [], cards = [], optionalResponsibilities = [] } = {}) {
     const existing = String(current || '').trim();
@@ -165,13 +249,18 @@ export function createPolicyRoutes(context) {
 
   function buildDerivedResultForPolicy(policy) {
     if (typeof buildPolicyDerivedResult !== 'function') return null;
+    const projectionKnowledge = projectionKnowledgeRecordsForPolicy(policy);
+    const projectionCompany = routeText(projectionKnowledge[0]?.company) || routeText(policy?.company);
+    const projectionPolicy = projectionCompany === routeText(policy?.company)
+      ? policy
+      : { ...policy, company: projectionCompany };
     const currentIndicators = typeof loadCurrentPolicyIndicators === 'function'
-      ? loadCurrentPolicyIndicators(policy)
-      : [];
+      ? loadCurrentPolicyIndicators(projectionPolicy)
+      : null;
     return buildPolicyDerivedResult({
-      policy,
-      indicatorRecords: currentIndicators.length ? currentIndicators : state.insuranceIndicatorRecords,
-      knowledgeRecords: state.knowledgeRecords,
+      policy: projectionPolicy,
+      indicatorRecords: Array.isArray(currentIndicators) ? currentIndicators : state.insuranceIndicatorRecords,
+      knowledgeRecords: projectionKnowledge.length ? projectionKnowledge : state.knowledgeRecords,
       officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
       optionalResponsibilityRecords: state.optionalResponsibilityRecords,
       productIndicatorVersions: state.productIndicatorVersions,
@@ -179,19 +268,17 @@ export function createPolicyRoutes(context) {
     });
   }
 
-  function needsLiveCoverageProjection(derivedResult) {
+  function needsLiveCoverageProjection(derivedResult, policy = {}) {
     return Boolean(
       derivedResult
-      && !isCurrentResponsibilityProjection(derivedResult)
-      && !(Array.isArray(derivedResult.coverageIndicators) && derivedResult.coverageIndicators.length),
-    );
-  }
-
-  function policyHasGeneratedResponsibility(policy) {
-    return Boolean(
-      routeText(policy?.report) ||
-        (Array.isArray(policy?.responsibilities) && policy.responsibilities.length) ||
-        (Array.isArray(policy?.responsibilityCards) && policy.responsibilityCards.length)
+      && (
+        (!isCurrentResponsibilityProjection(derivedResult)
+          && !(Array.isArray(derivedResult.coverageIndicators) && derivedResult.coverageIndicators.length))
+        || derivedProjectionNeedsOfficialPayoutFactorRefresh({
+          derivedResult,
+          knowledgeRecords: projectionKnowledgeRecordsForPolicy(policy),
+        })
+      ),
     );
   }
 
@@ -216,6 +303,122 @@ export function createPolicyRoutes(context) {
       records: state.knowledgeRecords || [],
       officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
     }).records || [];
+  }
+
+  function projectionKnowledgeRecordsForPolicy(policyDraft) {
+    const stateRecords = db?.prepare ? [] : (state?.knowledgeRecords || []).filter((record) => (
+      productIdentityMatches(record, policyDraft)
+      && (routeText(record?.url) || routeText(record?.pageText) || routeText(record?.snippet))
+    ));
+    return loadProjectionKnowledgeRecordsForPolicy({
+      db,
+      policy: policyDraft,
+      filteredRecords: stateRecords,
+      stateRecords,
+    });
+  }
+
+  function policyNeedsOfficialFormulaDependencyRefresh(policyDraft) {
+    const derivedResult = findPolicyDerivedResult(policyDraft?.id);
+    const projectionText = JSON.stringify({
+      report: policyDraft?.report,
+      responsibilities: policyDraft?.responsibilities,
+      responsibilityCards: policyDraft?.responsibilityCards,
+      coverageIndicators: derivedResult?.coverageIndicators,
+    });
+    if (!/(?:monthly_conversion_factor|月领折算系数)/u.test(projectionText)) return false;
+    return !projectionKnowledgeRecordsForPolicy(policyDraft).some((record) => (
+      /月领折算系数(?:的数值)?为\s*(?:0(?:\.\d+)?|1(?:\.0+)?)/u.test(
+        routeText(record?.pageText || record?.originalPageText || record?.sourceExcerpt),
+      )
+    ));
+  }
+
+  function boundOfficialSourcesForPolicy(policyDraft = {}) {
+    const candidates = [
+      ...(Array.isArray(policyDraft?.sources) ? policyDraft.sources : []),
+      { url: policyDraft?.officialPdfUrl, title: policyDraft?.sourceTitle, official: true },
+      { url: policyDraft?.sourceUrl, title: policyDraft?.sourceTitle, official: policyDraft?.official },
+      { url: policyDraft?.clauseUrl, title: policyDraft?.sourceTitle, official: policyDraft?.official },
+    ];
+    const byUrl = new Map();
+    for (const source of candidates) {
+      const url = routeText(source?.url || source?.sourceUrl || source?.officialUrl);
+      if (!url || source?.official === false) continue;
+      if (!byUrl.has(url)) byUrl.set(url, { ...source, url });
+    }
+    return [...byUrl.values()];
+  }
+
+  async function refreshOfficialKnowledgeForPolicy(policyDraft, { includePlans = false, requireFresh = false } = {}) {
+    const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
+    const products = [{
+      company: routeText(policyDraft?.company),
+      name: routeText(policyDraft?.name || policyDraft?.productName),
+      boundSources: boundOfficialSourcesForPolicy(policyDraft),
+    }];
+    if (includePlans) {
+      for (const plan of Array.isArray(policyDraft?.plans) ? policyDraft.plans : []) {
+        products.push({
+          company: routeText(plan?.company || policyDraft?.company),
+          name: routeText(plan?.matchedProductName || plan?.productName || plan?.name),
+          boundSources: boundOfficialSourcesForPolicy(plan),
+        });
+      }
+    }
+    const productsByIdentity = new Map();
+    for (const product of products.filter((item) => item.company && item.name)) {
+      const key = `${compactPolicyText(product.company)}::${compactPolicyText(product.name)}`;
+      const existing = productsByIdentity.get(key);
+      if (!existing) {
+        productsByIdentity.set(key, product);
+        continue;
+      }
+      existing.boundSources = boundOfficialSourcesForPolicy({
+        sources: [...existing.boundSources, ...product.boundSources],
+      });
+    }
+    const uniqueProducts = [...productsByIdentity.values()];
+    const available = [];
+    const discovered = [];
+    for (const product of uniqueProducts) {
+      const boundUrls = new Set(product.boundSources.map((source) => routeText(source?.url)).filter(Boolean));
+      const cachedRecords = projectionKnowledgeRecordsForPolicy(product).filter((record) => (
+        isFormalResponsibilityEvidence(record)
+        && record?.official !== false
+        && routeText(record?.sourceType).toLowerCase() === 'pdf'
+        && routeText(record?.url)
+        && routeText(record?.sourceDigest || record?.source_digest || record?.pdfSha256)
+        && (!boundUrls.size || boundUrls.has(routeText(record?.url)))
+        && routeText(record?.pageText || record?.originalPageText)
+      ));
+      if (cachedRecords.length) {
+        available.push(...cachedRecords);
+        continue;
+      }
+      if (typeof crawlOfficialKnowledge !== 'function' || typeof upsertKnowledgeRecords !== 'function') {
+        if (!requireFresh) continue;
+        const error = new Error('当前无法重新获取官方资料，请稍后重试');
+        error.code = 'POLICY_OFFICIAL_KNOWLEDGE_REFRESH_UNAVAILABLE';
+        error.status = 503;
+        throw error;
+      }
+      const records = await crawlOfficialKnowledge({ policy: product, officialDomainProfiles });
+      if (requireFresh && !records.length) {
+        const error = new Error(`未找到${product.name}的最新官方资料，未生成新的保单详情`);
+        error.code = 'POLICY_OFFICIAL_KNOWLEDGE_REFRESH_EMPTY';
+        error.status = 404;
+        throw error;
+      }
+      discovered.push(...records);
+    }
+    const saved = discovered.length
+      ? upsertKnowledgeRecords(state, discovered, { allocateId, officialDomainProfiles })
+      : [];
+    if (saved.length && typeof persistResponsibilityLookupArtifacts === 'function') {
+      await persistResponsibilityLookupArtifacts({ knowledgeRecords: saved });
+    }
+    return [...available, ...saved];
   }
 
   function routeText(value) {
@@ -299,6 +502,23 @@ export function createPolicyRoutes(context) {
     };
   }
 
+  const manualSaveOcrFailureCodes = new Set([
+    'POLICY_OCR_FAILED',
+    'POLICY_SCAN_FAILED',
+    'POLICY_OCR_SERVICE_UNAVAILABLE',
+    'POLICY_OCR_UPSTREAM_TIMEOUT',
+  ]);
+
+  function canFallbackToManualPolicySave(body = {}, error = null) {
+    const manualData = body?.manualData && typeof body.manualData === 'object' ? body.manualData : {};
+    return Boolean(
+      body?.uploadItem
+      && routeText(manualData.company || body.company)
+      && routeText(manualData.name || body.name)
+      && manualSaveOcrFailureCodes.has(routeText(error?.code || error?.message)),
+    );
+  }
+
   function hydrateProvidedAnalysisFromCards(analysis, policyDraft) {
     if (!analysis || typeof analysis !== 'object') return null;
     const responsibilityCards = withFallbackCardSources(analysis.responsibilityCards, policyDraft);
@@ -332,7 +552,13 @@ export function createPolicyRoutes(context) {
 
   function attachStoredPolicyDerivedResult(policy, derivedResult = findPolicyDerivedResult(policy?.id)) {
     const displayed = attachPolicyFamilyDisplay(policy, state);
-    if (derivedResult && !needsLiveCoverageProjection(derivedResult)) {
+    const requiresLiveProjection = needsLiveCoverageProjection(derivedResult, displayed);
+    const missingCoverageIndicators = Boolean(
+      derivedResult
+      && !isCurrentResponsibilityProjection(derivedResult)
+      && !(Array.isArray(derivedResult.coverageIndicators) && derivedResult.coverageIndicators.length),
+    );
+    if (derivedResult && !requiresLiveProjection) {
       if (typeof mergePolicyDerivedResult === 'function') {
         return mergePolicyDerivedResult(displayed, derivedResult);
       }
@@ -342,21 +568,27 @@ export function createPolicyRoutes(context) {
         optionalResponsibilities: Array.isArray(derivedResult.optionalResponsibilities) ? derivedResult.optionalResponsibilities : [],
       };
     }
-    if (needsLiveCoverageProjection(derivedResult)) {
+    if (requiresLiveProjection) {
       const rebuilt = buildDerivedResultForPolicy(displayed);
       if (rebuilt && typeof mergePolicyDerivedResult === 'function') {
         return mergePolicyDerivedResult(displayed, {
           ...rebuilt,
           status: 'stale',
-          staleReason: 'missing_coverage_indicators',
+          staleReason: missingCoverageIndicators
+            ? 'missing_coverage_indicators'
+            : 'missing_official_payout_factor_evidence',
         });
       }
     }
     if (typeof attachPolicyCoverageIndicators === 'function') {
+      const currentIndicators = typeof loadCurrentPolicyIndicators === 'function'
+        ? loadCurrentPolicyIndicators(displayed)
+        : null;
+      const currentKnowledgeRecords = projectionKnowledgeRecordsForPolicy(displayed);
       const attached = attachPolicyCoverageIndicators(
         displayed,
-        state.insuranceIndicatorRecords,
-        state.knowledgeRecords,
+        Array.isArray(currentIndicators) ? currentIndicators : state.insuranceIndicatorRecords,
+        currentKnowledgeRecords.length ? currentKnowledgeRecords : (db?.prepare ? [] : state.knowledgeRecords),
         state.optionalResponsibilityRecords,
       );
       if (typeof mergePolicyDerivedResult === 'function') {
@@ -385,9 +617,13 @@ export function createPolicyRoutes(context) {
     const currentProductIndicators = typeof hydrateCashflowIndicatorsFromCurrentProductIndex === 'function'
       ? hydrateCashflowIndicatorsFromCurrentProductIndex(policy, policy.coverageIndicators)
       : policy.coverageIndicators;
+    const currentIndicatorRecords = typeof loadCurrentPolicyIndicators === 'function'
+      ? loadCurrentPolicyIndicators(policy)
+      : null;
     const coverageIndicators = hydratePolicyCoverageIndicators(
       currentProductIndicators,
-      state.insuranceIndicatorRecords,
+      Array.isArray(currentIndicatorRecords) ? currentIndicatorRecords : state.insuranceIndicatorRecords,
+      policy.responsibilities,
     );
     const policyWithCurrentIndicators = {
       ...policy,
@@ -401,22 +637,32 @@ export function createPolicyRoutes(context) {
         policy: policyWithCurrentIndicators,
         responsibilities: policy.responsibilities,
         coverageIndicators,
+        knowledgeRecords: projectionKnowledgeRecordsForPolicy(policyWithCurrentIndicators),
         optionalResponsibilityRecords: policy.optionalResponsibilities,
       })
       : [];
     const policyWithCurrentProjection = rebuiltResponsibilityCards.length
-      ? { ...policyWithCurrentIndicators, responsibilityCards: rebuiltResponsibilityCards }
+      ? {
+          ...policyWithCurrentIndicators,
+          coverageIndicators: mergeResponsibilityCardIndicators(coverageIndicators, rebuiltResponsibilityCards),
+          responsibilityCards: rebuiltResponsibilityCards,
+        }
       : policyWithCurrentIndicators;
     const responsibilityCalculations = typeof computePolicyResponsibilityCalculations === 'function'
-      ? computePolicyResponsibilityCalculations(policyWithCurrentProjection, coverageIndicators)
+      ? computePolicyResponsibilityCalculations(policyWithCurrentProjection, policyWithCurrentProjection.coverageIndicators)
       : [];
-    const entries = cashflowStore.getEntries(policy.id);
+    const entries = typeof computeCurrentPolicyCashflow === 'function'
+      ? computeCurrentPolicyCashflow(
+          policyWithCurrentProjection,
+          projectionKnowledgeRecordsForPolicy(policyWithCurrentProjection),
+        )
+      : cashflowStore.getEntries(policy.id);
     const cashValues = cashValueStore.getValues(policy.id);
     const totalCashflow = entries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0);
     let scenarioEntries = [];
     try {
-      const policyIndicators = coverageIndicators.length
-        ? coverageIndicators
+      const policyIndicators = policyWithCurrentProjection.coverageIndicators.length
+        ? policyWithCurrentProjection.coverageIndicators
         : findPolicyCoverageIndicators(policyWithCurrentProjection, state.insuranceIndicatorRecords);
       scenarioEntries = computeScenarioEntries(selectedCoverageIndicators(policyIndicators), policyWithCurrentProjection);
     } catch (_err) {
@@ -688,13 +934,18 @@ export function createPolicyRoutes(context) {
         ...policyDraft,
         optionalResponsibilities,
       };
-      const coverageIndicators = findPolicyCoverageIndicators(policyDraftWithOptionalResponsibilities, state.insuranceIndicatorRecords);
+      const projectionKnowledge = projectionKnowledgeRecordsForPolicy(policyDraftWithOptionalResponsibilities);
+      const projectionCompany = routeText(projectionKnowledge[0]?.company) || routeText(policyDraftWithOptionalResponsibilities.company);
+      const projectionPolicy = projectionCompany === routeText(policyDraftWithOptionalResponsibilities.company)
+        ? policyDraftWithOptionalResponsibilities
+        : { ...policyDraftWithOptionalResponsibilities, company: projectionCompany };
+      const coverageIndicators = findPolicyCoverageIndicators(projectionPolicy, state.insuranceIndicatorRecords);
       const rawResponsibilityCards = typeof buildResponsibilityCardsForPolicy === 'function'
         ? buildResponsibilityCardsForPolicy({
-            policy: policyDraftWithOptionalResponsibilities,
+            policy: projectionPolicy,
             responsibilities: analysis?.coverageTable,
             coverageIndicators,
-            knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraftWithOptionalResponsibilities),
+            knowledgeRecords: projectionKnowledge,
             optionalResponsibilityRecords: optionalResponsibilities,
           })
         : [];
@@ -760,7 +1011,23 @@ export function createPolicyRoutes(context) {
         assertUserCanSavePolicy(state, user, { now: typeof nowIso === 'function' ? nowIso() : undefined });
       }
       const scanStartedAt = nowMs();
-      const normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
+      let normalizedScan;
+      let ocrFallbackWarning = '';
+      try {
+        normalizedScan = await resolvePolicyScanInput({ scanner, body: req.body, state });
+      } catch (error) {
+        if (!canFallbackToManualPolicySave(req.body, error)) throw error;
+        ocrFallbackWarning = '图片识别服务暂不可用，已按你填写的保单信息保存；图片内容建议稍后重新识别核对。';
+        normalizedScan = {
+          ...buildManualScanFallback(req.body),
+          ocrWarnings: [ocrFallbackWarning],
+        };
+        console.warn('[policy-scan] OCR unavailable, saved verified manual input', {
+          code: error?.code || error?.message || 'POLICY_OCR_FAILED',
+          company: normalizedScan.data.company,
+          productName: normalizedScan.data.name,
+        });
+      }
       if (!req.body?.scan) {
         logPerformance(performanceLogger, 'policy.scan.ocr', {
           route: '/api/policies/scan',
@@ -846,7 +1113,7 @@ export function createPolicyRoutes(context) {
       await archiveGeneratedFamilyReportsForPolicy(policy);
 
       if (!providedAnalysisHasReportResult) {
-        startPolicyReportGeneration({
+        startTrackedPolicyReportGeneration({
           state,
           policy,
           scan: normalizedScan,
@@ -866,6 +1133,8 @@ export function createPolicyRoutes(context) {
       });
       res.status(201).json({
         ok: true,
+        ocrFallbackUsed: Boolean(ocrFallbackWarning),
+        ocrWarning: ocrFallbackWarning,
         policy: {
           ...attachStoredPolicyDerivedResult(policy, derivedResult),
           cashflowEntries,
@@ -891,6 +1160,12 @@ export function createPolicyRoutes(context) {
         return String(policy.guestId || '') === guestId && !policy.userId;
       })
       .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+    const interruptedPolicies = policies.filter(recoverInterruptedPolicyGeneration);
+    if (persistPolicyState && interruptedPolicies.length) {
+      await Promise.all(interruptedPolicies.map((policy) => persistPolicyState({ policy })));
+    } else if (interruptedPolicies.length) {
+      await persist(state);
+    }
     const policiesWithCashflow = policies
       .map((policy) => attachStoredPolicyDerivedResult(policy))
       .map((policy) => attachPolicyCashflowData(policy));
@@ -949,10 +1224,10 @@ export function createPolicyRoutes(context) {
       await archiveGeneratedFamilyReportsForPolicy(policy, { previousFamilyId });
 
       if (identityChanged) {
-        startPolicyReportGeneration({
+        startTrackedPolicyReportGeneration({
           state,
           policy,
-          scan: buildPolicyReportScan(policy),
+          scan: buildPolicyReportScan(attachStoredPolicyDerivedResult(policy)),
           analyzer,
           persist: () => (persistPolicyState ? persistPolicyState({ policy }) : persist(state)),
           afterApply: () => refreshDerivedArtifactsForPolicy(policy),
@@ -998,33 +1273,36 @@ export function createPolicyRoutes(context) {
         return res.status(result.status).json(result.payload);
       }
       const { policy } = result;
-      if (policy.reportStatus === 'ready' && policyHasGeneratedResponsibility(policy)) {
-        return res.json({
-          ok: true,
-          policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
-            attachPolicyFamilyDisplay(policy, state),
-            state.insuranceIndicatorRecords,
-            state.knowledgeRecords,
-            state.optionalResponsibilityRecords,
-          )),
-          skipped: true,
-        });
-      }
-      if (policy.reportStatus !== 'generating') {
+      const forceFresh = req.body?.forceFresh === true;
+      const refreshOfficialFormulaDependencies = !forceFresh && policyNeedsOfficialFormulaDependencyRefresh(policy);
+      const generationId = Number(policy.id);
+      if (!activePolicyReportGenerationIds.has(generationId)) {
+        const previousReportState = hasRefreshReportContent(policy)
+          ? captureRefreshReportState(policy)
+          : null;
         policy.reportStatus = 'generating';
         policy.reportError = '';
-        policy.responsibilities = [];
-        policy.report = '';
-        policy.sources = [];
         policy.updatedAt = new Date().toISOString();
         if (persistPolicyState) await persistPolicyState({ policy });
         else await persist(state);
-        startPolicyReportGeneration({
+        startTrackedPolicyReportGeneration({
           state,
           policy,
-          scan: buildPolicyReportScan(policy),
+          scan: buildPolicyReportScan(attachStoredPolicyDerivedResult(policy)),
           analyzer,
           persist: () => (persistPolicyState ? persistPolicyState({ policy }) : persist(state)),
+          beforeAnalyze: forceFresh || refreshOfficialFormulaDependencies
+            ? () => refreshOfficialKnowledgeForPolicy(policy, {
+                includePlans: forceFresh,
+                requireFresh: forceFresh,
+              })
+            : undefined,
+          analysisOptions: forceFresh
+            ? { preferLocalKnowledgeAnswer: false, maxAttempts: 1 }
+            : {},
+          onFailure: previousReportState
+            ? () => restoreRefreshReportState(policy, previousReportState)
+            : undefined,
           afterApply: () => refreshDerivedArtifactsForPolicy(policy),
           performanceLogger,
           requestMetrics: { inputOcrChars: String(policy.ocrText || '').length },
@@ -1032,12 +1310,8 @@ export function createPolicyRoutes(context) {
       }
       res.status(202).json({
         ok: true,
-        policy: attachPolicyCashflowData(attachPolicyCoverageIndicators(
-          attachPolicyFamilyDisplay(policy, state),
-          state.insuranceIndicatorRecords,
-          state.knowledgeRecords,
-          state.optionalResponsibilityRecords,
-        )),
+        ...(forceFresh ? { refreshMode: 'official_fresh' } : {}),
+        policy: attachPolicyCashflowData(attachStoredPolicyDerivedResult(policy)),
       });
     } catch (error) {
       sendError(res, error);
@@ -1057,6 +1331,10 @@ export function createPolicyRoutes(context) {
       return String(row.guestId || '') === guestId && !row.userId;
     });
     if (!policy) return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
+    if (recoverInterruptedPolicyGeneration(policy)) {
+      if (persistPolicyState) await persistPolicyState({ policy });
+      else await persist(state);
+    }
     res.json({ ok: true, policy: attachPolicyCashflowData(attachStoredPolicyDerivedResult(policy)) });
   });
 

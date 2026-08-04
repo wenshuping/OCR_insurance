@@ -4,6 +4,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
+import { evaluateResponsibilityStrictAlignment } from './responsibility-strict-alignment.mjs';
+
 const DEFAULT_DB = '/Users/wenshuping/OCR_insurance_ssd/.runtime/local/policy-ocr.sqlite';
 
 function text(value) {
@@ -179,15 +181,16 @@ function classify(product) {
   const duplicateTitles = titles.length - new Set(titles.filter(Boolean)).size;
   const cardEvidenceMissing = product.cards.filter((row) => !evidence(row.payload)).length;
   const indicatorEvidenceMissing = product.indicators.filter((row) => !evidence(row.payload)).length;
-  const strict = product.cards.length > 0
-    && product.indicators.length > 0
-    && emptyNestedIds === 0
-    && duplicateNestedIds === 0
-    && missingNestedIds === 0
-    && unreferencedIndicatorIds === 0
-    && duplicateTitles === 0
-    && cardEvidenceMissing === 0
-    && indicatorEvidenceMissing === 0;
+  const [rawProduct = ''] = [...product.rawProducts];
+  const [company = '', productName = ''] = rawProduct.split('\u001f');
+  const strictAlignment = evaluateResponsibilityStrictAlignment({
+    artifacts: product.artifacts.map((item) => item.artifact),
+    cards: product.cards,
+    indicators: product.indicators,
+    company,
+    productName,
+  });
+  const strict = strictAlignment.strictAligned;
   const artifactResponsibilities = product.artifacts.flatMap((item) => rows(
     item.artifact.responsibilities || item.artifact.acceptedResponsibilities,
   ));
@@ -206,7 +209,15 @@ function classify(product) {
       || text(indicator.branchSemanticContract)
     ))
   ));
-  const sourceConflict = product.sourceDigests.size > 1 || product.artifactSourceDigests.size > 1;
+  const allSourceDigests = new Set([
+    ...product.sourceDigests,
+    ...product.artifactSourceDigests,
+  ]);
+  const allSourceUrls = new Set([
+    ...product.sourceUrls,
+    ...product.artifactSourceUrls,
+  ]);
+  const sourceConflict = allSourceDigests.size > 1;
   const hasCardsAndIndicators = product.cards.length > 0 && product.indicators.length > 0;
   let category = 'other_blocked';
   if (!hasCardsAndIndicators) category = 'other_blocked';
@@ -221,10 +232,16 @@ function classify(product) {
     rawProducts: [...product.rawProducts].sort(),
     sourceDigests: [...product.sourceDigests].sort(),
     sourceUrls: [...product.sourceUrls].sort(),
+    artifactSourceDigests: [...product.artifactSourceDigests].sort(),
+    artifactSourceUrls: [...product.artifactSourceUrls].sort(),
+    allSourceDigests: [...allSourceDigests].sort(),
+    allSourceUrls: [...allSourceUrls].sort(),
     cards: product.cards.length,
     indicators: product.indicators.length,
     hasCardsAndIndicators,
     strict,
+    strictAlignment,
+    reasonCodes: strictAlignment.reasonCodes,
     category: strict ? 'strict_aligned' : category,
     evidence: {
       nestedIndicatorIds: nestedIds.length,

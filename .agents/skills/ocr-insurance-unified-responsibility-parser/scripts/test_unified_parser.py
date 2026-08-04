@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import copy
 import json
 import tempfile
 import unittest
@@ -57,6 +58,29 @@ class UnifiedParserFixtureTest(unittest.TestCase):
                 json.dumps([fixture], ensure_ascii=False), encoding="utf-8"
             )
             with self.assertRaises(VALIDATOR.ValidationError):
+                VALIDATOR.validate_fixtures(fixture_dir)
+
+    def test_combined_death_disability_trigger_cannot_become_a_second_responsibility(self) -> None:
+        fixtures = VALIDATOR.load_fixtures(SKILL_DIR / "fixtures")
+        fixture = next(
+            row
+            for row in fixtures
+            if row.get("fixtureId") == "combined-death-disability-cause-branches"
+        )
+        alias = copy.deepcopy(fixture["inventory"][0])
+        alias["responsibilityId"] = "disease-total-disability-alias"
+        alias["officialTitle"] = "疾病全残"
+        alias["evidencePacket"]["packetId"] = "p:combined-death-disability:alias"
+        fixture["inventory"].append(alias)
+        with tempfile.TemporaryDirectory() as directory:
+            fixture_dir = Path(directory)
+            (fixture_dir / "invalid.json").write_text(
+                json.dumps(fixtures, ensure_ascii=False), encoding="utf-8"
+            )
+            with self.assertRaisesRegex(
+                VALIDATOR.ValidationError,
+                "cause branch duplicated as responsibility",
+            ):
                 VALIDATOR.validate_fixtures(fixture_dir)
 
 

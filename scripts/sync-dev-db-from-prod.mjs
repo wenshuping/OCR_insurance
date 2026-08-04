@@ -2,13 +2,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const defaultProdDbPath = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
-const defaultDevDbPath = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 const prodDbPath = path.resolve(process.env.POLICY_OCR_PROD_DB_PATH || defaultProdDbPath);
-const devDbPath = path.resolve(process.env.POLICY_OCR_DEV_DB_PATH || defaultDevDbPath);
+const devDbPath = resolvePolicyOcrWriteDatabasePath({
+  projectRoot,
+  profile: 'dev',
+  requestedPath: process.env.POLICY_OCR_DEV_DB_PATH || '',
+});
 
 function sqlString(value) {
   return `'${String(value).replace(/'/g, "''")}'`;

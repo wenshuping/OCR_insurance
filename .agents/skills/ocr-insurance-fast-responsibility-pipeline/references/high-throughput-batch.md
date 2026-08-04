@@ -167,7 +167,7 @@ replaceable provider:
 
 ```bash
 python3 "$RUNNER" \
-  --db-path="$REPO/.runtime/local/policy-ocr.sqlite" \
+  --db-path="$POLICY_OCR_APP_DB_PATH" \
   --env-file="$REPO/.env.local" \
   --manifest="$MANIFEST" \
   --output-dir="$OUTPUT_DIR" \

@@ -16,6 +16,43 @@ test('quantified calculation signals include formula inputs even when a final am
   assert.equal(hasQuantifiedCalculationSignal('被保险人发生意外伤害'), false);
 });
 
+test('imported basic_sum_insured indicators use the policy basic amount', () => {
+  const indicator = {
+    coverageType: '意外保障',
+    liability: '身故保险金',
+    triggerCondition: '被保险人在保险责任有效期内身故',
+    basis: '按本合同载明的该被保险人对应的基本保险金额给付身故保险金，同时对该被保险人的保险责任终止。',
+    formulaText: '基本保险金额由投保时约定，并在保险单中载明。',
+    normalizedFormula: 'basic_sum_insured',
+    unit: '公式',
+    calculationKey: 'direct_value',
+    calculationEligible: false,
+  };
+
+  const result = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 10000 });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 10000);
+  assert.match(result.calculationText, /10,000/u);
+});
+
+test('policy-parameter payout branches select an official payment-period ratio', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '关爱金',
+    formulaText: '关爱金 = 首次交纳保险费的金额 × 关爱金给付比例',
+    normalizedFormula: 'benefit_amount = first_premium * payout_ratio',
+    branchSemanticContract: 'official-policy-parameter-branches',
+    branches: [
+      { condition: '保险单载明的交费方式为一次交清', normalizedFormula: 'benefit_amount = first_premium * 0.2' },
+      { condition: '保险单载明的交费期间为3年', normalizedFormula: 'benefit_amount = first_premium * 0.6' },
+      { condition: '保险单载明的交费期间为5年', normalizedFormula: 'benefit_amount = first_premium * 1' },
+    ],
+  }, { firstPremium: 10000, paymentPeriod: '3年交' });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 6000);
+});
+
 test('normalizeIndicatorCalculation classifies first basic responsibility premium separately from total paid premium', () => {
   const indicator = {
     coverageType: '现金流',
@@ -58,6 +95,177 @@ test('normalizeIndicatorCalculation treats paid premium as cumulative paid premi
   assert.equal(result.amount, 120000);
   assert.equal(result.meta.basisKey, 'total_paid_premium');
   assert.equal(result.meta.calculationKey, 'total_paid_premium');
+});
+
+test('monthly premium frequency expands cumulative premium periods without changing annual premium formulas', () => {
+  const monthly = resolveIndicatorAmountFromCalculation({
+    coverageType: '现金流',
+    liability: '满期保险金',
+    basis: '已交保险费',
+    formulaText: '满期保险金 = 已交保险费',
+  }, { firstPremium: 1000, paymentYears: 10, paymentFrequency: 'monthly' });
+  assert.equal(monthly.amount, 120000);
+
+  const annual = resolveIndicatorAmountFromCalculation({
+    coverageType: '现金流',
+    liability: '满期保险金',
+    basis: '已交保险费',
+    formulaText: '满期保险金 = 已交保险费',
+  }, { firstPremium: 1000, paymentYears: 10, paymentFrequency: 'annual' });
+  assert.equal(annual.amount, 10000);
+});
+
+test('policy-anniversary basic responsibility amount is not reduced to the initial basic amount', () => {
+  const indicator = {
+    coverageType: '现金流',
+    liability: '生存保险金',
+    value: 9,
+    unit: '%',
+    basis: '基本责任保险金额',
+    formulaText: '生存保险金 = 基本责任保险金额 × 9%',
+    sourceExcerpt: '被保险人生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+  };
+
+  const meta = normalizeIndicatorCalculation(indicator);
+  assert.equal(meta.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(meta.calculationKey, 'schedule_or_policy_table');
+  assert.equal(meta.calculationEligible, false);
+  assert.match(meta.calculationReason, /分红型还需计入当年已分配的增额红利/u);
+  assert.deepEqual(requiredCalculationInputsForMeta(meta), ['policyScheduleTable', 'policyYearOrAge']);
+
+  const result = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 88998 });
+  assert.equal(result.resolved, false);
+  assert.equal(result.amount, 0);
+});
+
+test('scheduled cashflow branches are not treated as claim-event branches', () => {
+  const meta = normalizeIndicatorCalculation({
+    liability: '生存保险金',
+    formulaText: '生存保险金 = 该保单生效对应日基本责任保险金额 × 9%',
+    sourceExcerpt: '被保险人生存，本公司按该保单生效对应日基本责任的保险金额的9%给付生存保险金。',
+    branches: [{
+      branchId: 'before_age_60',
+      formulaText: '该保单生效对应日基本责任保险金额 × 9%',
+    }],
+  });
+
+  assert.equal(meta.basisKey, 'policy_anniversary_basic_amount');
+  assert.equal(meta.calculationKey, 'schedule_or_policy_table');
+  assert.equal(meta.calculationEligible, false);
+});
+
+test('payout-frequency branches substitute the basic amount without inventing a monthly factor', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    coverageType: '现金流',
+    liability: '养老年金',
+    formulaText: '养老年金：按年领取，每年领取金额为基本保险金额；按月领取，每月领取金额为基本保险金额 × 月领折算系数。',
+    basis: '基本保险金额',
+    normalizedFormula: 'benefit_amount = basic_insured_amount',
+    branches: [
+      {
+        branchId: 'annual',
+        condition: '按年领取',
+        formulaText: '每年领取金额 = 基本保险金额',
+        normalizedFormula: 'benefit_amount = basic_insured_amount',
+      },
+      {
+        branchId: 'monthly',
+        condition: '按月领取',
+        formulaText: '每月领取金额 = 基本保险金额 × 月领折算系数',
+        normalizedFormula: 'benefit_amount = basic_insured_amount * monthly_conversion_factor',
+      },
+    ],
+    branchSemanticContract: 'official-payout-frequency-branches',
+  }, { baseAmount: 98878 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.partial, true);
+  assert.equal(result.hasBranchScenarios, true);
+  assert.match(result.calculationText, /按年领取.*98,878/u);
+  assert.match(result.calculationText, /按月领取.*每月领取金额/u);
+  assert.match(result.calculationText, /月领折算系数（待补充）/u);
+  assert.doesNotMatch(result.calculationText, /benefit amount/iu);
+});
+
+test('payout-frequency branches use an explicitly evidenced monthly conversion factor', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    coverageType: '现金流',
+    liability: '养老年金',
+    formulaText: '养老年金：按年领取，每年领取金额为基本保险金额；按月领取，每月领取金额为基本保险金额 × 0.085。',
+    normalizedFormula: 'benefit_amount = basic_insured_amount',
+    branches: [
+      { condition: '按年领取', normalizedFormula: 'benefit_amount = basic_insured_amount' },
+      { condition: '按月领取', normalizedFormula: 'benefit_amount = basic_insured_amount * 0.085' },
+    ],
+    branchSemanticContract: 'official-payout-frequency-branches',
+  }, { baseAmount: 98878 });
+
+  assert.equal(result.isMinimumEstimate, true);
+  assert.equal(result.amount, 8404.63);
+  assert.match(result.calculationText, /按月领取.*8,404\.63/u);
+  assert.match(result.calculationText, /最低可确认金额 8,404\.63元/u);
+  assert.match(result.calculationText, /98,878.*0\.085/u);
+  assert.doesNotMatch(result.calculationText, /= 8,404\.63元 = 8,404\.63元/u);
+});
+
+test('selected benefit frequency resolves only the requested payout branch', () => {
+  const indicator = {
+    coverageType: '现金流',
+    liability: '养老年金',
+    normalizedFormula: 'benefit_amount = basic_insured_amount',
+    branches: [
+      { condition: '按年领取', normalizedFormula: 'benefit_amount = basic_insured_amount' },
+      { condition: '按月领取', normalizedFormula: 'benefit_amount = basic_insured_amount * 0.085' },
+    ],
+    branchSemanticContract: 'official-payout-frequency-branches',
+  };
+
+  const monthly = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 98878, benefitFrequency: 'monthly' });
+  assert.equal(monthly.resolved, true);
+  assert.equal(monthly.amount, 8404.63);
+  assert.match(monthly.calculationText, /按月领取/u);
+
+  const annual = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 98878, benefitFrequency: 'annual' });
+  assert.equal(annual.resolved, true);
+  assert.equal(annual.amount, 98878);
+  assert.match(annual.calculationText, /按年领取/u);
+});
+
+test('payout-frequency summary prose preserves its official annual and monthly calculation branches', () => {
+  const indicator = {
+    liability: '养老年金',
+    formulaText: '养老年金：按年领取，每年领取金额为基本保险金额；按月领取，每月领取金额为基本保险金额 × 月领折算系数。上述月领折算系数的数值为0.085。',
+    basis: '养老年金：按年领取，每年领取金额为基本保险金额；按月领取，每月领取金额为基本保险金额 × 月领折算系数。上述月领折算系数的数值为0.085。',
+    calculationEligible: false,
+  };
+
+  const minimum = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 89998 });
+  assert.equal(minimum.resolved, false);
+  assert.equal(minimum.isMinimumEstimate, true);
+  assert.equal(minimum.amount, 7649.83);
+  assert.match(minimum.calculationText, /按年领取.*89,998/u);
+  assert.match(minimum.calculationText, /按月领取.*7,649\.83/u);
+
+  const annual = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 89998, benefitFrequency: 'annual' });
+  assert.equal(annual.resolved, true);
+  assert.equal(annual.amount, 89998);
+
+  const monthly = resolveIndicatorAmountFromCalculation(indicator, { baseAmount: 89998, benefitFrequency: 'monthly' });
+  assert.equal(monthly.resolved, true);
+  assert.equal(monthly.amount, 7649.83);
+});
+
+test('premium-waiver conditions remain rule parameters instead of claim-event calculations', () => {
+  const meta = normalizeIndicatorCalculation({
+    coverageType: '豁免',
+    liability: '投保人意外伤害身故或意外伤害身体全残豁免保险费',
+    formulaText: '豁免保险费 = 事故日起基本责任后续应交保险费',
+    sourceExcerpt: '投保人因意外伤害身故或身体全残，可免交事故日起基本责任的续期保险费。',
+  });
+
+  assert.equal(meta.basisKey, 'rule_parameter');
+  assert.equal(meta.calculationKey, 'not_calculable');
+  assert.equal(meta.calculationEligible, false);
 });
 
 test('model semantic decision can select a calculation basis while code performs the arithmetic', () => {
@@ -285,6 +493,61 @@ test('keeps the known lower bound for an unresolved normalized formula', () => {
   assert.match(result.calculationText, /最低可确认金额 99,888元/u);
 });
 
+test('evaluates effective insured amount when the official dividend operand is supplied', () => {
+  const formulaVariables = formulaVariablesFromIndicators([{
+    normalizedFormula: 'effective_insured_amount = basic_insured_amount + accumulated_dividend_insured_amount',
+  }]);
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    normalizedFormula: 'pension_amount = effective_insured_amount * 1.0',
+    formulaText: '按该保单生效对应日有效保险金额给付养老金',
+  }, {
+    baseAmount: 200000,
+    accumulatedDividendInsuredAmount: 18000,
+    formulaVariables,
+  });
+
+  assert.equal(result.resolved, true);
+  assert.equal(result.amount, 218000);
+  assert.match(result.calculationText, /200,000 \+ 18,000/u);
+});
+
+test('projects a plain effective insured amount clause as a one-times operand', () => {
+  const pending = resolveIndicatorAmountFromCalculation({
+    liability: '养老年金',
+    formulaText: '按该保单生效对应日有效保险金额给付养老年金',
+  }, { baseAmount: 200000 });
+  assert.equal(pending.resolved, false);
+  assert.equal(pending.isMinimumEstimate, true);
+  assert.equal(pending.minimumAmount, 200000);
+
+  const resolved = resolveIndicatorAmountFromCalculation({
+    liability: '养老年金',
+    formulaText: '按该保单生效对应日有效保险金额给付养老年金',
+  }, { effectiveInsuranceAmount: 218000 });
+  assert.equal(resolved.resolved, true);
+  assert.equal(resolved.amount, 218000);
+});
+
+test('keeps effective insured amount pending instead of displaying a false zero when its operand is absent', () => {
+  const result = resolveIndicatorAmountFromCalculation({
+    liability: '养老金',
+    formulaText: '有效保险金额 × 100%给付养老金',
+    value: 100,
+    unit: '%',
+    basisDefinition: {
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+  }, { baseAmount: 200000 });
+
+  assert.equal(result.resolved, false);
+  assert.equal(result.amount, 0);
+  assert.equal(result.minimumAmount, 200000);
+  assert.equal(result.isMinimumEstimate, true);
+  assert.match(result.calculationText, /最低可确认金额 200,000元/u);
+  assert.doesNotMatch(result.calculationText, /已按本保单计算：?¥?0/u);
+});
+
 test('does not treat effective insured amount as the policy basic amount', () => {
   const meta = normalizeIndicatorCalculation({
     liability: '婚嫁金',
@@ -361,7 +624,7 @@ test('repairs a leaked adjacent liability formula from the official clause befor
 
   assert.equal(maturity.isMinimumEstimate, true);
   assert.equal(maturity.minimumAmount, 200000);
-  assert.match(maturity.calculationText, /满期生存保险金 = 200,000 \+ 累计红利保险金额（待补充）/u);
+  assert.match(maturity.calculationText, /满期生存保险金 = \(200,000 \+ 累计红利保险金额（待补充）\)/u);
   assert.equal(death.resolved, false);
   assert.equal(death.partial, true);
   assert.equal(death.isMinimumEstimate, undefined);

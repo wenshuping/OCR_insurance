@@ -531,7 +531,7 @@ export function AdminApp() {
   async function retryAdminPolicyReport(policy: Policy) {
     if (!adminToken || retryingPolicyId) return;
     setRetryingPolicyId(policy.id);
-    setMessage('正在重新生成保险责任报告');
+    setMessage('正在重新读取官方条款，并结合本地责任库生成保险责任报告');
     try {
       const payload = await regeneratePolicyReport({ token: adminToken, id: policy.id });
       setSelectedPolicy(payload.policy);
@@ -542,7 +542,7 @@ export function AdminApp() {
           policies: current.policies.map((row) => (Number(row.id) === Number(payload.policy.id) ? payload.policy : row)),
         };
       });
-      setMessage(payload.skipped ? '保险责任报告已存在' : '已开始重新生成报告');
+      setMessage(payload.skipped ? '保险责任报告已存在' : '已开始结合官方条款和本地责任库重新生成报告');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '重新生成报告失败');
     } finally {

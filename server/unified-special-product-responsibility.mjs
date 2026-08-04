@@ -87,7 +87,7 @@ function collectDigests(value, result = []) {
   }
   if (!value || typeof value !== 'object') return result;
   for (const [key, nested] of Object.entries(value)) {
-    if ((key === 'sourceDigest' || key === 'source_digest' || key === 'responsibilitySourceDigest') && text(nested)) {
+    if ((key === 'sourceDigest' || key === 'source_digest' || key === 'responsibilitySourceDigest' || key === 'pdfSha256') && text(nested)) {
       result.push(text(nested));
     }
     collectDigests(nested, result);
@@ -137,7 +137,52 @@ function normalizedEntry(entry, kind) {
     digests: unique([...collectDigests(entry), ...collectDigests(payload)].map(digestKey)),
     texts: collectTextValues(payload),
     approved: text(payload.audit?.status || payload.approvalStatus || payload.status || entry?.status).toLowerCase() === 'approved',
+    official: payload.official !== false && entry?.official !== false,
+    sourceType: text(payload.sourceType || payload.source_type || entry?.sourceType || entry?.source_type).toLowerCase(),
+    sourceUrl: text(payload.sourceUrl || payload.source_url || payload.url || entry?.sourceUrl || entry?.source_url || entry?.url),
+    evidenceLevel: text(payload.evidenceLevel || payload.evidence_level || entry?.evidenceLevel || entry?.evidence_level),
+    sourceAcquisition: plainObject(payload.sourceAcquisition || entry?.sourceAcquisition),
   };
+}
+
+function canonicalSourceUrl(value, { omitAttachmentType = false } = {}) {
+  try {
+    const url = new URL(text(value));
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    if (omitAttachmentType) url.searchParams.delete('attachmentType');
+    const sortedParams = [...url.searchParams.entries()]
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) => (
+        leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue)
+      ));
+    url.search = new URLSearchParams(sortedParams).toString();
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+function officialMaterialFamilyKey(entry) {
+  const digest = entry.digests[0] || '';
+  const fallback = digest ? `digest:${digest}` : '';
+  try {
+    const url = new URL(entry.sourceUrl);
+    const planCode = text(url.searchParams.get('planCode'));
+    const versionNo = text(url.searchParams.get('versionNo'));
+    const attachmentType = text(url.searchParams.get('attachmentType'));
+    if (!planCode || !versionNo || !attachmentType) return fallback;
+    return `official-material-set:${canonicalSourceUrl(entry.sourceUrl, { omitAttachmentType: true })}`;
+  } catch {
+    return fallback;
+  }
+}
+
+function officialMaterialPriority(entry) {
+  try {
+    return text(new URL(entry.sourceUrl).searchParams.get('attachmentType')) === '1' ? 1 : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function matchesScope(entry, { company, productName, productKey }) {
@@ -166,8 +211,10 @@ function substantiveTextItems(entries) {
 }
 
 function sentenceFor(textValue, pattern, { preferPattern = null } = {}) {
-  const content = text(textValue).replace(/\s+/gu, ' ');
-  const sentences = content.split(/(?<=[。；;.!！？])/u).map((item) => item.trim()).filter(Boolean);
+  const sentences = text(textValue)
+    .split(/\r?\n|[。；;！？!?]+|(?<!\d)\.(?!\d)/u)
+    .map((item) => item.replace(/[\t\f\v ]+/gu, ' ').trim())
+    .filter(Boolean);
   const matches = sentences.filter((sentence) => pattern.test(sentence) && !NAVIGATION_RE.test(sentence));
   const preferredMatches = preferPattern
     ? matches.filter((sentence) => preferPattern.test(sentence))
@@ -199,9 +246,10 @@ function rateFromExcerpt(excerpt, pattern = null) {
 function clausesFromOfficialText(items, pattern) {
   const clauses = [];
   for (const item of items) {
-    const sentences = text(item.text).replace(/\s+/gu, ' ').split(/(?<=[。；;.!！？])/u);
+    const sentences = text(item.text).split(/\r?\n|[。；;！？!?]+|(?<!\d)\.(?!\d)/u);
     for (const sentence of sentences) {
-      if (pattern.test(sentence) && !NAVIGATION_RE.test(sentence)) clauses.push(sentence.trim());
+      const normalized = sentence.replace(/[\t\f\v ]+/gu, ' ').trim();
+      if (pattern.test(normalized) && !NAVIGATION_RE.test(normalized)) clauses.push(normalized);
     }
   }
   return unique(clauses);
@@ -239,7 +287,7 @@ function universalFields(items) {
   add('additionalPremiumInitialCharge', '追加初始费用', /追加[^。；;，,]{0,80}?(?:初始费用|费用|手续费|\d+(?:\.\d+)?\s*%)|(?:初始费用|费用|手续费)[^。；;，,]{0,80}?追加/u, { numeric: true, ratePattern: /追加[^%]{0,80}?(\d+(?:\.\d+)?\s*%)/u });
   add('managementAndRiskFees', '管理费/风险费', /(?:保单管理费|账户管理费|管理费|风险保险费|风险费|投资管理费)/u, { combine: true });
   add('withdrawalAndSurrenderCharges', '部分领取/退保手续费', /(?:部分领取|部分提取|退保).*?(?:手续费|费用|费率|比例)|(?:手续费|费用|费率|比例).*?(?:部分领取|部分提取|退保)/u);
-  add('withdrawalEligibilityAndLimits', '领取/退保条件与限额', /(?:部分领取|部分提取|退保).*?(?:条件|资格|最低|限额|余额|次数|频率|保单年度)|(?:条件|资格|最低|限额|余额|次数|频率|保单年度).*?(?:部分领取|部分提取|退保)/u);
+  add('withdrawalEligibilityAndLimits', '领取/退保条件与限额', /(?:部分领取|部分提取|退保).*?(?:条件|资格|最低|限额|余额|次数|频率|保单年度|犹豫期|申请|效力终止|有效身份证件)|(?:条件|资格|最低|限额|余额|次数|频率|保单年度|犹豫期|申请|效力终止|有效身份证件).*?(?:部分领取|部分提取|退保)/u);
   add('accountValueRule', '账户价值规则', /账户价值.*?(?:等于|计算|扣除|加上|余额|积累|增长)|(?:等于|计算|扣除|加上|余额|积累|增长).*?账户价值/u);
   const partialWithdrawalRates = clausesFromOfficialText(items, /部分领取手续费率|部分领取.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
   const surrenderRates = clausesFromOfficialText(items, /退保手续费率|退保.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
@@ -258,13 +306,13 @@ function universalFields(items) {
       sourceDigest: withdrawalRates.length ? fieldEvidence(items, /部分领取手续费/u)?.sourceDigest || '' : '',
     };
   }
-  const withdrawalLimits = clausesFromOfficialText(items, /(?:部分领取|个人账户价值).*(?:低于|不得超过|不超过)/u);
+  const withdrawalLimits = clausesFromOfficialText(items, /(?:部分领取|个人账户价值).*(?:低于|不得超过|不超过|犹豫期|申请|效力终止|有效身份证件)/u);
   if (withdrawalLimits.length) {
     fields.withdrawalEligibilityAndLimits = {
       label: '领取/退保条件与限额',
       value: withdrawalLimits.join(' '),
       sourceExcerpt: withdrawalLimits.join(' '),
-      sourceDigest: fieldEvidence(items, /(?:部分领取|个人账户价值).*(?:低于|不得超过|不超过)/u)?.sourceDigest || '',
+      sourceDigest: fieldEvidence(items, /(?:部分领取|个人账户价值).*(?:低于|不得超过|不超过|犹豫期|申请|效力终止|有效身份证件)/u)?.sourceDigest || '',
     };
   }
   return fields;
@@ -286,6 +334,105 @@ function accountContent(fields) {
     plainText: field.value,
     sourceRefs: field.sourceDigest ? [field.sourceDigest] : [],
   }));
+}
+
+function crossInsuranceFields(items) {
+  const fields = {};
+  const add = (key, label, pattern) => {
+    const excerpts = clausesFromOfficialText(items, pattern);
+    if (!excerpts.length) return;
+    fields[key] = {
+      label,
+      value: excerpts.join(' '),
+      sourceExcerpt: excerpts.join(' '),
+      sourceDigest: fieldEvidence(items, pattern)?.sourceDigest || '',
+    };
+  };
+  add('medicalDeductible', '健康/医疗免赔额', /(?:免赔额|免赔金额|年度免赔)/u);
+  add('medicalPaymentRatio', '健康/医疗赔付比例', /(?:医疗|住院|门诊|疾病|费用)[^。；;]{0,100}(?:赔付比例|给付比例|报销比例|按[^。；;]{0,32}%)|(?:赔付比例|给付比例|报销比例)[^。；;]{0,100}(?:医疗|住院|门诊|疾病|费用)/u);
+  add('medicalCoverageLimit', '健康/医疗责任限额', /(?:年度(?:累计)?(?:最高)?限额|责任限额|给付限额|报销限额|最高给付金额)/u);
+  add('medicalHospitalScope', '健康/医疗医院范围', /(?:医院范围|定点医院|二级及以上医院|指定医院|认可的医院)/u);
+  add('medicalWaitingPeriod', '健康/医疗等待期', /等待期/u);
+  add('criticalDiseaseGrouping', '重疾疾病分组', /(?:重大疾病|重疾|疾病)[^。；;]{0,80}(?:分组|分为[^。；;]{0,40}组)|(?:分组|组别)[^。；;]{0,80}(?:重大疾病|重疾|疾病)/u);
+  add('criticalPaymentCount', '重疾给付次数', /(?:重大疾病|重疾|疾病)[^。；;]{0,80}(?:给付|赔付)[^。；;]{0,30}(?:次数|[一二三四五六七八九十百\d]+\s*次)|(?:给付|赔付)次数[^。；;]{0,60}(?:重大疾病|重疾|疾病)/u);
+  add('criticalInterval', '重疾给付间隔期', /(?:间隔期|两次[^。；;]{0,30}间隔|相邻两次[^。；;]{0,30}(?:天|日|年))/u);
+  add('criticalPremiumWaiver', '重疾保费豁免', /(?:豁免保险费|保险费豁免|豁免后续[^。；;]{0,20}保险费)/u);
+  add('accidentDisabilityGrade', '意外伤残等级', /(?:伤残等级|伤残评定|伤残程度|第[一二三四五六七八九十0-9]+级伤残)/u);
+  add('accidentPaymentRatio', '意外伤残给付比例', /(?:伤残[^。；;]{0,50}(?:给付比例|赔付比例)|(?:给付比例|赔付比例)[^。；;]{0,50}伤残)/u);
+  add('accidentScenario', '意外保障场景', /(?:交通工具|航空意外|公共交通|驾乘意外|驾乘车|列车|轮船|电梯|自然灾害|步行|骑行)[^。；;]{0,120}(?:意外|保险金|给付|赔付)/u);
+  add('effectiveInsuredAmountFormula', '增额寿有效保险金额公式', /(?:有效保险金额|有效保额)[^。；;]{0,180}(?:等于|×|\*|递增|增长|1\s*[+＋]\s*\d+(?:\.\d+)?\s*%)/u);
+  add('annuityPaymentFrequency', '年金/两全领取频率', /(?:按月领取|按年领取|每月领取|每年领取|领取频率|领取方式)/u);
+  add('annuityMonthlyFactor', '年金月领折算系数', /月领折算系数/u);
+  add('maturityBenefit', '年金/两全满期责任', /满期保险金/u);
+  return fields;
+}
+
+function displayTrustedSourceEntry(entry) {
+  if (entry.kind !== 'source' || !entry.official || !entry.digests.length) return false;
+  const pdf = entry.sourceType === 'pdf' || /\.pdf(?:$|[?#])/iu.test(entry.sourceUrl);
+  if (!pdf) return false;
+  return entry.sourceAcquisition.strategy === 'bound_official_pdf'
+    || ['insurer_official', 'regulatory_industry_terms'].includes(entry.evidenceLevel);
+}
+
+function buildFieldEvidenceDisplay(entries, alignedChains) {
+  const trustedSources = entries.filter(displayTrustedSourceEntry);
+  const trustedFamilies = unique(trustedSources.map(officialMaterialFamilyKey));
+  const trustedSourceSlots = new Map();
+  for (const entry of trustedSources) {
+    const slot = canonicalSourceUrl(entry.sourceUrl) || `digest:${entry.digests[0] || ''}`;
+    trustedSourceSlots.set(slot, unique([...(trustedSourceSlots.get(slot) || []), ...entry.digests]));
+  }
+  const duplicateMaterialConflict = [...trustedSourceSlots.values()].some((digests) => digests.length > 1);
+  const alignedDigests = unique(alignedChains.map((chain) => digestKey(chain.digest)));
+  if ((trustedFamilies.length ? trustedFamilies.length > 1 || duplicateMaterialConflict : alignedDigests.length > 1)) {
+    return {
+      status: 'version_conflict',
+      mode: 'blocked',
+      persistenceStatus: 'persistence-not-aligned',
+      calculationEligible: false,
+      sourceDigest: '',
+      fields: {},
+      productFunctions: [],
+      blockers: ['version_conflict'],
+    };
+  }
+  const selectedSources = trustedSources
+    .filter((entry) => !trustedFamilies.length || officialMaterialFamilyKey(entry) === trustedFamilies[0])
+    .sort((left, right) => officialMaterialPriority(right) - officialMaterialPriority(left));
+  const selectedDigests = trustedFamilies.length
+    ? unique(selectedSources.flatMap((entry) => entry.digests))
+    : alignedDigests;
+  const selectedDigest = selectedSources[0]?.digests[0] || selectedDigests[0] || '';
+  if (!selectedDigest) {
+    return {
+      status: 'not_detected',
+      mode: '',
+      persistenceStatus: 'persistence-not-aligned',
+      calculationEligible: false,
+      sourceDigest: '',
+      fields: {},
+      productFunctions: [],
+      blockers: [],
+    };
+  }
+  const selectedEntries = entries.filter((entry) => entry.digests.some((digest) => selectedDigests.includes(digest)));
+  const items = substantiveTextItems(selectedEntries);
+  const fields = { ...crossInsuranceFields(items), ...universalFields(items) };
+  const aligned = selectedEntries.some((entry) => entry.kind === 'artifact')
+    && selectedEntries.some((entry) => entry.kind === 'card')
+    && selectedEntries.some((entry) => entry.kind === 'indicator');
+  return {
+    status: Object.keys(fields).length ? (aligned ? 'aligned' : 'display_only') : 'not_detected',
+    mode: Object.keys(fields).length ? (aligned ? 'aligned' : 'display-only') : '',
+    persistenceStatus: aligned ? 'aligned' : 'persistence-not-aligned',
+    calculationEligible: false,
+    sourceDigest: sourceDigest(selectedDigest),
+    fields,
+    productFunctions: accountContent(fields),
+    blockers: aligned || !Object.keys(fields).length ? [] : ['source_chain_not_aligned'],
+    universalIdentity: Boolean(accountIdentity(items)),
+  };
 }
 
 function accountEvaluation({ sourceDigest: digest, entries }) {
@@ -623,20 +770,46 @@ export function routeUnifiedSpecialProductResponsibility({
   if (!scope.company || !scope.productName) return noSpecialResult({ ...scope, blockers: ['product_identity_required'] });
   const entries = scopedEntries({ ...scope, cards, indicators, artifacts, sourceRecords });
   const scopedCards = entries.filter((entry) => entry.kind === 'card');
-  const chains = sourceChains(entries).filter((chain) => (
+  const allChains = sourceChains(entries);
+  const chains = allChains.filter((chain) => (
     chain.entries.some((entry) => entry.kind === 'artifact')
     && chain.entries.some((entry) => entry.kind === 'card')
     && chain.entries.some((entry) => entry.kind === 'indicator')
   ));
+  const fieldEvidenceDisplay = buildFieldEvidenceDisplay(entries, chains);
+  const withFieldDisplay = (result) => ({
+    ...result,
+    blockers: unique([...array(result?.blockers), ...array(fieldEvidenceDisplay.blockers)]),
+    fieldEvidenceDisplay,
+  });
+  if (fieldEvidenceDisplay.status === 'version_conflict' && !chains.length) {
+    return withFieldDisplay({
+      ...noSpecialResult({ ...scope, blockers: ['version_conflict'] }),
+      category: 'blocked',
+    });
+  }
   if (!chains.length) {
-    return noSpecialResult({ ...scope, blockers: ['source_chain_not_aligned'] });
+    const result = noSpecialResult({ ...scope, blockers: ['source_chain_not_aligned'] });
+    result.ordinaryResponsibilities = ordinaryResponsibilities(scopedCards);
+    if (fieldEvidenceDisplay.universalIdentity && fieldEvidenceDisplay.productFunctions.length) {
+      result.category = 'blocked';
+      result.sourceDigest = fieldEvidenceDisplay.sourceDigest;
+      result.universalAccount = {
+        eligible: false,
+        status: 'display_only',
+        fields: fieldEvidenceDisplay.fields,
+        productFunctions: fieldEvidenceDisplay.productFunctions,
+        blockers: ['source_chain_not_aligned'],
+      };
+    }
+    return withFieldDisplay(result);
   }
 
   const universalCandidates = chains.map((chain) => accountEvaluation({ sourceDigest: chain.digest, entries: chain.entries }));
   const universalEligible = universalCandidates.filter((candidate) => candidate.eligible);
   const accountIdentityFound = universalCandidates.some((candidate) => candidate.evidenceGates.officialUniversalIdentity);
   if (universalEligible.length > 1) {
-    return {
+    return withFieldDisplay({
       ...noSpecialResult({ ...scope, blockers: ['version_conflict'] }),
       category: 'blocked',
       sourceDigest: '',
@@ -644,7 +817,7 @@ export function routeUnifiedSpecialProductResponsibility({
       responsibilityInventory: { sourceDigest: '', status: 'review', responsibilities: [], ownerProfiles: [], paymentProfiles: [], conflicts: [{ reason: 'version_conflict' }] },
       universalAccount: { eligible: false, status: 'version_conflict', candidates: universalCandidates },
       evidenceGates: { universalAccount: { versionConflict: true }, incrementalWholeLife: { mutuallyExclusive: true } },
-    };
+    });
   }
 
   if (accountIdentityFound) {
@@ -657,7 +830,7 @@ export function routeUnifiedSpecialProductResponsibility({
       topology,
     });
     const category = account.eligible ? 'universal_account' : 'blocked';
-    return {
+    return withFieldDisplay({
       category,
       categories: unique([category, ...responsibilityInventory.ownerProfiles]),
       sourceDigest: account.sourceDigest,
@@ -676,7 +849,14 @@ export function routeUnifiedSpecialProductResponsibility({
         status: 'mutually_exclusive',
         blockers: ['universal_account_identity_precedes_incremental_whole_life'],
       },
-    };
+    });
+  }
+
+  if (fieldEvidenceDisplay.status === 'version_conflict') {
+    return withFieldDisplay({
+      ...noSpecialResult({ ...scope, blockers: ['version_conflict'] }),
+      category: 'blocked',
+    });
   }
 
   const incremental = evaluateIncrementalWholeLifePurpose({
@@ -699,7 +879,7 @@ export function routeUnifiedSpecialProductResponsibility({
   const incrementalBlockers = incremental.eligible
     ? []
     : [text(incremental.holdReason) || 'missing_three_gate_evidence'];
-  return {
+  return withFieldDisplay({
     category,
     categories: unique([category, ...responsibilityInventory.ownerProfiles]),
     sourceDigest: incremental.eligible ? sourceDigest(incremental.sourceDigest) : '',
@@ -724,7 +904,7 @@ export function routeUnifiedSpecialProductResponsibility({
         : '',
       blockers: incrementalBlockers,
     },
-  };
+  });
 }
 
 function blockWithProductFunctions(blocks, functions) {
@@ -749,7 +929,14 @@ export function applyUnifiedSpecialProductEvaluation(summary = {}, evaluation = 
   next.sourceDigest = text(evaluation.sourceDigest);
   next.evidenceGates = evaluation.evidenceGates || {};
   next.blockers = unique(evaluation.blockers);
-  if (evaluation.category === 'universal_account' || evaluation.universalAccount?.status === 'hold') {
+  const fieldDisplay = evaluation.fieldEvidenceDisplay || {};
+  if (fieldDisplay.mode) {
+    next.evidenceMode = text(fieldDisplay.mode);
+    next.persistenceStatus = text(fieldDisplay.persistenceStatus);
+  }
+  if (array(fieldDisplay.productFunctions).length) {
+    next.contentBlocks = blockWithProductFunctions(next.contentBlocks, fieldDisplay.productFunctions);
+  } else if (evaluation.category === 'universal_account' || evaluation.universalAccount?.status === 'hold') {
     next.contentBlocks = blockWithProductFunctions(next.contentBlocks, evaluation.universalAccount?.productFunctions || []);
   }
   if (evaluation.category === 'incremental_whole_life') {

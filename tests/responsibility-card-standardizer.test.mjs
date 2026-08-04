@@ -47,6 +47,29 @@ test('standardizeResponsibilityIndicator keeps first basic responsibility premiu
   assert.equal(result.calculationReason, '');
 });
 
+test('standardizeResponsibilityIndicator extracts official payment-period ratio branches without a product-specific rule', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '测试保险',
+    productName: '测试年金保险',
+    coverageType: '现金流',
+    liability: '关爱金',
+    sourceUrl: 'https://insurer.example/terms.pdf',
+    official: true,
+    evidenceLevel: 'insurer_official',
+    sourceExcerpt: '关爱金被保险人生存，我们按以下方式给付关爱金：关爱金=首次交纳保险费的金额×关爱金给付比例。（1）如保险单上载明的交费方式为一次交清，则关爱金给付比例为20%；（2）如保险单上载明的交费期间为3年，则关爱金给付比例为60%；（3）如保险单上载明的交费期间为5年，则关爱金给付比例为100%。',
+  }, {
+    policy: { company: '测试保险', name: '测试年金保险', firstPremium: 10000, paymentPeriod: '3年交' },
+  });
+
+  assert.equal(result.formulaText, '关爱金 = 首次交纳保险费的金额 × 关爱金给付比例');
+  assert.equal(result.calculationKey, 'policy_parameter_branches');
+  assert.deepEqual(result.branches.map((branch) => branch.normalizedFormula), [
+    'benefit_amount = first_premium * 0.2',
+    'benefit_amount = first_premium * 0.6',
+    'benefit_amount = first_premium * 1',
+  ]);
+});
+
 test('standardizeResponsibilityIndicator blocks a policy-anniversary amount from using the initial basic amount', () => {
   const result = standardizeResponsibilityIndicator({
     id: 'ind_survival_dynamic_amount',
@@ -169,10 +192,52 @@ test('standardizeResponsibilityIndicator corrects a formula leaked from the next
     sourceExcerpt,
   });
 
-  assert.equal(result.formulaText, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
-  assert.equal(result.payoutSummary, '满期生存保险金 = 基本保险金额 + 累计红利保险金额');
+  assert.equal(result.formulaText, '满期生存保险金 = 基本保险金额 + 累积红利保险金额');
+  assert.equal(result.payoutSummary, '满期生存保险金 = 基本保险金额 + 累积红利保险金额');
   assert.equal(result.cashflowTreatment, 'scheduled_cashflow');
   assert.equal(result.responsibilityRepairVersion, '2026-07-31-official-clause-formula-repair');
+});
+
+test('standardizeResponsibilityIndicator expands effective insured amount for deep-study and start-business benefits without losing the official factor', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/20230616/eb1d52db-25e3-4128-8bd2-9f7f5ee2dede.pdf';
+  const sourceExcerpt = '成长快乐少儿两全保险（分红型）产品说明书：①高中教育金按该保单在每一保单生效对应日基本保险金额与累积红利保险金额二者之和的10%给付；②深造金、立业金：被保险人于年满22周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的60%给付深造金；被保险人于年满30周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的90%给付立业金。';
+  const cases = [
+    { liability: '深造金', factor: 60, age: '22' },
+    { liability: '立业金', factor: 90, age: '30' },
+  ];
+
+  for (const item of cases) {
+    const result = standardizeResponsibilityIndicator({
+      id: `ind_effective_amount_${item.liability}`,
+      company: '新华保险',
+      productName: '成长快乐少儿两全保险（分红型）',
+      coverageType: '现金流',
+      liability: item.liability,
+      value: item.factor,
+      valueText: String(item.factor),
+      unit: '%',
+      basis: '有效保险金额',
+      formulaText: `${item.liability} = 有效保险金额 × ${item.factor}%`,
+      sourceUrl,
+      sourceExcerpt,
+      basisKey: 'basic_amount',
+      calculationKey: 'percent_of_basic_amount',
+      calculationEligible: true,
+      operands: [{ operandId: 'effective_insured_amount', formulaText: '有效保险金额' }],
+      branches: [{ branchId: 'scheduled_survival', condition: `年满${item.age}周岁保单生效对应日生存` }],
+    }, { policy: basePolicy });
+
+    assert.equal(result.formulaText, `${item.liability} = （基本保险金额 + 累积红利保险金额）× ${item.factor}%`);
+    assert.equal(result.normalizedFormula, `benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * ${item.factor / 100}`);
+    assert.equal(result.basisKey, 'effective_insured_amount');
+    assert.equal(result.calculationKey, 'manual_formula');
+    assert.equal(result.calculationEligible, false);
+    assert.deepEqual(result.requiredInputs, ['policy.amount', 'policyYearOrAge', 'manualFormulaInputs']);
+    assert.deepEqual(result.operands, [{ operandId: 'effective_insured_amount', formulaText: '有效保险金额' }]);
+    assert.deepEqual(result.branches, [{ branchId: 'scheduled_survival', condition: `年满${item.age}周岁保单生效对应日生存` }]);
+    assert.equal(result.basisDefinition.key, 'contract_defined_effective_insured_amount');
+    assert.match(result.calculationReason, /累积红利保险金额/u);
+  }
 });
 
 test('standardizeResponsibilityIndicator blocks indicators without official source excerpt', () => {
@@ -499,6 +564,91 @@ test('buildResponsibilityCardsForPolicy writes readable cards and re-checks exis
   assert.deepEqual(cards[0].indicatorCheckIssues, []);
   assert.equal(cards[0].indicators.length, 1);
   assert.equal(cards[0].indicators[0].basisKey, 'first_basic_responsibility_premium');
+});
+
+test('buildResponsibilityCardsForPolicy derives one payout-frequency indicator from an official annuity responsibility', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/annuity-terms.pdf';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '新华保险',
+      name: '盛世安盈养老年金保险（分红型）',
+    },
+    responsibilities: [{
+      coverageType: '养老年金',
+      scenario: '被保险人生存，我们按确定的每年（或每月）领取金额给付养老年金：(1)按年领取的，每年领取金额为基本保险金额；(2)按月领取的，每月领取金额为基本保险金额×月领折算系数。',
+      sourceUrl,
+      sourceExcerpt: '养老年金按年领取的，每年领取金额为基本保险金额；按月领取的，每月领取金额为基本保险金额×月领折算系数。',
+      sourceTitle: '盛世安盈养老年金保险（分红型）条款',
+      official: true,
+    }],
+    coverageIndicators: [],
+    knowledgeRecords: [{
+      company: '新华保险',
+      productName: '盛世安盈养老年金保险（分红型）',
+      title: '盛世安盈养老年金保险（分红型）产品说明书',
+      url: 'https://static-cdn.newchinalife.com/ncl/pdf/annuity-manual.pdf',
+      official: true,
+      sourceDigest: 'manual-sha256',
+      pageText: '上述月领折算系数的数值为0.085。',
+    }],
+  });
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].title, '养老年金');
+  assert.equal(cards[0].indicators.length, 1);
+  assert.equal(cards[0].indicators[0].branchSemanticContract, 'official-payout-frequency-branches');
+  assert.equal(cards[0].indicators[0].branches.length, 2);
+  assert.match(cards[0].indicators[0].branches[1].normalizedFormula, /0\.085/u);
+  assert.equal(cards[0].indicators[0].sourceDigest, 'manual-sha256');
+  assert.deepEqual(cards[0].indicators[0].evidenceSegments, [{
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/annuity-manual.pdf',
+    sourceTitle: '盛世安盈养老年金保险（分红型）产品说明书',
+    sourceExcerpt: '月领折算系数的数值为0.085。',
+    sourceDigest: 'manual-sha256',
+    official: true,
+    role: 'monthly_conversion_factor',
+  }]);
+  assert.equal(cards[0].indicatorCheckStatus, 'verified_calculable');
+  assert.deepEqual(cards[0].indicatorCheckIssues, []);
+});
+
+test('buildResponsibilityCardsForPolicy matches official company aliases during annuity projection', () => {
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '新华人寿保险股份有限公司',
+      name: '新华人寿保险股份有限公司盛世安盈卓越版养老年金保险（分红型）',
+    },
+    responsibilities: [{
+      coverageType: '养老年金',
+      scenario: '被保险人生存，按年领取的每年领取金额为基本保险金额；按月领取的每月领取金额为基本保险金额×月领折算系数。',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/20250919/terms.pdf',
+      sourceExcerpt: '养老年金按年领取的每年领取金额为基本保险金额；按月领取的每月领取金额为基本保险金额×月领折算系数。',
+      official: true,
+    }],
+    coverageIndicators: [{
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世安盈卓越版养老年金保险（分红型）',
+      liability: '赔付方式',
+      basisKey: 'rule_parameter',
+      calculationKey: 'rule_parameter',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/20250919/terms.pdf',
+      sourceExcerpt: '养老年金领取频率分为年领或月领。',
+      official: true,
+    }],
+    knowledgeRecords: [{
+      company: '新华保险',
+      productName: '新华人寿保险股份有限公司盛世安盈卓越版养老年金保险（分红型）',
+      title: '盛世安盈卓越版养老年金保险条款',
+      url: 'https://static-cdn.newchinalife.com/ncl/pdf/20250919/terms.pdf',
+      official: true,
+      pageText: '保险责任：1.养老年金 被保险人生存，按年领取的每年领取金额为基本保险金额；按月领取的每月领取金额为基本保险金额×月领折算系数。上述月领折算系数的数值为0.085。2.身故保险金 被保险人身故给付身故保险金。',
+    }],
+  });
+
+  const annuity = cards.find((card) => card.title === '养老年金');
+  assert.equal(annuity?.calculationStatus, 'calculable');
+  assert.equal(annuity?.indicators?.[0]?.branches?.length, 2);
+  assert.match(annuity?.indicators?.[0]?.branches?.[1]?.normalizedFormula || '', /0\.085/u);
 });
 
 test('buildResponsibilityCardsForPolicy ignores malformed rows and still builds valid cards', () => {
@@ -1644,6 +1794,57 @@ test('buildResponsibilityCardsForPolicy filters exclusion and waiting-period fra
   });
 
   assert.deepEqual(cards.map((card) => card.title), ['轻度疾病保险金']);
+});
+
+test('buildResponsibilityCardsForPolicy filters repeated optional basic-amount parameter rows', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/20250324/bec7afca-6fe1-4dd5-9289-0d8f76bc69a8.pdf';
+  const repeatedParameterRows = Array.from({ length: 4 }, (_, index) => ({
+    id: `optional-parameter-${index}`,
+    canonicalProductId: `model-product-${index}`,
+    company: '新华保险',
+    productName: '尊贵人生年金保险（分红型）',
+    coverageType: '可选责任',
+    liability: '可选责任的基本保险金',
+    selectionStatus: 'unknown',
+    sourceUrl,
+    sourceExcerpt: '可选责任的基本保险金额按本条款第2.3.2条确定。',
+  }));
+  const validOptionalRow = {
+    id: 'optional-maturity',
+    canonicalProductId: 'model-product-valid',
+    company: '新华保险',
+    productName: '尊贵人生年金保险（分红型）',
+    coverageType: '可选责任',
+    liability: '祝寿金',
+    selectionStatus: 'unknown',
+    sourceUrl,
+    sourceExcerpt: '被保险人生存至约定年龄，本公司给付祝寿金。',
+  };
+
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: {
+      company: '新华保险',
+      name: '尊贵人生年金保险（分红型）',
+    },
+    optionalResponsibilityRecords: [...repeatedParameterRows, validOptionalRow],
+  });
+  const coverageTable = mergeCoverageTableWithCheckedRows(
+    repeatedParameterRows.map((row) => ({
+      productName: row.productName,
+      coverageType: row.liability,
+      scenario: row.sourceExcerpt,
+      sourceUrl: row.sourceUrl,
+    })).concat({
+      productName: validOptionalRow.productName,
+      coverageType: validOptionalRow.liability,
+      scenario: validOptionalRow.sourceExcerpt,
+      sourceUrl: validOptionalRow.sourceUrl,
+    }),
+    [],
+  );
+
+  assert.deepEqual(cards.map((card) => card.title), ['祝寿金']);
+  assert.deepEqual(coverageTable.map((row) => row.coverageType), ['祝寿金']);
 });
 
 test('buildResponsibilityCardsForPolicy keeps waiting-period premium refund obligations', () => {

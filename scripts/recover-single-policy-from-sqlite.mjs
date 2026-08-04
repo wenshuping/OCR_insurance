@@ -4,6 +4,10 @@ import os from 'node:os';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
+import { assertNotLegacyPolicyOcrDatabasePath } from '../server/policy-ocr-database-target.mjs';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function usage() {
   console.error(`Usage:
@@ -235,6 +239,12 @@ function buildRecoveryPlan(sourceDb, targetDb, policyId) {
 }
 
 const args = parseArgs(process.argv.slice(2));
+if (args.apply) {
+  args.target = assertNotLegacyPolicyOcrDatabasePath({
+    projectRoot,
+    dbPath: args.target,
+  });
+}
 const prepared = prepareSourcePath(args.source);
 
 try {

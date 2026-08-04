@@ -2,8 +2,12 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
 import { normalizeKnowledgeProductType } from '../server/policy-knowledge.service.mjs';
+import { assertNotLegacyPolicyOcrDatabasePath } from '../server/policy-ocr-database-target.mjs';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function trim(value) {
   return String(value || '').trim();
@@ -125,6 +129,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dbPath = readArg('db');
   if (!dbPath) printUsageAndExit();
   const dryRun = !hasFlag('write');
-  const summary = repairKnowledgeProductTypes(path.resolve(dbPath), { dryRun });
+  const targetDbPath = dryRun
+    ? path.resolve(dbPath)
+    : assertNotLegacyPolicyOcrDatabasePath({ projectRoot, dbPath });
+  const summary = repairKnowledgeProductTypes(targetDbPath, { dryRun });
   console.log(JSON.stringify(summary, null, 2));
 }

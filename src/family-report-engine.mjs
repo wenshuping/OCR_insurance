@@ -405,12 +405,25 @@ function parsePaymentYears(value) {
   return null;
 }
 
+function paymentFrequencyFor(policy = {}, plan = null) {
+  const explicit = String(plan?.paymentFrequency || plan?.paymentMode || policy?.paymentFrequency || '').trim();
+  if (explicit === 'monthly' || /月交|月缴|月付/u.test(explicit)) return 'monthly';
+  if (explicit === 'annual' || /年交|年缴|年付/u.test(explicit)) return 'annual';
+  return '';
+}
+
+function paymentPeriodsFor(policy = {}, plan = null) {
+  const years = parsePaymentYears(plan?.paymentPeriod || plan?.paymentMode || policy?.paymentPeriod);
+  if (years === null) return null;
+  return years * (paymentFrequencyFor(policy, plan) === 'monthly' ? 12 : 1);
+}
+
 function totalPremiumText(policy) {
   const premium = asNumber(policy?.firstPremium);
-  const years = parsePaymentYears(policy?.paymentPeriod);
+  const periods = paymentPeriodsFor(policy);
   if (premium <= 0) return '待识别';
-  if (years === null) return '待识别';
-  return formatNumberText(premium * years);
+  if (periods === null) return '待识别';
+  return formatNumberText(premium * periods);
 }
 
 function uniqueJoinedText(values = []) {
@@ -593,8 +606,8 @@ function buildInventoryRow(policy) {
     typeLabel: policyTypeLabel(policy),
     isInactive: policyIsInactive(policy),
     policyStatusText: policyStatusText(policy),
-    annualPremium: asNumber(policy?.firstPremium),
-    annualPremiumText: formatNumberText(policy?.firstPremium),
+    annualPremium: asNumber(policy?.firstPremium) * (paymentFrequencyFor(policy) === 'monthly' ? 12 : 1),
+    annualPremiumText: formatNumberText(asNumber(policy?.firstPremium) * (paymentFrequencyFor(policy) === 'monthly' ? 12 : 1)),
     totalPremiumText: totalPremiumText(policy),
     coverage: asNumber(policy?.amount),
     coverageText: coverageText(policy),
@@ -757,6 +770,7 @@ function indicatorCalculationInputs(indicator, policy) {
     baseAmount: indicatorBaseAmount(indicator, policy),
     firstPremium: premium,
     paymentYears,
+    paymentFrequency: paymentFrequencyFor(policy, plan),
     policyYear: finiteNumber(policy?.policyYear) ?? undefined,
     currentAge: ageFromBirthday(policy?.insuredBirthday),
     formulaVariables: formulaVariablesFromIndicators(policy?.coverageIndicators),
@@ -2065,7 +2079,8 @@ function deterministicFuturePayoutTotal(policy) {
 function premiumOutflows(policy) {
   const startYear = effectiveYear(policy);
   const paymentYears = parsePaymentYears(policy?.paymentPeriod);
-  const amount = asNumber(policy?.firstPremium);
+  const amount = asNumber(policy?.firstPremium)
+    * (paymentFrequencyFor(policy) === 'monthly' ? 12 : 1);
   if (paymentYears === null || startYear <= 0 || amount <= 0) return [];
 
   return Array.from({ length: paymentYears }, (_, index) => ({
@@ -2106,7 +2121,7 @@ function buildWealthPolicyReport(policy) {
     policyId: policy?.id,
     productName: String(policy?.name || ''),
     company: String(policy?.company || ''),
-    annualPremium: asNumber(policy?.firstPremium),
+    annualPremium: asNumber(policy?.firstPremium) * (paymentFrequencyFor(policy) === 'monthly' ? 12 : 1),
     cashflowRows: payouts,
     confirmedCashflowRows,
     cashValueRows: values,

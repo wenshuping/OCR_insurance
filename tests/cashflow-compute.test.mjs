@@ -213,7 +213,7 @@ test('computePolicyCashflow: duplicate generic and concrete anniversary indicato
   assert.equal(entries.at(-1).cumulative, 24000);
 });
 
-test('computePolicyCashflow: does not substitute basic amount for undefined effective insured amount', () => {
+test('computePolicyCashflow: reports the formula-backed minimum when effective insured amount is pending', () => {
   const policy = {
     id: 500556,
     name: '成长阳光少儿两全保险(A款)（分红型）',
@@ -244,7 +244,10 @@ test('computePolicyCashflow: does not substitute basic amount for undefined effe
 
   const entries = computePolicyCashflow(policy, null, indicators);
 
-  assert.deepEqual(entries, []);
+  assert.deepEqual(entries.map((entry) => entry.amount), [99012, 132016]);
+  assert.ok(entries.every((entry) => entry.isMinimumEstimate === true));
+  assert.ok(entries.every((entry) => entry.calcText.includes('累计红利保险金额（待补充）')));
+  assert.ok(entries.every((entry) => entry.uncertaintyNote.includes('未计入待补充的非负金额')));
 });
 
 test('computePolicyCashflow: first premium cashflow basis uses first premium, not total paid premium or amount', () => {
@@ -834,6 +837,53 @@ test('computePolicyCashflow skips selected optional cashflow indicators that are
   };
 
   assert.deepEqual(computePolicyCashflow(shengshiPolicy, null, [indicator]), []);
+});
+
+test('computePolicyCashflow: selected optional scheduled benefit may use the main policy effective amount', () => {
+  const policy = {
+    id: 3403,
+    company: '新华保险',
+    name: '成长快乐少儿两全保险（分红型）',
+    amount: 200000,
+      date: '2011-01-01',
+      insuredBirthday: '1988-01-01',
+    coveragePeriod: '至60岁',
+    responsibilities: [{
+      scenario: '保险责任，您也可以不选择任何可选生存保险金。被保险人于年满30周岁保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的90%给付立业金。',
+    }],
+    optionalResponsibilities: [{
+      id: 'start-business-selected',
+      liability: '立业金',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [{
+    id: 'start-business',
+    coverageType: '现金流',
+    liability: '立业金',
+    responsibilityScope: 'optional',
+    optionalResponsibilityId: 'start-business-selected',
+    selectionStatus: 'selected',
+    quantificationStatus: 'quantified',
+    condition: '年满30周岁保单生效对应日生存',
+    formulaText: '立业金 = （基本保险金额 + 累积红利保险金额）× 90%',
+    normalizedFormula: 'benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * 0.9',
+    basisKey: 'effective_insured_amount',
+    calculationKey: 'manual_formula',
+    calculationEligible: false,
+    branches: [{
+      branchId: 'scheduled_survival',
+      conditionText: '年满30周岁保单生效对应日生存',
+      formulaText: '（基本保险金额 + 累积红利保险金额）× 90%',
+      normalizedFormula: 'benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * 0.9',
+    }],
+  }]);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.amount, entry.isMinimumEstimate]), [[2018, 180000, true]]);
+  assert.match(entries[0].calcText, /200,000/u);
+  assert.doesNotMatch(entries[0].calcText, /可选责任保险金额/u);
 });
 
 // ── 9. Template variable substitution ──
@@ -1542,6 +1592,50 @@ test('computePolicyCashflow: schedules an effective-insured-amount benefit at it
 
   assert.deepEqual(entries.map((entry) => [entry.year, entry.amount, entry.isMinimumEstimate]), [[2043, 49944, true]]);
   assert.match(entries[0].calcText, /\(99,888 \+ 累计红利保险金额（待补充）\) × 0\.5/u);
+  assert.match(entries[0].uncertaintyNote, /未计入待补充的非负金额/u);
+});
+
+test('computePolicyCashflow: carries the effective-insured-amount lower bound into scheduled age-stage payouts', () => {
+  const policy = {
+    id: 3402,
+    company: '新华保险',
+    name: '成长快乐少儿两全保险（分红型）',
+    amount: 20000,
+    date: '2024-11-24',
+    insuredBirthday: '2018-12-16',
+    coveragePeriod: '至80岁',
+    responsibilities: [{
+      scenario: '一、大学教育金 被保险人于18—21周岁的每个保单生效对应日生存，本公司按该保单生效对应日基本保险金额与累积红利保险金额二者之和的30%给付大学教育金。',
+    }],
+  };
+
+  const entries = computePolicyCashflow(policy, null, [{
+    id: 'university-education',
+    coverageType: '现金流',
+    liability: '大学教育金',
+    formulaText: '大学教育金 = （基本保险金额 + 累积红利保险金额）× 30%',
+    normalizedFormula: 'benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * 0.3',
+    basisKey: 'effective_insured_amount',
+    calculationKey: 'manual_formula',
+    calculationEligible: false,
+    calculationReason: '缺少累积红利保险金额',
+    branches: [{
+      branchId: 'scheduled_survival',
+      conditionText: '18—21周岁的每个保单生效对应日生存',
+      formulaText: '（基本保险金额 + 累积红利保险金额）× 30%',
+      normalizedFormula: 'benefit_amount = (basic_insured_amount + accumulated_dividend_insured_amount) * 0.3',
+    }],
+  }]);
+
+  assert.deepEqual(entries.map((entry) => [entry.year, entry.amount, entry.isMinimumEstimate]), [
+    [2036, 6000, true],
+    [2037, 6000, true],
+    [2038, 6000, true],
+    [2039, 6000, true],
+  ]);
+  assert.equal(entries.at(-1).cumulative, 24000);
+  assert.match(entries[0].calcText, /基本保险金额20,000元/u);
+  assert.match(entries[0].calcText, /最低可确认金额 6,000元/u);
   assert.match(entries[0].uncertaintyNote, /未计入待补充的非负金额/u);
 });
 

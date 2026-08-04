@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 import { createInitialState } from './policy-ocr.domain.mjs';
 import { ensureCashflowTable, ensureCashValueTable } from './cashflow-store.mjs';
 import { DEFAULT_AGENT_RUNTIME_SETTINGS, normalizeAgentRuntimeSettings } from './agent-question-policy.service.mjs';
@@ -9,8 +10,10 @@ import { normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
 import { ensureProductKnowledgeTables } from './product-knowledge-store.mjs';
 import { projectAgentSemanticTaskState } from './agent-semantic-conversation.service.mjs';
 import { normalizeAgentSemanticAuditPayload } from './agent-semantic-audit-contract.mjs';
+import { assertNotLegacyPolicyOcrDatabasePath } from './policy-ocr-database-target.mjs';
 
 const SCHEMA_VERSION = '4';
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 const DB_OWNED_KEYS = new Set([
   'users',
@@ -2801,8 +2804,9 @@ export async function createSqliteStateStore({
   lazyLargeState = false,
 } = {}) {
   if (!dbPath) throw new Error('POLICY_OCR_APP_DB_PATH is required');
-  await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  const db = new DatabaseSync(dbPath);
+  const resolvedDbPath = assertNotLegacyPolicyOcrDatabasePath({ projectRoot, dbPath });
+  await fs.mkdir(path.dirname(resolvedDbPath), { recursive: true });
+  const db = new DatabaseSync(resolvedDbPath);
   db.exec('PRAGMA busy_timeout = 5000');
   let schemaVersion = '';
   try {
@@ -3482,7 +3486,10 @@ export async function createSqliteStateStore({
     removeResponsibilityCardIds = [],
   } = {}) {
     const nextState = { ...createInitialState(), ...state };
-    nextState.nextId = resolveNextId(nextState);
+    const deferredCollections = lazyKnowledgeRecords || lazyFamilyReports || lazyLargeState;
+    nextState.nextId = deferredCollections
+      ? Math.max(Number(state?.nextId || 1), Number(getMeta(db, 'next_id') || 1), 1)
+      : resolveNextId(nextState);
     const now = new Date().toISOString();
     const normalizedKnowledgeRecords = [];
     for (const rawRecord of normalizeArray(knowledgeRecords)) {
@@ -3521,15 +3528,31 @@ export async function createSqliteStateStore({
       throw error;
     }
     if (state && typeof state === 'object') {
-      state.knowledgeRecords = loadPayloadRows(db, 'knowledge_records', 'id ASC')
-        .map((record) => normalizeKnowledgeRecord(record))
-        .filter(Boolean);
-      state.insuranceIndicatorRecords = loadPayloadRows(
-        db,
-        'insurance_indicator_records',
-        'product_name ASC, coverage_type ASC, liability ASC, id ASC',
-      );
-      state.nextId = resolveNextId({ ...state, nextId: nextState.nextId });
+      if (lazyKnowledgeRecords) {
+        const mergeById = (currentRows, incomingRows) => {
+          const rowsById = new Map(normalizeArray(currentRows).map((row) => [String(row?.id || ''), row]));
+          for (const row of incomingRows) rowsById.set(String(row?.id || ''), row);
+          rowsById.delete('');
+          return [...rowsById.values()];
+        };
+        state.knowledgeRecords = mergeById(state.knowledgeRecords, normalizedKnowledgeRecords);
+        const removedIndicatorIds = new Set(normalizedRemoveIndicatorIds);
+        state.insuranceIndicatorRecords = mergeById(
+          normalizeArray(state.insuranceIndicatorRecords).filter((row) => !removedIndicatorIds.has(String(row?.id || ''))),
+          normalizedIndicatorRecords,
+        );
+        state.nextId = Math.max(Number(nextState.nextId || 1), Number(getMeta(db, 'next_id') || 1), 1);
+      } else {
+        state.knowledgeRecords = loadPayloadRows(db, 'knowledge_records', 'id ASC')
+          .map((record) => normalizeKnowledgeRecord(record))
+          .filter(Boolean);
+        state.insuranceIndicatorRecords = loadPayloadRows(
+          db,
+          'insurance_indicator_records',
+          'product_name ASC, coverage_type ASC, liability ASC, id ASC',
+        );
+        state.nextId = resolveNextId({ ...state, nextId: nextState.nextId });
+      }
     }
     return {
       knowledgeRecordCount: normalizedKnowledgeRecords.length,
@@ -4223,14 +4246,18 @@ export async function createSqliteStateStore({
         SELECT payload FROM knowledge_records
         WHERE (
             company = ?
-            OR company GLOB ?
-            OR instr(company, ?) > 0
-            OR instr(?, company) > 0
+            OR (company <> '' AND (
+              company GLOB ?
+              OR instr(company, ?) > 0
+              OR instr(?, company) > 0
+            ))
           )
           AND (
             product_name = ?
-            OR instr(product_name, ?) > 0
-            OR instr(?, product_name) > 0
+            OR (product_name <> '' AND (
+              instr(product_name, ?) > 0
+              OR instr(?, product_name) > 0
+            ))
           )
         ORDER BY id ASC
         LIMIT 2_000
@@ -4246,14 +4273,18 @@ export async function createSqliteStateStore({
     } else if (normalizedCompany) {
       rows = db.prepare(`
         SELECT payload FROM knowledge_records
-        WHERE company = ? OR company GLOB ? OR instr(company, ?) > 0 OR instr(?, company) > 0
+        WHERE company = ? OR (company <> '' AND (
+          company GLOB ? OR instr(company, ?) > 0 OR instr(?, company) > 0
+        ))
         ORDER BY id ASC
         LIMIT 2_000
       `).all(normalizedCompany, `${companyPrefix}*`, normalizedCompany, normalizedCompany);
     } else {
       rows = db.prepare(`
         SELECT payload FROM knowledge_records
-        WHERE product_name = ? OR instr(product_name, ?) > 0 OR instr(?, product_name) > 0
+        WHERE product_name = ? OR (product_name <> '' AND (
+          instr(product_name, ?) > 0 OR instr(?, product_name) > 0
+        ))
         ORDER BY id ASC
         LIMIT 2_000
       `).all(normalizedProductName, normalizedProductName, normalizedProductName);
@@ -4359,7 +4390,7 @@ export async function createSqliteStateStore({
 
   return {
     db,
-    dbPath,
+    dbPath: resolvedDbPath,
     seedStatePath,
     load,
     loadKnowledgeRecords,

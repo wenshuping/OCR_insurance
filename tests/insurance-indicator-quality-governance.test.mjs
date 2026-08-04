@@ -148,7 +148,7 @@ test('audits annuity cashflow candidates while keeping disease and medical lanes
     const writeAllowed = result.candidates.filter((candidate) => candidate.writeAllowed);
     assert.equal(writeAllowed.length, 2);
     assert.ok(writeAllowed.some((candidate) => candidate.proposedIndicator.liability === '关爱年金'));
-    assert.ok(writeAllowed.some((candidate) => candidate.proposedIndicator.formulaText === '生存保险金 = 基本责任保险金额 × 9%'));
+    assert.ok(writeAllowed.some((candidate) => candidate.proposedIndicator.formulaText === '生存保险金 = 保单生效对应日基本责任保险金额 × 9%'));
     assert.ok(result.candidates.some((candidate) => candidate.lane === 'critical_illness' && candidate.writeAllowed === false));
     assert.ok(result.issues.some((issue) => issue.lane === 'medical_formula'));
     assert.equal(result.summary.writeAllowedCandidates, 2);

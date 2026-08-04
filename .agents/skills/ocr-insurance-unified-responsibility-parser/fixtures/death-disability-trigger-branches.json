@@ -1,0 +1,67 @@
+{
+  "fixtureId": "combined-death-disability-cause-branches",
+  "productIdentity": {
+    "company": "示例保险公司",
+    "productName": "示例终身寿险",
+    "sourceUrl": "https://example.invalid/combined-death-disability.pdf",
+    "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000014"
+  },
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceStatus": "verified",
+    "evidenceText": "本合同为独立的终身寿险合同。"
+  },
+  "productLabels": [
+    "whole_life"
+  ],
+  "productFunctions": [],
+  "inventory": [
+    {
+      "responsibilityId": "death-or-total-disability-benefit",
+      "officialTitle": "身故或身体全残保险金",
+      "evidencePacket": {
+        "packetId": "p:combined-death-disability:1",
+        "exactText": "身故或身体全残保险金：被保险人因意外伤害身故或身体全残，我们按基本保险金额给付；被保险人因疾病身故或身体全残，我们按合同约定给付。",
+        "trigger": "被保险人因意外伤害身故或身体全残",
+        "obligation": "我们按基本保险金额给付"
+      },
+      "ownerProfile": "whole_life",
+      "paymentProfile": [
+        "lump_sum"
+      ],
+      "formula": {
+        "formulaText": "按合同约定的身故或身体全残保险金额给付",
+        "normalizedFormula": "piecewise(death_or_total_disability_cause)",
+        "requiredInputs": [
+          "event_cause",
+          "death_or_total_disability_amount"
+        ],
+        "operands": [],
+        "branches": [
+          {
+            "branchId": "accident_cause",
+            "conditionText": "被保险人因意外伤害身故或身体全残",
+            "formulaText": "按基本保险金额给付"
+          },
+          {
+            "branchId": "disease_cause",
+            "conditionText": "被保险人因疾病身故或身体全残",
+            "formulaText": "按合同约定给付"
+          }
+        ]
+      }
+    }
+  ],
+  "expected": {
+    "route": "luna-complex",
+    "status": "parse_pending",
+    "ownerProfiles": [
+      "whole_life"
+    ],
+    "paymentProfiles": [
+      "lump_sum"
+    ],
+    "triggerBranchesShareOneResponsibility": true,
+    "indicatorDecisionCount": 1
+  }
+}

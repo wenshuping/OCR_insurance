@@ -3,10 +3,10 @@ import path from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 
 import { replaceApprovedArtifactRowsInDevelopmentDb } from '../.agents/skills/ocr-insurance-product-responsibility-pipeline/scripts/publish_development_artifact.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { responsibilityProductIdentity } from '../server/product-responsibility-identity.mjs';
 
 const projectRoot = path.resolve(import.meta.dirname, '..');
-const defaultDbPath = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 
 function text(value) {
   return String(value || '').trim();
@@ -27,14 +27,6 @@ function parseJson(value) {
   } catch {
     return {};
   }
-}
-
-function assertDevelopmentDbPath(value) {
-  const resolved = path.resolve(value);
-  const allowedRoot = `${path.join(projectRoot, '.runtime', 'local')}${path.sep}`;
-  if (!resolved.startsWith(allowedRoot)) throw new Error(`refusing non-development database path: ${resolved}`);
-  if (!fs.existsSync(resolved)) throw new Error(`development database does not exist: ${resolved}`);
-  return resolved;
 }
 
 function latestApprovedArtifacts(db) {
@@ -96,7 +88,11 @@ function preloadReplacementLookup(db) {
   return { canonicalProductLookup, equivalentProductLookup };
 }
 
-const dbPath = assertDevelopmentDbPath(readArg('db-path', defaultDbPath));
+const dbPath = resolvePolicyOcrWriteDatabasePath({
+  projectRoot,
+  requestedPath: readArg('db-path', ''),
+});
+if (!fs.existsSync(dbPath)) throw new Error(`database does not exist: ${dbPath}`);
 const write = process.argv.includes('--write');
 const db = new DatabaseSync(dbPath);
 const artifacts = latestApprovedArtifacts(db);

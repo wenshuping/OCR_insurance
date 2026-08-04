@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const DEFAULT_OLD_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
-const DEFAULT_DEV_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DEV_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-06-29-old-runtime-extra-products-migration';
 
 function readArg(name, fallback = '') {
@@ -292,9 +293,10 @@ export function migrateOldRuntimeExtraProductsToDev({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDevDbPath = readArg('dev-db-path', DEFAULT_DEV_DB_PATH);
   const result = migrateOldRuntimeExtraProductsToDev({
     oldDbPath: readArg('old-db-path', DEFAULT_OLD_DB_PATH),
-    devDbPath: readArg('dev-db-path', DEFAULT_DEV_DB_PATH),
+    devDbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDevDbPath }),
     write: hasFlag('write'),
     backupPath: readArg('backup-path', ''),
     productNames: [readArg('product-name', '')].filter(Boolean),

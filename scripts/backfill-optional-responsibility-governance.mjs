@@ -1,7 +1,11 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { rebuildOptionalResponsibilityGovernance } from '../server/optional-responsibility-governance.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
-const dbPath = process.env.POLICY_OCR_APP_DB_PATH || '.runtime/local/policy-ocr.sqlite';
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dbPath = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const seedStatePath = process.env.POLICY_OCR_STATE_PATH || '.runtime/local/state.json';
 const store = await createSqliteStateStore({ dbPath, seedStatePath });
 

@@ -2,10 +2,11 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-05-30-payout-method';
 
 function trim(value) {
@@ -225,8 +226,9 @@ export function backfillPayoutMethodIndicators({ dbPath = DEFAULT_DB_PATH, dryRu
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = backfillPayoutMethodIndicators({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     dryRun: hasFlag('dry-run'),
   });
   console.log(`[payout-method] ${result.dryRun ? 'dry-run ' : ''}覆盖产品 ${result.productCount} 个，写入/更新指标 ${result.recordCount} 条`);
