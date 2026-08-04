@@ -1304,28 +1304,60 @@ test('customer summary retries official RAG when DeepSeek throws', async () => {
   assert.doesNotMatch(saved?.summaryJson?.mainResponsibilities?.[0]?.title || '', /错误卡片责任/u);
 });
 
-test('fallback customer summary does not use responsibility cards when DeepSeek throws and official summary is missing', async () => {
+test('customer summary returns an exact source-pinned responsibility-card summary without calling DeepSeek', async () => {
   let persisted = false;
+  let modelCalls = 0;
   const result = await generateProductCustomerResponsibilitySummary({
     state: { knowledgeRecords: [], insuranceIndicatorRecords: [] },
-    db: dbWithCards([baseCard()]),
+    db: dbWithCards([{
+      ...baseCard(),
+      sourceDigest: 'sha256:reviewed-card-source',
+    }]),
     input: { company, name: productName },
     findSummary: async () => null,
     persistSummary: async () => {
       persisted = true;
-      throw new Error('persist should not be called for card-only fallback');
+      throw new Error('persist should not be called for a reviewed-card summary');
     },
     generateWithDeepSeek: async () => {
-      const error = new Error('DeepSeek unavailable');
-      error.code = 'DEEPSEEK_REQUEST_FAILED';
-      throw error;
+      modelCalls += 1;
+      throw new Error('model should not be called for a reviewed-card summary');
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.source, 'responsibility_cards');
+  assert.deepEqual(result.summary.mainResponsibilities.map((item) => item.title), ['身故或身体全残保险金']);
+  assert.deepEqual(result.summary.sourceUrls, [sourceUrl]);
+  assert.equal(persisted, false);
+  assert.equal(modelCalls, 0);
+});
+
+test('customer summary stops on competing responsibility-card source digests', async () => {
+  let modelCalls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: { knowledgeRecords: [], insuranceIndicatorRecords: [] },
+    db: dbWithCards([
+      { ...baseCard(), sourceDigest: 'sha256:reviewed-card-source-a' },
+      {
+        ...baseCard(),
+        id: 'card_2',
+        title: '满期保险金',
+        plainSummary: '保险期间届满时给付满期保险金。',
+        sourceDigest: 'sha256:reviewed-card-source-b',
+      },
+    ]),
+    input: { company, name: productName },
+    findSummary: async () => null,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      throw new Error('model should not be called for a source-version conflict');
     },
   });
 
   assert.equal(result.ok, false);
-  assert.equal(result.status, 'needs_source_review');
-  assert.equal(result.message, '这个产品还缺少可用于客户摘要的官网保险责任资料。');
-  assert.equal(persisted, false);
+  assert.equal(result.status, 'version_conflict');
+  assert.equal(modelCalls, 0);
 });
 
 test('generateProductCustomerResponsibilitySummary sends product guidance and official responsibility text to DeepSeek', async () => {

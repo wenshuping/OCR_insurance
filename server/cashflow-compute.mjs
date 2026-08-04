@@ -544,10 +544,11 @@ function isDeterministicWealthBenefitSection(section = {}) {
 }
 
 function sectionUsesEffectiveInsuranceAmount(section = {}) {
-  return /有效保险金额/u.test(normalizeCashflowLookupText([
+  const text = normalizeCashflowLookupText([
     section.name,
     section.content,
-  ].join(' ')));
+  ].join(' '));
+  return /有效保险金额|基本保险金额与(?:累计|累积)红利保险金额(?:二者)?之和/u.test(text);
 }
 
 function sectionUsesPolicyAnniversaryBasicAmount(section = {}) {
@@ -1773,7 +1774,7 @@ export function computePolicyResponsibilityCalculations(policy = {}, indicators 
     if (result?.partial && !result?.isMinimumEstimate) {
       const baseAmount = Number(indicatorCalculationInputs(scopedPolicy).baseAmount || 0);
       const calculationText = String(result.calculationText || '');
-      const pendingCalculationText = baseAmount > 0 && /基本责任保险金额|基本保险金额|基本保额/u.test(String(indicator.formulaText || ''))
+      const pendingCalculationText = baseAmount > 0 && /基本责任保险金额|基本保险金额|基本保险金|基本保额/u.test(String(indicator.formulaText || ''))
         ? `条款公式：${calculationText.replace(/=\s*[\d,]+(?=\s*[×*])/u, `= 基本保险金额${baseAmount.toLocaleString('zh-CN')}元`)}`
         : calculationText;
       return [{

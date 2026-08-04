@@ -202,6 +202,120 @@ function findInternalCheck(product = {}, responsibility = {}) {
   )) || {};
 }
 
+function semanticProductSource(product = {}) {
+  const identity = product.productIdentity && typeof product.productIdentity === 'object'
+    ? product.productIdentity
+    : {};
+  return {
+    sourceUrl: text(identity.sourceUrl || product.sourceUrl),
+    sourceDigest: text(identity.sourceDigest || product.sourceDigest),
+  };
+}
+
+function semanticSourceExcerpt(responsibility = {}, indicator = {}) {
+  const evidenceSegments = rows(indicator.evidenceSegments);
+  return text(
+    indicator.sourceExcerpt
+    || responsibility.sourceExcerpt
+    || evidenceSegments.map((segment) => text(segment?.sourceExcerpt)).find(Boolean),
+  );
+}
+
+function semanticCoverageType(responsibility = {}, indicator = {}) {
+  return inferCoverageType({
+    ...responsibility,
+    coverageType: text(responsibility.coverageType || responsibility.card?.category),
+  }, indicator);
+}
+
+function semanticCashflowTreatment(coverageType = '', indicator = {}) {
+  const explicit = text(indicator.cashflowTreatment);
+  if (explicit) return explicit;
+  if (coverageType === '现金流') return 'scheduled_cashflow';
+  if (coverageType === '豁免') return 'waiver_only';
+  return 'claim_contingent';
+}
+
+function normalizeSemanticProduct(product = {}) {
+  if (rows(product.acceptedResponsibilities).length || !rows(product.responsibilities).length) return product;
+
+  const { sourceUrl, sourceDigest } = semanticProductSource(product);
+  const semanticIssues = [];
+  const acceptedResponsibilities = [];
+  const internalIndicatorChecks = [];
+
+  for (const responsibility of rows(product.responsibilities)) {
+    const indicators = rows(responsibility.indicators);
+    const liability = text(responsibility.card?.title || responsibility.liability);
+    if (indicators.length !== 1) {
+      semanticIssues.push(`semantic_indicator_count:${liability || 'unknown'}:${indicators.length}`);
+      continue;
+    }
+    const indicator = indicators[0];
+    const sourceExcerpt = semanticSourceExcerpt(responsibility, indicator);
+    const coverageType = semanticCoverageType(responsibility, indicator);
+    const cashflowTreatment = semanticCashflowTreatment(coverageType, indicator);
+    acceptedResponsibilities.push({
+      liability,
+      coverageType,
+      customerSummary: text(responsibility.card?.customerSummary || responsibility.card?.benefitExplanation || responsibility.insurerObligation),
+      triggerCondition: text(responsibility.triggerCondition),
+      insurerObligation: text(responsibility.insurerObligation),
+      formulaText: text(indicator.formulaText || responsibility.insurerObligation),
+      cashflowTreatment,
+      responsibilityScope: text(responsibility.responsibilityScope || 'basic_or_unspecified'),
+      selectionStatus: 'accepted',
+      sourceUrl,
+      sourceExcerpt,
+    });
+    internalIndicatorChecks.push({
+      liability,
+      coverageType,
+      triggerCondition: text(responsibility.triggerCondition),
+      basis: text(indicator.basis || responsibility.insurerObligation),
+      formulaText: text(indicator.formulaText || responsibility.insurerObligation),
+      payoutSummary: text(responsibility.insurerObligation),
+      cashflowTreatment,
+      calculationStatus: text(indicator.calculationStatus),
+      calculationEligible: typeof indicator.calculationEligible === 'boolean' ? indicator.calculationEligible : undefined,
+      calculationReason: text(indicator.calculationReason),
+      indicatorCheckStatus: 'accepted_manual_review',
+      calculationMetadataVersion: VERSION,
+      basisKey: text(indicator.basisKey),
+      calculationKey: text(indicator.calculationKey),
+      sourceUrl,
+      sourceDigest,
+      sourceExcerpt,
+      normalizedFormula: text(indicator.normalizedFormula),
+      requiredInputs: rows(indicator.requiredInputs),
+      basisDefinition: indicator.basisDefinition,
+      branches: rows(indicator.branches),
+      operands: rows(indicator.operands),
+      evidenceTokens: rows(indicator.evidenceTokens),
+      sourcePage: text(indicator.sourcePage || responsibility.sourcePage),
+    });
+  }
+
+  return {
+    ...product,
+    sourceRecords: [{
+      sourceRecordId: sourceDigest,
+      sourceUrl,
+      sourceDigest,
+      sourceTitle: `${text(product.productName)}条款`,
+    }],
+    acceptedResponsibilities,
+    internalIndicatorChecks,
+    semanticArtifactIssues: semanticIssues,
+  };
+}
+
+export function prepareReviewedResponsibilityArtifacts({ artifacts = [] } = {}) {
+  return artifacts
+    .flatMap((artifact) => readArtifactProducts(path.resolve(artifact)))
+    .map((entry) => normalizeSemanticProduct(entry.product));
+}
+
 function explicitCoverageType(responsibility = {}, check = {}) {
   const explicit = text(responsibility.coverageType || check.coverageType);
   return /^(?:现金流|医疗保障|疾病保障|人寿保障|意外保障|豁免|规则参数|其他)$/u.test(explicit) ? explicit : '';
@@ -347,11 +461,24 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     sourceUrl,
     sourceTitle,
     sourceExcerpt,
+    sourceDigest: text(
+      check.sourceDigest
+        || sourceRecord.sourceDigest
+        || product.sourceDigest
+        || product.productIdentity?.sourceDigest,
+    ),
     sourceEvidenceLevel: sourceUrl ? 'official_excerpt' : 'missing_source_url',
     responsibilityArtifactId: text(product.artifactId),
     responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
     reviewVersion: VERSION,
     updatedAt: now,
+    normalizedFormula: text(check.normalizedFormula),
+    requiredInputs: rows(check.requiredInputs),
+    basisDefinition: check.basisDefinition && typeof check.basisDefinition === 'object' ? check.basisDefinition : undefined,
+    branches: rows(check.branches),
+    operands: rows(check.operands),
+    evidenceTokens: rows(check.evidenceTokens),
+    sourcePage: text(check.sourcePage),
   };
   const calculatedFields = indicatorCalculationPayloadFields(base);
   const basisKey = text(check.basisKey) || calculatedFields.basisKey;
@@ -372,6 +499,7 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     calculationEligible: typeof check.calculationEligible === 'boolean' ? check.calculationEligible : calculatedFields.calculationEligible,
     calculationReason: text(check.calculationReason) || calculatedFields.calculationReason,
     calculationMetadataVersion: base.calculationMetadataVersion,
+    normalizedFormula: text(check.normalizedFormula) || text(base.normalizedFormula),
   };
 }
 
@@ -394,6 +522,7 @@ function validateProduct(product = {}, {
       seenIds.add(responsibilityId);
     }
   }
+  issues.push(...rows(product.semanticArtifactIssues));
   if (
     unifiedResponsibilities
     && expectedResponsibilityCount !== null

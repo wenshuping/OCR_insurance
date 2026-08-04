@@ -183,7 +183,7 @@ test('standardizeResponsibilityIndicator supersedes legacy display-only metadata
   }, { policy: basePolicy });
 
   assert.equal(result.calculationEligible, true);
-  assert.equal(result.calculationKey, 'multiple_of_basic_amount');
+  assert.equal(result.calculationKey, 'formula_projection');
   assert.equal(result.calculationReason, '');
   assert.equal(result.cashflowTreatment, 'claim_contingent');
 });
@@ -2080,4 +2080,33 @@ test('standardizeResponsibilityIndicator preserves scalar formula operands', () 
     'basic_insurance_amount',
   ]);
   assert.deepEqual(result.branches, [{ branchId: 'after_payment_end', formula: 'max(...)' }]);
+});
+
+test('buildResponsibilityCardsForPolicy keeps 高等教育金 distinct from the aggregate 教育金 label', () => {
+  const company = '新华人寿保险股份有限公司';
+  const productName = '阳光灿烂少儿两全保险（分红型）';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: { company, name: productName },
+    coverageIndicators: [{
+      company,
+      productName,
+      coverageType: '现金流',
+      liability: '高等教育金',
+      formulaText: '高等教育金 = 有效保险金额 × 20%',
+      normalizedFormula: 'effective_insured_amount * 0.2',
+      basisKey: 'contract_defined_effective_insured_amount',
+      calculationKey: 'percentage_of_basis',
+      calculationEligible: false,
+      calculationStatus: 'display_only',
+      calculationMetadataVersion: '2026-07-31-semantic-handoff',
+      indicatorCheckStatus: 'accepted_manual_review',
+      cashflowTreatment: 'scheduled_cashflow',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/example.pdf',
+      sourceExcerpt: '高等教育金：被保险人生存至18、19、20、21周岁的保单生效对应日，本公司按有效保险金额的20%给付高等教育金。',
+    }],
+  });
+
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].title, '高等教育金');
+  assert.equal(cards[0].cashflowTreatment, 'scheduled_cashflow');
 });

@@ -1,0 +1,96 @@
+{
+  "format": "policy-ocr-static-responsibility-scope-v1",
+  "purpose": "Replace only the exact, source-version-verified static responsibility cards and atomic indicators for the nine approved products. This scope never copies policies, users, families, source records, cashflows, cash values, or aliases.",
+  "products": [
+    {
+      "order": 1,
+      "numericId": null,
+      "company": "新华人寿保险股份有限公司",
+      "productName": "阳光灿烂少儿两全保险（分红型）",
+      "sourceDigest": "sha256:59fd54ca8bf21d10e8ed3094b2d7640c17f4526a1361baed624986e18ff5754e",
+      "sourceUrl": "https://static-cdn.newchinalife.com/ncl/pdf/20240407/cb2d52e9-9c24-4ec5-b45e-2b77c7f09bd7.pdf",
+      "expectedCards": 6,
+      "expectedIndicators": 6
+    },
+    {
+      "order": 2,
+      "numericId": null,
+      "company": "新华人寿保险股份有限公司",
+      "productName": "尊尚人生两全保险（分红型）",
+      "sourceDigest": "sha256:3e68295dd2a8657d997352e03bc3d7767e8b03c219e003aabcf23a8c85315a2c",
+      "sourceUrl": "https://static-cdn.newchinalife.com/ncl/pdf/20230616/9f3ee46f-910d-47ca-ba26-cc589d6b7f14.pdf",
+      "expectedCards": 6,
+      "expectedIndicators": 6
+    },
+    {
+      "order": 3,
+      "numericId": null,
+      "company": "工银安盛人寿保险有限公司",
+      "productName": "工银安盛人寿御享人生重大疾病保险",
+      "sourceDigest": "sha256:f0c9e994824f411567a01ccb13e9064a5a43f1eb29370d2d11d1d45b4311f7d4",
+      "sourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/060940595i5n.pdf",
+      "expectedCards": 9,
+      "expectedIndicators": 10
+    },
+    {
+      "order": 4,
+      "numericId": null,
+      "company": "工银安盛人寿保险有限公司",
+      "productName": "工银安盛人寿附加综合意外伤害保险",
+      "sourceDigest": "sha256:7901e9eae3b55bec87b36cce33cf5fdb14fc45231c36e5bd8275206a04d70758",
+      "sourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/09094240yg6f.pdf",
+      "expectedCards": 4,
+      "expectedIndicators": 4
+    },
+    {
+      "order": 5,
+      "numericId": null,
+      "company": "工银安盛人寿保险有限公司",
+      "productName": "工银安盛人寿附加住院津贴医疗保险",
+      "sourceDigest": "sha256:1214d5cf4795ffeb6d2ed07ac0549ff562d7ba1c13fcd79c90adef9a3cfc2252",
+      "sourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202310/23173150979a.pdf",
+      "expectedCards": 2,
+      "expectedIndicators": 2
+    },
+    {
+      "order": 6,
+      "numericId": null,
+      "company": "工银安盛人寿保险有限公司",
+      "productName": "工银安盛人寿附加住院费用医疗保险",
+      "sourceDigest": "sha256:c3512894f66db61b1aec541bc6aa79c532f92256bdb367f5005e4d9d66375619",
+      "sourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/06142428kygn.pdf",
+      "expectedCards": 1,
+      "expectedIndicators": 1
+    },
+    {
+      "order": 7,
+      "numericId": null,
+      "company": "工银安盛人寿保险有限公司",
+      "productName": "工银安盛人寿附加意外伤害医疗保险（B款）",
+      "sourceDigest": "sha256:d501ca06f1a1c8ce8eb354fbd9240cf0246f80e2a131c518ad34b9baad16ff44",
+      "sourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/061419559is3.pdf",
+      "expectedCards": 1,
+      "expectedIndicators": 1
+    },
+    {
+      "order": 8,
+      "numericId": null,
+      "company": "富德生命人寿保险股份有限公司",
+      "productName": "富德生命长盈六号两全保险（万能型）（荣耀版）",
+      "sourceDigest": "sha256:98527971af33db3d2f303a7039697d8c684de2dd408c4a3e02be8b7d9a87c5b3",
+      "sourceUrl": "https://www.sino-life.com/upload/clause/lqbx_2023082.pdf",
+      "expectedCards": 3,
+      "expectedIndicators": 3
+    },
+    {
+      "order": 9,
+      "numericId": null,
+      "company": "中邮人寿",
+      "productName": "中邮年年好邮保一生A款终身寿险",
+      "sourceDigest": "sha256:450072db40460a871173a06cd6eb9b90eadb6d03442f7fef0bdf4cd72d2384ed",
+      "sourceUrl": "https://www.chinapost-life.com/publish/publish1/publish1_3/publish1_3_2/202306/P020230629441661283125.pdf",
+      "expectedCards": 1,
+      "expectedIndicators": 1
+    }
+  ]
+}

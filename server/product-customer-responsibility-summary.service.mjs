@@ -344,6 +344,14 @@ function companyFrom(row = {}) {
 
 function normalizeCardRow(row = {}) {
   const payload = parseJson(row.payload, row);
+  const indicators = normalizeArray(payload.indicators);
+  const indicatorSourceDigests = uniqueStrings(indicators.map((indicator) => text(
+    indicator?.sourceDigest
+      || indicator?.source_digest
+      || indicator?.responsibilitySourceDigest
+      || indicator?.responsibility_source_digest,
+  )));
+  const inheritedSourceDigest = indicatorSourceDigests.length === 1 ? indicatorSourceDigests[0] : '';
   return {
     ...payload,
     id: text(payload.id || row.id),
@@ -358,8 +366,23 @@ function normalizeCardRow(row = {}) {
     sourceUrl: text(payload.sourceUrl || payload.source_url || row.source_url),
     sourceTitle: text(payload.sourceTitle || payload.source_title),
     sourceExcerpt: text(payload.sourceExcerpt || payload.source_excerpt),
-    sourceDigest: text(payload.sourceDigest || payload.source_digest || payload.responsibilitySourceDigest || row.source_digest),
-    indicators: normalizeArray(payload.indicators),
+    sourceDigest: text(
+      payload.sourceDigest
+        || payload.source_digest
+        || payload.responsibilitySourceDigest
+        || row.source_digest
+        || inheritedSourceDigest,
+    ),
+    responsibilitySourceDigest: text(
+      payload.responsibilitySourceDigest
+        || payload.responsibility_source_digest
+        || row.responsibility_source_digest,
+    ),
+    triggerCondition: text(payload.triggerCondition || payload.trigger_condition),
+    calculationStatus: text(payload.calculationStatus || payload.calculation_status),
+    requiredInputs: normalizeArray(payload.requiredInputs || payload.required_inputs),
+    referenceOnly: payload.referenceOnly === true || payload.reference_only === true,
+    indicators,
   };
 }
 
@@ -594,7 +617,55 @@ function digestCard(card = {}) {
     title: text(card.title),
     sourceExcerpt: extractOfficialResponsibilityText(card.sourceExcerpt, OFFICIAL_RESPONSIBILITY_EXCERPT_LIMIT),
     sourceUrl: sourceUrlFrom(card),
+    sourceDigest: text(card.sourceDigest || card.responsibilitySourceDigest),
     payoutSummary: text(card.payoutSummary),
+  };
+}
+
+function customerSummaryFromReviewedResponsibilityCards(cards = [], { company, productName } = {}) {
+  const visibleCards = normalizeArray(cards).filter((card) => card?.referenceOnly !== true);
+  if (!visibleCards.length) return { summary: null, status: '' };
+
+  const reviewedCards = visibleCards.filter((card) => (
+    text(card.title)
+    && text(card.plainSummary)
+    && text(card.sourceExcerpt)
+    && sourceUrlFrom(card)
+    && text(card.sourceDigest || card.responsibilitySourceDigest)
+  ));
+  if (reviewedCards.length !== visibleCards.length) return { summary: null, status: '' };
+
+  const sourceDigests = uniqueStrings(reviewedCards.map((card) => card.sourceDigest || card.responsibilitySourceDigest));
+  const sourceUrls = uniqueStrings(reviewedCards.map(sourceUrlFrom));
+  if (sourceDigests.length !== 1 || sourceUrls.length !== 1) {
+    return { summary: null, status: 'version_conflict' };
+  }
+
+  const responsibilities = reviewedCards.map((card) => ({
+    title: text(card.title),
+    plainText: text(card.plainSummary),
+    triggerCondition: text(card.triggerCondition),
+    howItPays: text(card.payoutSummary),
+    calculationStatus: text(card.calculationStatus),
+    requiredPolicyFields: uniqueStrings([
+      ...normalizeArray(card.requiredInputs),
+      ...normalizeArray(card.indicators).flatMap((indicator) => normalizeArray(indicator?.requiredInputs)),
+    ]),
+  }));
+  return {
+    status: 'ready',
+    summary: {
+      company,
+      productName,
+      headline: `已收录 ${responsibilities.length} 项经审核的官网保险责任。`,
+      mainResponsibilities: responsibilities,
+      notices: [],
+      requiredPolicyFields: uniqueStrings(responsibilities.flatMap((item) => item.requiredPolicyFields)),
+      sourceUrls,
+      officialResponsibilityText: reviewedCards
+        .map((card) => `${text(card.title)}：${text(card.sourceExcerpt)}`)
+        .join('\n'),
+    },
   };
 }
 
@@ -1213,6 +1284,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   productName = '',
   canonicalProductId = '',
   sourceRecords = [],
+  requireSourceDigest = false,
 } = {}) {
   const normalizedCompany = text(company);
   const normalizedProductName = text(productName);
@@ -1230,6 +1302,9 @@ export function buildCustomerResponsibilitySummaryFromCards({
     productName: normalizedProductName,
   });
   const cardsWithSourceDigests = alignCardsToApprovedArtifactSourceDigests(cards, approvedArtifacts);
+  if (requireSourceDigest && cardsWithSourceDigests.some((card) => !text(card.sourceDigest || card.responsibilitySourceDigest))) {
+    return null;
+  }
   const sourceUrls = uniqueStrings(cardsWithSourceDigests.map((card) => text(card.sourceUrl || card.source_url)));
   const responsibilities = cardsWithSourceDigests
     .map((card) => {
@@ -2031,6 +2106,24 @@ async function generateProductCustomerResponsibilitySummaryInternal({
       source: 'database',
       summary: safeCustomerSummary(existing),
     };
+  }
+
+  if (!records.length) {
+    const reviewedCardSummary = customerSummaryFromReviewedResponsibilityCards(cards, { company, productName });
+    if (reviewedCardSummary.status === 'version_conflict') {
+      return {
+        ok: false,
+        status: 'version_conflict',
+        message: '这个产品存在多个保险责任来源版本，需要先确认对应条款版本。',
+      };
+    }
+    if (reviewedCardSummary.summary) {
+      return {
+        ok: true,
+        source: 'responsibility_cards',
+        summary: safeCustomerSummary(reviewedCardSummary.summary),
+      };
+    }
   }
 
   const structuredNow = nowIso();

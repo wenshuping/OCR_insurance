@@ -1,0 +1,96 @@
+{
+  "format": "policy-ocr-targeted-policy-input-scope-v1",
+  "purpose": "Patch only verified policy-instance calculation inputs for the nine released responsibility-card products. This scope never copies users, families, source records, cashflows, cash values, cards, indicators, or unrelated payload fields.",
+  "products": [
+    {
+      "order": 1,
+      "numericId": null,
+      "cardCompany": "新华人寿保险股份有限公司",
+      "cardProductName": "阳光灿烂少儿两全保险（分红型）",
+      "cardSourceUrl": "https://static-cdn.newchinalife.com/ncl/pdf/20240407/cb2d52e9-9c24-4ec5-b45e-2b77c7f09bd7.pdf",
+      "policySourceProductNames": ["阳光灿烂少儿两全保险（分红型）"],
+      "policySourceUrls": ["https://static-cdn.newchinalife.com/ncl/pdf/20240407/cb2d52e9-9c24-4ec5-b45e-2b77c7f09bd7.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 2,
+      "numericId": null,
+      "cardCompany": "新华人寿保险股份有限公司",
+      "cardProductName": "尊尚人生两全保险（分红型）",
+      "cardSourceUrl": "https://static-cdn.newchinalife.com/ncl/pdf/20230616/9f3ee46f-910d-47ca-ba26-cc589d6b7f14.pdf",
+      "policySourceProductNames": ["新华人寿保险股份有限公司尊尚人生两全保险（分红型）"],
+      "policySourceUrls": ["https://static-cdn.newchinalife.com/ncl/pdf/20230616/9f3ee46f-910d-47ca-ba26-cc589d6b7f14.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 3,
+      "numericId": null,
+      "cardCompany": "工银安盛人寿保险有限公司",
+      "cardProductName": "工银安盛人寿御享人生重大疾病保险",
+      "cardSourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/060940595i5n.pdf",
+      "policySourceProductNames": ["工银安盛人寿御享人生重大疾病保险"],
+      "policySourceUrls": ["https://www.icbc-axa.com/attachmentDir/file/202305/060940595i5n.pdf"],
+      "expectedPolicyCount": 2
+    },
+    {
+      "order": 4,
+      "numericId": null,
+      "cardCompany": "工银安盛人寿保险有限公司",
+      "cardProductName": "工银安盛人寿附加综合意外伤害保险",
+      "cardSourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/09094240yg6f.pdf",
+      "policySourceProductNames": ["工银安盛人寿附加综合意外伤害保险"],
+      "policySourceUrls": ["https://www.icbc-axa.com/attachmentDir/file/202305/09094240yg6f.pdf"],
+      "expectedPolicyCount": 5
+    },
+    {
+      "order": 5,
+      "numericId": null,
+      "cardCompany": "工银安盛人寿保险有限公司",
+      "cardProductName": "工银安盛人寿附加住院津贴医疗保险",
+      "cardSourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202310/23173150979a.pdf",
+      "policySourceProductNames": ["工银安盛人寿附加住院津贴医疗保险"],
+      "policySourceUrls": ["https://www.icbc-axa.com/attachmentDir/file/202310/23173150979a.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 6,
+      "numericId": null,
+      "cardCompany": "工银安盛人寿保险有限公司",
+      "cardProductName": "工银安盛人寿附加住院费用医疗保险",
+      "cardSourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/06142428kygn.pdf",
+      "policySourceProductNames": ["工银安盛人寿附加住院费用医疗保险"],
+      "policySourceUrls": ["https://www.icbc-axa.com/attachmentDir/file/202305/06142428kygn.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 7,
+      "numericId": null,
+      "cardCompany": "工银安盛人寿保险有限公司",
+      "cardProductName": "工银安盛人寿附加意外伤害医疗保险（B款）",
+      "cardSourceUrl": "https://www.icbc-axa.com/attachmentDir/file/202305/061419559is3.pdf",
+      "policySourceProductNames": ["工银安盛人寿附加意外伤害医疗保险（B款）"],
+      "policySourceUrls": ["https://www.icbc-axa.com/attachmentDir/file/202305/061419559is3.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 8,
+      "numericId": null,
+      "cardCompany": "富德生命人寿保险股份有限公司",
+      "cardProductName": "富德生命长盈六号两全保险（万能型）（荣耀版）",
+      "cardSourceUrl": "https://www.sino-life.com/upload/clause/lqbx_2023082.pdf",
+      "policySourceProductNames": ["富德生命长盈六号两全保险（万能型）（荣耀版）"],
+      "policySourceUrls": ["https://www.sino-life.com/upload/clause/lqbx_2023082.pdf"],
+      "expectedPolicyCount": 1
+    },
+    {
+      "order": 9,
+      "numericId": null,
+      "cardCompany": "中邮人寿",
+      "cardProductName": "中邮年年好邮保一生A款终身寿险",
+      "cardSourceUrl": "https://www.chinapost-life.com/publish/publish1/publish1_3/publish1_3_2/202306/P020230629441661283125.pdf",
+      "policySourceProductNames": ["中邮年年好邮保一生A款终身寿险"],
+      "policySourceUrls": ["https://www.chinapost-life.com/publish/publish4/publish4_1/publish4_1_5/publish4_1_5_2/202211/P020230119339392798592.pdf"],
+      "expectedPolicyCount": 1
+    }
+  ]
+}
