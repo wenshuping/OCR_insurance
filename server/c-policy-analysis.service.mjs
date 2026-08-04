@@ -2621,7 +2621,25 @@ function policyDomainSkillKeys({ policy = {}, analysisInput = {}, searchArtifact
     participating_life: 'life_domain',
   };
   const skills = [byCategory[routing.productCategory]].filter(Boolean);
-  const identityAndEvidence = `${trimString(policy.name || policy.productName)} ${evidenceText}`;
+  const identity = [
+    trimString(policy.name || policy.productName),
+    trimString(policy.productType || policy.product_type),
+    trimString(policy.insuranceType || policy.insurance_type),
+  ].filter(Boolean).join(' ');
+  const explicitDomainSkills = [
+    [/(?:万能型|万能保险|万能险|投资连结|投连险)/u, 'universal_account_domain'],
+    [/(?:增额终身寿|增额寿)/u, 'incremental_whole_life_domain'],
+    [/(?:年金保险|养老年金|两全保险)/u, 'annuity_endowment_domain'],
+    [/(?:重大疾病保险|重疾险)/u, 'critical_illness_domain'],
+    [/(?:医疗保险|医疗险)/u, 'medical_domain'],
+    [/(?:意外伤害保险|意外险)/u, 'accident_domain'],
+    [/(?:长期护理保险|护理保险)/u, 'long_term_care_domain'],
+    [/(?:定期寿险|终身寿险|终身保险)/u, 'life_domain'],
+  ];
+  for (const [pattern, skill] of explicitDomainSkills) {
+    if (pattern.test(identity)) skills.push(skill);
+  }
+  const identityAndEvidence = `${identity} ${evidenceText}`;
   if (/(?:附加|团体|可选责任|选择责任)/u.test(identityAndEvidence)) skills.push('rider_group_domain');
   return normalizePolicyAnalysisSkillKeys(skills);
 }

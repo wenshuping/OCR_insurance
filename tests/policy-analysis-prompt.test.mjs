@@ -776,6 +776,49 @@ test('policy analysis always adds the deterministic product domain skill', async
   });
 });
 
+test('policy analysis composes explicit universal, endowment, and rider domain skills', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    const prompts = [];
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      prompts.push(prompt);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: ['responsibility_extraction', 'indicator_quantification'],
+          promptDirectives: [],
+          reason: '解析正式保险责任',
+        });
+      }
+      return createChatResponse({
+        coverageTable: [{
+          coverageType: '生存保险金',
+          scenario: '被保险人在约定保单周年日生存',
+          payout: '按合同约定金额给付',
+          sourceExcerpt: '被保险人生存且受益人申请领取，给付生存保险金。',
+        }],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: {
+        company: '中国平安',
+        name: '平安附加两全保险（万能型）',
+      },
+      ocrText: '保险责任 生存保险金 身故保险金 保单账户价值',
+      fetchImpl,
+    });
+
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /universal_account_domain/u);
+    assert.match(prompts[1], /annuity_endowment_domain/u);
+    assert.match(prompts[1], /rider_group_domain/u);
+    assert.ok(result.modelOutput.skillPlan.skills.includes('universal_account_domain'));
+    assert.ok(result.modelOutput.skillPlan.skills.includes('annuity_endowment_domain'));
+    assert.ok(result.modelOutput.skillPlan.skills.includes('rider_group_domain'));
+  });
+});
+
 test('policy analysis falls back to uploaded OCR skills when official RAG is missing', async () => {
   await withPolicyAnalysisEnv(
     async () => {
