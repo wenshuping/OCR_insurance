@@ -53,6 +53,19 @@ For newly crawled or extracted insurance data, completion requires:
 - include persistence evidence such as `dbPath`, `savedRecordCount`, and row ids/counts when practical;
 - verify the result with a SQL read, not just a crawler response, console output, Feishu sync, or temporary file.
 
+## Large-table query rules
+
+The insurance knowledge and responsibility tables are large shared datasets. Full-table reads are prohibited in application startup, request handlers, and customer-facing analysis paths.
+
+- Do not use unscoped `SELECT *`, `.all()`, or payload deserialization against `knowledge_records`, `insurance_indicator_records`, `optional_responsibility_records`, `product_responsibility_cards`, or other large evidence tables.
+- Every read of a large table must carry a selective company/product/canonical-id predicate backed by an index, or a deliberate bounded `LIMIT` for an administrative list.
+- Knowledge and responsibility evidence must be loaded on demand from SQLite after the product identity is resolved. Startup state must keep only lightweight state and indexes; it must not deserialize the full evidence corpus.
+- A full scan is allowed only in an explicitly named offline audit/maintenance command, must be read-only by default, and must document its scope and expected runtime. It must never be called from a route, startup path, or model fallback.
+- New or changed SQL touching a large table must include a focused test for scoped retrieval and, when practical, an `EXPLAIN QUERY PLAN` check showing use of the company/product/canonical-id index.
+- If a function needs every row, split it into an explicit offline API such as `auditAllKnowledgeRecords`; do not hide a full scan behind a generic `load*` or `find*` helper.
+
+The harness review should reject any implementation that makes customer latency or service startup proportional to the total knowledge-base size. The expected cost is proportional to the resolved product's rows, not to the number of customers or total records.
+
 ## Verification Matrix
 
 | Change area | Required checks |
@@ -78,6 +91,24 @@ npm run harness:audit
 ```
 
 The audit checks production-sensitive changed paths, required harness execution points, focused test mappings in `docs/harness-test-map.json`, Skill changes under `.agents/skills/`, read-only optional responsibility data quality in the development SQLite database, and scripts that default to the production SQLite path.
+
+### Development source ownership
+
+The development stack has exactly one source-owner worktree. Once `npm run local:dev` has claimed it, `npm run harness:audit` fails from every other worktree. This prevents a change or test in one checkout from being reported as verified while the browser and API run another checkout.
+
+Before editing, restarting, or handing a test back to a user, run:
+
+```bash
+pwd -P
+npm run local:status
+npm run harness:audit
+```
+
+The current directory and the development stack's `源码目录` must match. A non-owner worktree may be used for read-only review or isolated tests, but it must not be used to claim development UI/API verification.
+
+When ports `4207` (API) or `3014` (web) are listening, the harness also verifies that the listener PID is recorded in `.runtime/local/pids/` and that its working directory is the bound worktree. An unmanaged listener or one from another worktree is a failure, not an already-started development service.
+
+The development database is configured by `.runtime/local/policy-ocr-env.json` through `POLICY_OCR_APP_DB_PATH`. Harness verifies that the path exists and, when the API is running, that the API process uses exactly that database. A copied local database must not silently become a second development source of truth.
 
 Run all tests with:
 

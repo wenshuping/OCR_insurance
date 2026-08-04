@@ -71,6 +71,7 @@ export function requiredCalculationInputsForMeta(meta = {}) {
   const calculationKey = displayText(meta.calculationKey);
   const basisKey = displayText(meta.basisKey);
   if (calculationKey === 'claim_event_facts') return ['eventCause', 'eventDate'];
+  if (calculationKey === 'scheduled_branch_scenarios') return ['policy.amount', 'policyYearOrAge'];
   if (calculationKey === 'fixed_amount') return [];
   if (['basic_amount', 'percent_of_basic_amount', 'multiple_of_basic_amount'].includes(calculationKey) || basisKey === 'basic_amount') {
     return ['policy.amount'];
@@ -147,6 +148,14 @@ export function normalizeIndicatorCalculation(indicator = {}) {
   const hasStructuredEventBranches = Array.isArray(indicator.branches)
     && indicator.branches.length > 0
     && indicator.branches.every((branch) => displayText(branch?.normalizedFormula || branch?.formulaText));
+  const hasStructuredScheduledBranches = hasStructuredEventBranches
+    && /生存|年金|养老金|祝寿|教育|婚嫁|满期/u.test(liability)
+    && indicator.branches.every((branch) => (
+      /周岁|保单生效对应日|合同生效满|保险期间届满/u.test(displayText([
+        branch?.conditionText,
+        branch?.condition,
+      ].filter(Boolean).join(' ')))
+    ));
 
   if (requiresClaimEventFacts(indicator)) {
     return {
@@ -155,6 +164,18 @@ export function normalizeIndicatorCalculation(indicator = {}) {
       calculationEligible: false,
       calculationReason: '需补充出险原因和出险日期后选择条款给付分支，暂不计算',
       decisionSource: 'code_safety_rule',
+      value,
+      unit: '公式',
+    };
+  }
+
+  if (hasStructuredScheduledBranches) {
+    return {
+      basisKey: 'policy_anniversary_schedule',
+      calculationKey: 'scheduled_branch_scenarios',
+      calculationEligible: false,
+      calculationReason: '按年龄或保单周年阶段分别测算',
+      decisionSource: 'official_scheduled_benefit_branches',
       value,
       unit: '公式',
     };
@@ -945,9 +966,38 @@ function resolveClaimEventBranchScenarios(indicator = {}, inputs = {}, meta = {}
   };
 }
 
+function resolveScheduledBenefitBranchScenarios(indicator = {}, inputs = {}, meta = {}) {
+  const branches = Array.isArray(indicator.branches) ? indicator.branches : [];
+  const baseAmount = Number(inputs.baseAmount || 0) || 0;
+  if (!branches.length || !(baseAmount > 0)) return null;
+  const lines = branches.map((branch) => {
+    const condition = displayText(branch.conditionText || branch.condition) || '约定领取阶段';
+    const formula = displayText(branch.formulaText || branch.normalizedFormula);
+    const percentage = formula.match(/(\d+(?:\.\d+)?)\s*[%％]/u);
+    if (!percentage) return `${condition}：${formula}`;
+    const rate = Number(percentage[1]);
+    const amount = roundMoney(baseAmount * rate / 100);
+    return `${condition}：基本责任保险金额${formatMoney(baseAmount)}元 × ${formatMoney(rate)}% = ${formatMoney(amount)}元`;
+  });
+  return {
+    resolved: false,
+    partial: true,
+    amount: 0,
+    meta,
+    hasBranchScenarios: true,
+    scenarioKind: 'scheduled_benefit',
+    uncertaintyNote: '已按当前保单保险金额分别测算各领取阶段；不同年龄阶段适用比例不同，未合并为单笔金额，也未计入统计。',
+    calculationText: `领取阶段测算（未合并统计）：\n${lines.join('\n')}`,
+  };
+}
+
 export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {}) {
   const repairedIndicator = repairIndicatorFormulaFromOfficialExcerpt(indicator);
   const meta = normalizeIndicatorCalculation(repairedIndicator);
+  if (meta.calculationKey === 'scheduled_branch_scenarios') {
+    const branchScenarios = resolveScheduledBenefitBranchScenarios(repairedIndicator, inputs, meta);
+    if (branchScenarios) return branchScenarios;
+  }
   if (meta.calculationKey === 'claim_event_facts') {
     const branchScenarios = resolveClaimEventBranchScenarios(repairedIndicator, inputs, meta);
     if (branchScenarios) return branchScenarios;

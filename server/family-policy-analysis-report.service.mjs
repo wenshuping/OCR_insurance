@@ -323,6 +323,100 @@ export function buildFamilyPolicyAnalysisInput({
   };
 }
 
+function localPolicyEvidenceCount(policy = {}) {
+  const evidence = policy?.evidence || {};
+  return [
+    Array.isArray(policy?.responsibilities) ? policy.responsibilities.length : 0,
+    Array.isArray(evidence.knowledgeEvidence) ? evidence.knowledgeEvidence.length : 0,
+    Array.isArray(evidence.indicatorEvidence) ? evidence.indicatorEvidence.length : 0,
+    Array.isArray(evidence.optionalResponsibilityEvidence) ? evidence.optionalResponsibilityEvidence.length : 0,
+    Array.isArray(evidence.policySourceEvidence) ? evidence.policySourceEvidence.length : 0,
+  ].reduce((total, count) => total + count, 0);
+}
+
+export function hasLocalFamilyPolicyAnalysisEvidence(input = {}) {
+  const policies = Array.isArray(input?.policies) ? input.policies : [];
+  return policies.length > 0 && policies.every((policy) => localPolicyEvidenceCount(policy) > 0);
+}
+
+function localMarkdownTable(rows = [], headers = []) {
+  if (!rows.length) return '暂无可直接核实的数据。';
+  return [
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...rows.map((row) => `| ${row.map((cell) => String(cell ?? '').replace(/\|/gu, '／').replace(/\n/gu, ' ')).join(' | ')} |`),
+  ].join('\n');
+}
+
+export function buildLocalFamilyPolicyAnalysisReport(input = {}, { generatedAt = new Date().toISOString() } = {}) {
+  const policies = Array.isArray(input?.policies) ? input.policies : [];
+  const members = Array.isArray(input?.members) ? input.members : [];
+  const report = input?.report || {};
+  const policyRows = policies.map((policy) => {
+    const responsibilities = Array.isArray(policy.responsibilities) ? policy.responsibilities : [];
+    const evidence = policy.evidence || {};
+    const evidenceCount = localPolicyEvidenceCount(policy);
+    const responsibilityText = responsibilities
+      .map((item) => {
+        const amount = item.amount ? `（${item.amount}）` : '';
+        return `${item.name || '责任'}${amount}`;
+      })
+      .filter(Boolean)
+      .slice(0, 8)
+      .join('、');
+    const evidenceText = [
+      ...(Array.isArray(evidence.knowledgeEvidence) ? evidence.knowledgeEvidence : []),
+      ...(Array.isArray(evidence.policySourceEvidence) ? evidence.policySourceEvidence : []),
+    ].map((item) => item.excerpt || item.title || item.productName).filter(Boolean).slice(0, 2).join('；');
+    return [
+      policy.productName || '-',
+      policy.company || '-',
+      responsibilityText || evidenceText || '已录入保单信息，责任明细待补充',
+      policy.coverageAmount || policy.annualPremium || '待核实',
+      evidenceCount > 0 ? '本地库已命中' : '待补充核实',
+    ];
+  });
+  const gapRows = (report.radar?.family?.scores || []).map((score) => [
+    score.label || score.key || '-',
+    score.targetText || score.target || '待补充',
+    score.amountText || score.amount || '待补充',
+    score.gapText || score.gap || '待补充',
+    score.note || '按家庭责任和现有保单继续核实',
+  ]);
+  const memberText = members.map((member) => `${member.name || '-'}（${member.relationLabel || member.role || '家庭成员'}）`).join('、') || '待补充';
+  const content = [
+    '## 一、报告结论摘要',
+    `本报告基于已录入的 ${policies.length} 张保单及本地官方责任资料生成，当前家庭成员包括：${memberText}。责任明细优先采用本地库已核实内容；未覆盖的条款限制、等待期和除外责任仍需以合同原文复核。`,
+    '',
+    '## 二、家庭成员与保单全景',
+    localMarkdownTable(policyRows, ['保险产品', '保险公司', '主要责任/本地证据', '保额或年保费', '数据来源']),
+    '',
+    '## 三、现有保障结构评价',
+    ...policies.map((policy) => {
+      const responsibilities = (policy.responsibilities || []).map((item) => item.name).filter(Boolean).slice(0, 8).join('、');
+      return `- **${policy.productName || '未命名保单'}**：保障对象为${policy.insured || '待核实'}，主要责任为${responsibilities || '见本地官方资料摘要'}；保额、期限、缴费压力及责任限制需结合合同逐项复核。`;
+    }),
+    '',
+    '## 四、重点保障缺口分析',
+    localMarkdownTable(gapRows, ['保障类型', '建议额度/口径', '已有保障', '缺口判断', '说明']),
+    '',
+    '## 五、风险场景影响',
+    '医疗、重疾、意外、身故及收入中断风险，应结合家庭年收入、必要支出、负债、教育和赡养责任核实现金流影响；当前仅对本地已录入数据作结构性判断。',
+    '',
+    '## 六、配置优先级与预算建议',
+    '建议先核实经济支柱的医疗、重疾、意外、身故和失能保障，再评估儿童及储蓄型保单；基础版、标准版、完善版预算应以家庭可承受年保费和缺口测算结果确定，不直接替代产品选择。',
+    '',
+    '## 七、需要补充核实的信息',
+    '请补充或核对每张保单的完整责任页、等待期、除外责任、保证续保/续期条件、现金价值和受益人信息；本地库没有覆盖的内容不会自动推断。',
+    '',
+    '## 八、动态复盘建议',
+    '家庭收入、负债、成员、保单状态或产品责任发生变化时，重新查询本地责任库并更新报告。',
+    '',
+    '本报告仅供家庭保障规划参考，具体投保、责任范围、等待期、除外责任、理赔和核保结果以保险合同条款及保险公司结论为准。',
+  ].join('\n');
+  return { status: 'complete', content, model: '', source: 'database', generatedAt };
+}
+
 export function buildFamilyPolicyAnalysisMessages(input = {}) {
   return [
     {

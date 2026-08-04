@@ -1,0 +1,372 @@
+[
+  {
+    "fixtureId": "rider-inpatient-medical",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "附加住院医疗保险",
+      "sourceUrl": "https://example.invalid/rider-inpatient-medical.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    },
+    "contractTopology": {"type": "rider", "evidenceStatus": "verified", "evidenceText": "本附加合同依附主合同生效并随主合同终止。"},
+    "productLabels": ["medical"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "inpatient-medical-reimbursement",
+        "officialTitle": "住院医疗费用保险金",
+        "evidencePacket": {"packetId": "p:rider-medical:1", "exactText": "住院治疗并发生合理医疗费用，我们按约定比例给付住院医疗费用保险金。", "trigger": "住院治疗并发生合理医疗费用", "obligation": "按约定比例给付"},
+        "ownerProfile": "medical_health",
+        "paymentProfile": ["medical_reimbursement"],
+        "formula": {"formulaText": "（合理医疗费用－其他补偿－免赔额）×给付比例", "normalizedFormula": "(actualMedicalExpense-thirdPartyPaid-deductible)*reimbursementRate", "requiredInputs": ["actualMedicalExpense", "thirdPartyPaid", "deductible", "reimbursementRate"], "operands": [], "branches": []}
+      },
+      {
+        "responsibilityId": "inpatient-daily-allowance",
+        "officialTitle": "住院津贴保险金",
+        "evidencePacket": {"packetId": "p:rider-medical:2", "exactText": "住院治疗期间，我们按实际住院天数乘以每日津贴金额给付住院津贴保险金。", "trigger": "住院治疗期间", "obligation": "按实际住院天数乘以每日津贴金额给付"},
+        "ownerProfile": "medical_health",
+        "paymentProfile": ["daily_allowance"],
+        "formula": {"formulaText": "实际住院天数×每日津贴金额", "normalizedFormula": "actualDays*dailyAmount", "requiredInputs": ["actualDays", "dailyAmount"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["medical_health"], "paymentProfiles": ["medical_reimbursement", "daily_allowance"]}
+  },
+  {
+    "fixtureId": "rider-accident-medical",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "附加意外伤害医疗保险",
+      "sourceUrl": "https://example.invalid/rider-accident-medical.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+    },
+    "contractTopology": {"type": "rider", "evidenceStatus": "verified", "evidenceText": "本附加合同为主合同的附加合同。"},
+    "productLabels": ["accident", "medical"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "accident-medical-reimbursement",
+        "officialTitle": "意外伤害医疗保险金",
+        "evidencePacket": {"packetId": "p:rider-accident:1", "exactText": "因意外伤害接受治疗并发生医疗费用，我们给付意外伤害医疗保险金。", "trigger": "因意外伤害接受治疗并发生医疗费用", "obligation": "给付意外伤害医疗保险金"},
+        "ownerProfile": "accident",
+        "paymentProfile": ["medical_reimbursement"],
+        "formula": {"formulaText": "（实际医疗费用－其他补偿－免赔额）×给付比例", "normalizedFormula": "(actualMedicalExpense-thirdPartyPaid-deductible)*reimbursementRate", "requiredInputs": ["actualMedicalExpense", "thirdPartyPaid", "deductible", "reimbursementRate"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["accident"], "paymentProfiles": ["medical_reimbursement"]}
+  },
+  {
+    "fixtureId": "student-plan-mixed-components",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "学生平安保障计划组件",
+      "sourceUrl": "https://example.invalid/student-plan-components.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000003"
+    },
+    "contractTopology": {"type": "bundle_component", "evidenceStatus": "verified", "evidenceText": "本计划由学生定期寿险、学生意外伤害保险及学生住院医疗保险三个备案组件组成。"},
+    "productLabels": ["term_life", "accident", "medical"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "student-term-death",
+        "officialTitle": "身故保险金",
+        "evidencePacket": {"packetId": "p:student:1", "exactText": "在保险期间内身故，我们按基本保险金额给付身故保险金。", "trigger": "保险期间内身故", "obligation": "按基本保险金额给付"},
+        "ownerProfile": "term_life",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      },
+      {
+        "responsibilityId": "student-accident-disability",
+        "officialTitle": "意外伤残保险金",
+        "evidencePacket": {"packetId": "p:student:2", "exactText": "因意外伤害造成伤残，我们按伤残等级对应比例给付意外伤残保险金。", "trigger": "因意外伤害造成伤残", "obligation": "按伤残等级对应比例给付"},
+        "ownerProfile": "accident",
+        "paymentProfile": ["disability_table"],
+        "formula": {"formulaText": "基本保险金额×伤残等级给付比例", "normalizedFormula": "policy.amount*policyScheduleTable", "requiredInputs": ["policy.amount", "policyScheduleTable"], "operands": [], "branches": []}
+      },
+      {
+        "responsibilityId": "student-inpatient-medical",
+        "officialTitle": "住院医疗保险金",
+        "evidencePacket": {"packetId": "p:student:3", "exactText": "因疾病住院并发生合理医疗费用，我们按约定给付住院医疗保险金。", "trigger": "因疾病住院并发生合理医疗费用", "obligation": "按约定给付"},
+        "ownerProfile": "medical_health",
+        "paymentProfile": ["medical_reimbursement"],
+        "formula": {"formulaText": "（合理医疗费用－其他补偿）×给付比例", "normalizedFormula": "(actualMedicalExpense-thirdPartyPaid)*reimbursementRate", "requiredInputs": ["actualMedicalExpense", "thirdPartyPaid", "reimbursementRate"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["term_life", "accident", "medical_health"], "paymentProfiles": ["lump_sum", "disability_table", "medical_reimbursement"]}
+  },
+  {
+    "fixtureId": "group-medical",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "团体医疗保险",
+      "sourceUrl": "https://example.invalid/group-medical.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000004"
+    },
+    "contractTopology": {"type": "group", "evidenceStatus": "verified", "evidenceText": "符合约定的团体成员取得被保险人资格，成员退出团体时保障终止。"},
+    "productLabels": ["medical"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "group-medical-expense",
+        "officialTitle": "团体医疗费用保险金",
+        "evidencePacket": {"packetId": "p:group-medical:1", "exactText": "被保险成员发生约定医疗费用，我们在成员限额内给付医疗费用保险金。", "trigger": "被保险成员发生约定医疗费用", "obligation": "在成员限额内给付"},
+        "ownerProfile": "medical_health",
+        "paymentProfile": ["medical_reimbursement"],
+        "formula": {"formulaText": "min(符合约定的医疗费用×给付比例，成员限额)", "normalizedFormula": "min(actualMedicalExpense*reimbursementRate,liabilityLimit)", "requiredInputs": ["actualMedicalExpense", "reimbursementRate", "liabilityLimit"], "operands": [{"operandId": "expense-result"}, {"operandId": "member-limit"}], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["medical_health"], "paymentProfiles": ["medical_reimbursement"]}
+  },
+  {
+    "fixtureId": "group-accident",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "团体意外伤害保险",
+      "sourceUrl": "https://example.invalid/group-accident.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000005"
+    },
+    "contractTopology": {"type": "group", "evidenceStatus": "verified", "evidenceText": "团体在职成员为被保险人，成员离职时个人保险期间终止。"},
+    "productLabels": ["accident"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "group-accident-death",
+        "officialTitle": "意外身故保险金",
+        "evidencePacket": {"packetId": "p:group-accident:1", "exactText": "被保险成员因意外伤害身故，我们按该成员保险金额给付意外身故保险金。", "trigger": "成员因意外伤害身故", "obligation": "按该成员保险金额给付"},
+        "ownerProfile": "accident",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "成员保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["accident"], "paymentProfiles": ["lump_sum"]}
+  },
+  {
+    "fixtureId": "critical-illness-multiple-pay",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "多次给付重大疾病保险",
+      "sourceUrl": "https://example.invalid/critical-multiple.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000006"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["critical_illness"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "critical-multiple-payment",
+        "officialTitle": "重大疾病保险金",
+        "evidencePacket": {"packetId": "p:critical:1", "exactText": "首次及后续确诊不同组重大疾病且间隔满一年，我们分别给付重大疾病保险金。", "trigger": "确诊不同组重大疾病且间隔满一年", "obligation": "分别给付重大疾病保险金"},
+        "ownerProfile": "critical_illness",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "每次按基本保险金额给付，累计三次", "normalizedFormula": "policy.amount per eligible group, max 3", "requiredInputs": ["policy.amount", "manualFormulaInputs"], "operands": [], "branches": [{"branchId": "first"}, {"branchId": "subsequent"}]}
+      },
+      {
+        "responsibilityId": "critical-premium-waiver",
+        "officialTitle": "重大疾病豁免保险费",
+        "evidencePacket": {"packetId": "p:critical:2", "exactText": "首次给付重大疾病保险金后，我们豁免后续各期保险费。", "trigger": "首次给付重大疾病保险金", "obligation": "豁免后续各期保险费"},
+        "ownerProfile": "critical_illness",
+        "paymentProfile": ["waiver"],
+        "formula": {"formulaText": "豁免后续各期保险费", "normalizedFormula": "waive(future_premiums)", "requiredInputs": ["manualFormulaInputs"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["critical_illness"], "paymentProfiles": ["lump_sum", "waiver"]}
+  },
+  {
+    "fixtureId": "ordinary-term-life",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "普通定期寿险",
+      "sourceUrl": "https://example.invalid/ordinary-term-life.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000007"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效且保险期间为二十年。"},
+    "productLabels": ["term_life"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "term-death",
+        "officialTitle": "身故保险金",
+        "evidencePacket": {"packetId": "p:term:1", "exactText": "在保险期间内身故，我们按基本保险金额给付身故保险金。", "trigger": "保险期间内身故", "obligation": "按基本保险金额给付"},
+        "ownerProfile": "term_life",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "deepseek-standard", "status": "parse_pending", "ownerProfiles": ["term_life"], "paymentProfiles": ["lump_sum"]}
+  },
+  {
+    "fixtureId": "ordinary-annuity",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "普通年金保险",
+      "sourceUrl": "https://example.invalid/ordinary-annuity.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["annuity"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "annual-annuity",
+        "officialTitle": "年金",
+        "evidencePacket": {"packetId": "p:annuity:1", "exactText": "自第五个保单周年日起仍生存，我们每年按基本保险金额给付年金。", "trigger": "自第五个保单周年日起仍生存", "obligation": "每年按基本保险金额给付"},
+        "ownerProfile": "annuity",
+        "paymentProfile": ["annuity"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount", "policyYear"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "deepseek-standard", "status": "parse_pending", "ownerProfiles": ["annuity"], "paymentProfiles": ["annuity"]}
+  },
+  {
+    "fixtureId": "universal-annuity",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "万能型年金保险",
+      "sourceUrl": "https://example.invalid/universal-annuity.pdf",
+      "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000009"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["annuity", "universal_account"],
+    "productFunctions": [{"functionProfile": "universal_account", "kind": "minimum_guaranteed_interest"}, {"functionProfile": "universal_account", "kind": "account_settlement"}],
+    "inventory": [
+      {
+        "responsibilityId": "universal-annuity-payment",
+        "officialTitle": "年金",
+        "evidencePacket": {"packetId": "p:universal-annuity:1", "exactText": "达到约定领取年龄且仍生存，我们按个人账户价值约定比例给付年金。", "trigger": "达到约定领取年龄且仍生存", "obligation": "按个人账户价值约定比例给付"},
+        "ownerProfile": "annuity",
+        "paymentProfile": ["annuity", "account"],
+        "formula": {"formulaText": "个人账户价值×约定比例", "normalizedFormula": "accountValue*manualFormulaInputs", "requiredInputs": ["accountValue", "manualFormulaInputs"], "operands": [], "branches": [{"branchId": "annual"}, {"branchId": "monthly"}]}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["annuity"], "paymentProfiles": ["annuity", "account"]}
+  },
+  {
+    "fixtureId": "endowment-with-accident-extra",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "两全保险附加意外额外给付",
+      "sourceUrl": "https://example.invalid/endowment-accident-extra.pdf",
+      "sourceDigest": "sha256:000000000000000000000000000000000000000000000000000000000000000a"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["endowment", "accident"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "endowment-maturity",
+        "officialTitle": "满期保险金",
+        "evidencePacket": {"packetId": "p:endowment:1", "exactText": "保险期满时仍生存，我们按基本保险金额给付满期保险金。", "trigger": "保险期满时仍生存", "obligation": "按基本保险金额给付"},
+        "ownerProfile": "endowment",
+        "paymentProfile": ["scheduled_maturity"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      },
+      {
+        "responsibilityId": "endowment-death",
+        "officialTitle": "身故保险金",
+        "evidencePacket": {"packetId": "p:endowment:2", "exactText": "保险期间内身故，我们按已交保险费与现金价值的较大者给付身故保险金。", "trigger": "保险期间内身故", "obligation": "按已交保险费与现金价值的较大者给付"},
+        "ownerProfile": "endowment",
+        "paymentProfile": ["lump_sum", "max_min_comparison"],
+        "formula": {"formulaText": "已交保险费与现金价值的较大者", "normalizedFormula": "max(manualFormulaInputs,cashValue)", "requiredInputs": ["manualFormulaInputs", "cashValue"], "operands": [{"operandId": "paid-premium"}, {"operandId": "cash-value"}], "branches": []}
+      },
+      {
+        "responsibilityId": "accident-extra-death",
+        "officialTitle": "意外身故额外保险金",
+        "evidencePacket": {"packetId": "p:endowment:3", "exactText": "因意外伤害身故，除身故保险金外我们额外按基本保险金额给付。", "trigger": "因意外伤害身故", "obligation": "额外按基本保险金额给付"},
+        "ownerProfile": "accident",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["endowment", "accident"], "paymentProfiles": ["scheduled_maturity", "lump_sum", "max_min_comparison"]}
+  },
+  {
+    "fixtureId": "long-term-care",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "长期护理保险",
+      "sourceUrl": "https://example.invalid/long-term-care.pdf",
+      "sourceDigest": "sha256:000000000000000000000000000000000000000000000000000000000000000b"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["long_term_care"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "monthly-care-benefit",
+        "officialTitle": "长期护理保险金",
+        "evidencePacket": {"packetId": "p:care:1", "exactText": "持续符合约定护理状态满九十日，我们每月给付长期护理保险金。", "trigger": "持续符合约定护理状态满九十日", "obligation": "每月给付长期护理保险金"},
+        "ownerProfile": "long_term_care",
+        "paymentProfile": ["periodic_care"],
+        "formula": {"formulaText": "每月护理保险金额×符合条件的给付月数", "normalizedFormula": "manualFormulaInputs*manualFormulaInputs", "requiredInputs": ["manualFormulaInputs"], "operands": [], "branches": [{"branchId": "adl"}, {"branchId": "cognitive"}]}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["long_term_care"], "paymentProfiles": ["periodic_care"]}
+  },
+  {
+    "fixtureId": "incremental-whole-life",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "增额终身寿险",
+      "sourceUrl": "https://example.invalid/incremental-whole-life.pdf",
+      "sourceDigest": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同保险期间为终身。"},
+    "productLabels": ["whole_life", "incremental_whole_life"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "incremental-whole-life-death",
+        "officialTitle": "身故保险金",
+        "evidencePacket": {"packetId": "p:incremental:1", "exactText": "第n保单年度有效保险金额为基本保险金额×(1+3%)^(n-1)，身故时按含该金额的较大者给付。", "trigger": "身故时", "obligation": "按含该金额的较大者给付"},
+        "ownerProfile": "incremental_whole_life",
+        "paymentProfile": ["lump_sum", "max_min_comparison"],
+        "formula": {"formulaText": "max(已交保险费，现金价值，基本保险金额×(1+3%)^(n-1))", "normalizedFormula": "max(manualFormulaInputs,cashValue,policy.amount*(1+0.03)^(policyYear-1))", "requiredInputs": ["manualFormulaInputs", "cashValue", "policy.amount", "policyYear"], "operands": [{"operandId": "paid-premium"}, {"operandId": "cash-value"}, {"operandId": "effective-amount"}], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["incremental_whole_life"], "paymentProfiles": ["lump_sum", "max_min_comparison"]}
+  },
+  {
+    "fixtureId": "ordinary-whole-life-boundary",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "普通终身寿险",
+      "sourceUrl": "https://example.invalid/ordinary-whole-life.pdf",
+      "sourceDigest": "sha256:000000000000000000000000000000000000000000000000000000000000000d"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同保险期间为终身。"},
+    "productLabels": ["whole_life"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "ordinary-whole-life-death",
+        "officialTitle": "身故保险金",
+        "evidencePacket": {"packetId": "p:whole-life:1", "exactText": "保险期间内身故，我们按基本保险金额给付身故保险金，条款未约定有效保险金额逐年增长。", "trigger": "保险期间内身故", "obligation": "按基本保险金额给付"},
+        "ownerProfile": "whole_life",
+        "paymentProfile": ["lump_sum"],
+        "formula": {"formulaText": "基本保险金额", "normalizedFormula": "policy.amount", "requiredInputs": ["policy.amount"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "parse_pending", "ownerProfiles": ["whole_life"], "paymentProfiles": ["lump_sum"]}
+  },
+  {
+    "fixtureId": "owner-conflict-review",
+    "productIdentity": {
+      "company": "示例保险公司",
+      "productName": "责任归属冲突样例",
+      "sourceUrl": "https://example.invalid/owner-conflict.pdf",
+      "sourceDigest": "sha256:000000000000000000000000000000000000000000000000000000000000000e"
+    },
+    "contractTopology": {"type": "standalone", "evidenceStatus": "verified", "evidenceText": "本合同独立生效。"},
+    "productLabels": ["accident", "medical"],
+    "productFunctions": [],
+    "inventory": [
+      {
+        "responsibilityId": "ambiguous-medical",
+        "officialTitle": "医疗保险金",
+        "evidencePacket": {"packetId": "p:conflict:1", "exactText": "发生约定医疗费用，我们给付医疗保险金。", "trigger": "发生约定医疗费用", "obligation": "给付医疗保险金"},
+        "ownerProposals": ["medical_health", "accident"],
+        "paymentProfile": ["medical_reimbursement"],
+        "formula": {"formulaText": "实际医疗费用×给付比例", "normalizedFormula": "actualMedicalExpense*reimbursementRate", "requiredInputs": ["actualMedicalExpense", "reimbursementRate"], "operands": [], "branches": []}
+      }
+    ],
+    "expected": {"route": "luna-complex", "status": "manual_review", "ownerConflict": true, "ownerProfiles": [], "paymentProfiles": ["medical_reimbursement"]}
+  }
+]

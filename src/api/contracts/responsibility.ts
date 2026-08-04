@@ -74,6 +74,7 @@ export type OptionalResponsibility = {
   selectionEvidence?: string;
   quantificationStatus?: QuantificationStatus;
   quantificationReason?: string;
+  coverageAmount?: number;
   indicatorIds?: string[];
   sourceExcerpt?: string;
 };

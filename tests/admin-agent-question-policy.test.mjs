@@ -58,7 +58,7 @@ test('admin policy API requires auth and manages validated immutable versions', 
     assert.equal(listed.body.published.id, rolled.body.published.id);
     assert.equal(listed.body.history.filter((row) => row.status === 'published').length, 1);
     assert.ok(Array.isArray(listed.body.templates));
-    assert.deepEqual(listed.body.defaultRuntimeSettings, { fallbackHistoryMessageLimit: 6, productContextTtlMinutes: 30 });
+    assert.deepEqual(listed.body.defaultRuntimeSettings, { fallbackHistoryMessageLimit: 40, productContextTtlMinutes: 30 });
   } finally { await h.close(); }
 });
 

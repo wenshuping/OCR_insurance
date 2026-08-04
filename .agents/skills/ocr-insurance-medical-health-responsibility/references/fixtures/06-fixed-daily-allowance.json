@@ -1,0 +1,88 @@
+{
+  "fixtureId": "fixed-daily-allowance",
+  "sourceText": "本合同为主险合同。住院津贴保险金：被保险人因疾病住院，我们按实际住院天数扣除3天免赔天数后，每日给付200元；每次住院最高给付30天，每个保单年度累计最高给付90天。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例住院津贴保险",
+    "sourceDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "inpatient-allowance",
+        "liability": "住院津贴保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因疾病住院",
+        "insurerObligation": "我们按实际住院天数扣除3天免赔天数后，每日给付200元",
+        "sourceExcerpt": "住院津贴保险金：被保险人因疾病住院，我们按实际住院天数扣除3天免赔天数后，每日给付200元；每次住院最高给付30天，每个保单年度累计最高给付90天。",
+        "medicalProfile": {
+          "paymentMode": "fixed_benefit",
+          "coveredExpenseItems": [],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [
+            {
+              "valueText": "3天",
+              "scopeText": "3天免赔天数",
+              "sourceExcerpt": "扣除3天免赔天数后"
+            }
+          ],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [
+              {
+                "valueText": "90天",
+                "scopeText": "每个保单年度累计最高给付90天",
+                "sourceExcerpt": "每个保单年度累计最高给付90天"
+              }
+            ],
+            "lifetime": [],
+            "perEvent": [
+              {
+                "valueText": "30天",
+                "scopeText": "每次住院最高给付30天",
+                "sourceExcerpt": "每次住院最高给付30天"
+              }
+            ],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [
+            {
+              "valueText": "200元",
+              "scopeText": "每日给付200元",
+              "sourceExcerpt": "每日给付200元"
+            }
+          ],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "formulaText": "实际住院天数扣除3天免赔天数后，每日给付200元",
+            "requiredInputs": [
+              "actualDays",
+              "dailyAmount",
+              "dayLimit"
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "住院津贴保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

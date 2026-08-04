@@ -3,7 +3,9 @@ import { test } from 'node:test';
 import {
   buildFamilyPolicyAnalysisInput,
   buildFamilyPolicyAnalysisMessages,
+  buildLocalFamilyPolicyAnalysisReport,
   generateFamilyPolicyAnalysisReport,
+  hasLocalFamilyPolicyAnalysisEvidence,
   resolveFamilyPolicyAnalysisReportFreshness,
 } from '../server/family-policy-analysis-report.service.mjs';
 import {
@@ -138,6 +140,44 @@ test('family policy analysis prompt asks for full customer report with emphasize
   assert.match(prompt, /不能出现“AI”/u);
   assert.match(prompt, /referenceOnly=true/u);
   assert.match(prompt, /待核实参考/u);
+});
+
+test('local family policy analysis uses database evidence without model generation', () => {
+  const input = buildFamilyPolicyAnalysisInput({
+    family: { id: 1, familyName: '测试家庭' },
+    members: [{ id: 1, name: '张先生', relationLabel: '本人', role: 'core' }],
+    policies: [{
+      id: 11,
+      company: '新华保险',
+      name: '成长阳光少儿两全保险(A款)（分红型）',
+      insured: '张小明',
+      responsibilities: [{ name: '大学教育金', amount: 10000 }],
+    }],
+    knowledgeRecords: [{
+      company: '新华保险',
+      productName: '成长阳光少儿两全保险(A款)（分红型）',
+      sourceKind: 'insurer_official',
+      evidenceLevel: 'insurer_official',
+      sourceExcerpt: '官方保险责任摘要',
+    }],
+    familyReport: { radar: { family: { scores: [] } } },
+  });
+
+  assert.equal(hasLocalFamilyPolicyAnalysisEvidence(input), true);
+  const report = buildLocalFamilyPolicyAnalysisReport(input, { generatedAt: '2026-07-27T00:00:00.000Z' });
+  assert.equal(report.source, 'database');
+  assert.equal(report.model, '');
+  assert.match(report.content, /成长阳光少儿两全保险/u);
+  assert.match(report.content, /本地库已命中/u);
+});
+
+test('local family policy analysis falls back when a policy has no local evidence', () => {
+  const input = buildFamilyPolicyAnalysisInput({
+    family: { id: 1 },
+    policies: [{ id: 11, company: '未知公司', name: '未知产品' }],
+    familyReport: { radar: { family: { scores: [] } } },
+  });
+  assert.equal(hasLocalFamilyPolicyAnalysisEvidence(input), false);
 });
 
 test('family report refresh preserves generated policy analysis report', () => {

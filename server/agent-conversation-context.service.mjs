@@ -73,7 +73,7 @@ export function createAgentConversationContextService({ store, clock = Date.now,
       : null;
     const productCandidates = isFresh(stored?.productCandidates, asOf, ttlMs) ? stored.productCandidates : null;
     const question = isFresh(stored?.question, asOf, ttlMs) ? stored.question : null;
-    const factBlock = product || productCandidates || question
+    const factBlock = product || productCandidates || question || stored?.factBlock?.salesKyc
       ? normalizeAgentContextFactBlock({
         ...(stored?.factBlock || {}),
         verifiedEntities: product

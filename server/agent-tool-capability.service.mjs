@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
+import { normalizeSalesKycState } from './agent-context-fact-block.service.mjs';
+
 const ALLOWED_TOOLS = new Set(['ask_insurance_expert', 'ask_sales_champion']);
 const ISSUE_FIELDS = new Set([
   'tenant', 'channel', 'channelUserId', 'channelMobile', 'internalUserId',
@@ -250,6 +252,9 @@ export function createAgentToolCapabilityService({
       && (toolName === 'ask_insurance_expert'
         || (toolName === 'ask_sales_champion' && result?.candidateType === 'product'));
     const entities = resolvedEntities(result?.resolvedEntities);
+    const salesKyc = toolName === 'ask_sales_champion'
+      ? normalizeSalesKycState(result?.agentContextUpdate?.salesKyc)
+      : null;
     claims.toolResults.push({
       tool: toolName,
       result: {
@@ -262,6 +267,7 @@ export function createAgentToolCapabilityService({
           ...(preservesProductCandidates ? { candidates } : {}),
         },
         ...(Object.keys(entities).length ? { resolvedEntities: entities } : {}),
+        ...(salesKyc ? { agentContextUpdate: { salesKyc } } : {}),
       },
     });
     notifyResultWaiters(token, claims);

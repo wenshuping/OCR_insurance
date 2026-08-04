@@ -484,7 +484,6 @@ export function validatePolicyEntryForm(
   if (requireParticipantRelations && !hasConfirmedRelation(insuredRelation)) errors.push('被保险人与顶梁柱的关系');
   const beneficiary = normalizeBeneficiaryValue(data.beneficiary);
   if (!hasRequiredText(beneficiary)) errors.push('受益人');
-  if (beneficiary !== '法定' && !hasConfirmedRelation(data.beneficiaryRelation)) errors.push('受益人与顶梁柱的关系');
   if (!hasRequiredText(data.date)) errors.push('投保时间');
   if (!hasRequiredText(data.paymentPeriod)) errors.push('缴费期间');
   if (!hasRequiredText(data.coveragePeriod)) errors.push('保障期间');
@@ -517,14 +516,21 @@ export function updateOptionalResponsibilityItems(
   items: OptionalResponsibility[] | undefined,
   id: string,
   selectionStatus: OptionalResponsibility['selectionStatus'],
-) {
-  return (Array.isArray(items) ? items : []).map((item) =>
-    item.id === id
-      ? {
-          ...item,
-          selectionStatus,
-          selectionEvidence: 'manual',
-        }
-      : item,
-  );
+  coverageAmount?: number | null,
+): OptionalResponsibility[] {
+  return (Array.isArray(items) ? items : []).map((item) => {
+    if (item.id !== id) return item;
+    const next = {
+      ...item,
+      selectionStatus,
+      selectionEvidence: 'manual',
+    };
+    if (coverageAmount === undefined) return next;
+    const normalizedCoverageAmount = Number(coverageAmount);
+    if (Number.isFinite(normalizedCoverageAmount) && normalizedCoverageAmount > 0) {
+      return { ...next, coverageAmount: normalizedCoverageAmount };
+    }
+    const { coverageAmount: _discardedCoverageAmount, ...withoutCoverageAmount } = next;
+    return withoutCoverageAmount;
+  });
 }

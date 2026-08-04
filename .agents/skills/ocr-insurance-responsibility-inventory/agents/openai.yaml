@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Inventory"
+  short_description: "Build complete responsibility inventories from official clauses"
+  default_prompt: "Use $ocr-insurance-responsibility-inventory to extract a complete, evidence-backed responsibility inventory for one insurance product."

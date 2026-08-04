@@ -159,6 +159,35 @@ test('standardizeResponsibilityIndicator classifies claim-trigger benefits as cl
   assert.equal(disability.calculationStatus, 'claim_contingent');
 });
 
+test('standardizeResponsibilityIndicator supersedes legacy display-only metadata when a formula has a safe policy basis', () => {
+  const result = standardizeResponsibilityIndicator({
+    company: '新华人寿保险股份有限公司',
+    productName: '阳光灿烂少儿两全保险（分红型）',
+    coverageType: '人寿保障',
+    liability: '身故保险金',
+    basis: '按身故时有效保险金额的6倍给付身故保险金',
+    formulaText: '身故时有效保险金额 × 6',
+    value: 6,
+    unit: '倍',
+    basisKey: 'contract_defined_effective_insured_amount',
+    calculationKey: 'multiple_of_basis',
+    calculationEligible: false,
+    calculationReason: '缺少当前保单的身故时有效保险金额输入值',
+    calculationMetadataVersion: '2026-06-23-reviewed-responsibility-artifact-import',
+    basisDefinition: {
+      label: '有效保险金额',
+      formulaText: '基本保险金额 + 累计红利保险金额',
+    },
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/example.pdf',
+    sourceExcerpt: '被保险人身故时，本公司按身故时有效保险金额的6倍给付身故保险金。',
+  }, { policy: basePolicy });
+
+  assert.equal(result.calculationEligible, true);
+  assert.equal(result.calculationKey, 'multiple_of_basic_amount');
+  assert.equal(result.calculationReason, '');
+  assert.equal(result.cashflowTreatment, 'claim_contingent');
+});
+
 test('standardizeResponsibilityIndicator preserves embedded quoted disease liability names', () => {
   const productName = '友邦爱安康恶性肿瘤（重度）疾病保险';
   const indicator = {

@@ -6,6 +6,7 @@ import {
   buildCustomerPolicyPhotoKnowledgeRecord,
   mergeCustomerPolicyPhotoScans,
   normalizeCustomerPolicyPhotoUploadItems,
+  sanitizeCustomerPolicyPhotoOcrPage,
   sanitizeCustomerPolicyPhotoKnowledgeText,
 } from '../server/customer-policy-photo-knowledge.service.mjs';
 
@@ -43,6 +44,15 @@ test('customer policy terms photos stay pending until operations review', () => 
     pageText: '产品名称:测试重疾保险\n保险责任:可选责任一 轻度疾病保险金。',
     ownerUserId: 9,
     uploadItems: [{ name: 'photo.jpg' }],
+    ocrPages: [{ pageNumber: 1, name: 'photo.jpg', ocrText: '保险责任:可选责任一 轻度疾病保险金。' }],
+    responsibilityPipeline: {
+      status: 'pending_review',
+      pipelineVersion: 'test-v1',
+      attempts: 2,
+      normalizationPasses: 2,
+      validationIssues: [],
+      artifact: { responsibilities: [{ responsibilityId: 'mild' }] },
+    },
   });
 
   assert.equal(record.sourceKind, 'customer_policy_photo');

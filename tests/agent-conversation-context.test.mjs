@@ -162,6 +162,40 @@ test('agent conversation context applies the configured product TTL', async (t) 
   assert.equal(expired.factBlock, null);
 });
 
+test('agent conversation context keeps sales KYC after product context expires', async (t) => {
+  const { store } = await createStore(t);
+  t.after(() => store.close());
+  let now = 1_720_000_000_000;
+  const service = createAgentConversationContextService({ store, clock: () => now });
+  const loaded = await service.loadContext(identity({ productContextTtlMinutes: 1 }));
+  await service.commitContext({
+    ...identity({ productContextTtlMinutes: 1 }),
+    conversationRef: loaded.conversationId,
+    expectedVersion: loaded.version,
+    history: [],
+    product: null,
+    question: null,
+    factBlock: {
+      goal: { question: '客户怎么跟进', status: 'completed', owner: 'sales_champion' },
+      salesKyc: {
+        knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+        unknownSlots: ['contact_preference'],
+      },
+    },
+    updatedAt: now,
+  });
+
+  now += 120_000;
+  const restored = await service.loadContext(identity({ productContextTtlMinutes: 1 }));
+  assert.deepEqual(restored.factBlock.salesKyc, {
+    caseVersion: 1,
+    knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+    unknownSlots: ['contact_preference'],
+    facts: [],
+    labels: [],
+  });
+});
+
 test('commit rejects a conversation loaded before the channel identity was rebound', async (t) => {
   const { store } = await createStore(t);
   t.after(() => store.close());

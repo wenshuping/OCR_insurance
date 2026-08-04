@@ -1,0 +1,25 @@
+{
+  "fixtureId": "single-pay",
+  "contractTopology": "standalone",
+  "topologyEvidence": "本合同为独立疾病保险合同。",
+  "sourceText": "本合同为独立疾病保险合同。保险责任 重大疾病保险金：被保险人于等待期后经专科医生初次确诊本合同约定的重大疾病，保险人按基本保险金额给付重大疾病保险金，本合同终止。",
+  "candidates": [
+    {
+      "heading": "重大疾病保险金",
+      "sectionType": "responsibility",
+      "evidence": "重大疾病保险金：被保险人于等待期后经专科医生初次确诊本合同约定的重大疾病，保险人按基本保险金额给付重大疾病保险金，本合同终止。",
+      "triggerCondition": "被保险人于等待期后经专科医生初次确诊本合同约定的重大疾病",
+      "insurerObligation": "保险人按基本保险金额给付重大疾病保险金",
+      "formula": {
+        "formulaText": "按基本保险金额给付",
+        "requiredInputs": ["basic_insurance_amount"],
+        "evidenceTokens": ["基本保险金额"]
+      }
+    }
+  ],
+  "expected": {
+    "acceptedHeadings": ["重大疾病保险金"],
+    "rejectedHeadings": [],
+    "patterns": ["single_pay"]
+  }
+}

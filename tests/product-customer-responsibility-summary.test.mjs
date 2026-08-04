@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+  buildCustomerResponsibilitySummaryFromCards,
   buildCustomerResponsibilitySourceDigest,
   callDeepSeekForCustomerResponsibilitySummary,
   enrichCustomerResponsibilitySummaryWithMaterials,
@@ -341,6 +342,56 @@ function dbWithCards(cards = [baseCard()]) {
     },
   };
 }
+
+test('database summary projects legacy cards through the shared responsibility standardizer instead of rendering raw PDF text', () => {
+  const legacyCard = {
+    id: 'legacy_care_benefit',
+    productKey: 'responsibility_product:legacy-care-benefit',
+    company: '新华人寿保险股份有限公司',
+    productName: '多倍保障重大疾病保险',
+    title: '前10年关爱保险金',
+    plainSummary: '',
+    triggerCondition: '第10个保单生效对应日前初次确诊重大疾病或身故，并符合对应保险金给付条件。',
+    payoutSummary: '给付前10年关爱保险金',
+    sourceUrl,
+    sourceExcerpt: '第4页[共33页] 55520181 多倍保障重大疾病保险条款 新华人寿保险股份有限公司 基本保险金额的50%。',
+    calculationStatus: 'display_only',
+    calculationReason: '基本保险金额未在currentPolicyInputs中提供',
+    indicators: [{
+      liability: '前10年关爱保险金',
+      coverageType: '疾病保障',
+      formulaText: '基本保险金额的50%',
+      normalizedFormula: '基本保险金额×50%',
+      basisKey: '50_percent_of_sum_insured',
+      calculationKey: 'percentage',
+      calculationEligible: false,
+      calculationStatus: 'display_only',
+      calculationReason: '基本保险金额未在currentPolicyInputs中提供',
+      requiredInputs: ['basic_sum_insured'],
+      sourceUrl,
+      sourceExcerpt: '其金额为基本保险金额的50%。',
+    }],
+  };
+  const db = {
+    prepare(sql) {
+      if (/product_responsibility_cards/u.test(sql)) return { all: () => [legacyCard] };
+      return { all: () => [] };
+    },
+  };
+
+  const summary = buildCustomerResponsibilitySummaryFromCards({
+    db,
+    company: legacyCard.company,
+    productName: legacyCard.productName,
+  });
+
+  assert.ok(summary);
+  const responsibility = summary.mainResponsibilities[0];
+  assert.equal(responsibility.howItPays, '基本保险金额的50%');
+  assert.equal(responsibility.calculationStatus, 'claim_contingent');
+  assert.match(responsibility.plainText, /第10个保单生效对应日前/u);
+  assert.doesNotMatch(responsibility.plainText, /第4页|55520181|新华人寿保险股份有限公司/u);
+});
 
 test('generateProductCustomerResponsibilitySummary returns an existing database summary without calling DeepSeek', async () => {
   let modelCalls = 0;

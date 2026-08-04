@@ -1,0 +1,38 @@
+{
+  "fixtureId": "disability-grade-table",
+  "realSample": true,
+  "identity": {
+    "company": "上海人寿保险股份有限公司",
+    "productName": "上海人寿大金刚个人综合意外伤害保险",
+    "sourceDigest": "sha256:a2be83fa43dbd8e1536927425479ff927717f387835e6050913a2a65b3fc6bf4"
+  },
+  "contractTopology": "standalone",
+  "topologyEvidence": {
+    "sourceTypeEvidence": "上海人寿[2018]意外伤害保险002号；个人综合意外伤害保险",
+    "ownContractRule": "本合同的基本保险金额"
+  },
+  "sections": [
+    {
+      "sectionId": "accident-disability",
+      "heading": "意外残疾保险金",
+      "role": "responsibility",
+      "triggerCondition": "意外伤害事故导致伤残",
+      "insurerObligation": "按基本保险金额乘以伤残等级对应给付比例给付",
+      "sourceExcerpt": "我们根据《人身保险伤残评定标准及代码》对伤残进行评定，确定伤残等级及给付比例，我们将按本合同的基本保险金额乘以该比例给付意外残疾保险金。",
+      "requiredInputs": ["basic_insured_amount", "disability_grade"]
+    },
+    {
+      "sectionId": "disability-grade-schedule",
+      "heading": "人身保险伤残评定标准及代码",
+      "role": "attachment_rule",
+      "attachmentToResponsibilityId": "accident-disability",
+      "tableRole": "disability_grade_ratio",
+      "sourceExcerpt": "伤残程度第一级对应的保险金给付比例为100%，第十级对应的保险金给付比例为10%，每级相差10%。"
+    }
+  ],
+  "expected": {
+    "status": "approved",
+    "responsibilityIds": ["accident-disability"],
+    "supportingSectionIds": ["disability-grade-schedule"]
+  }
+}

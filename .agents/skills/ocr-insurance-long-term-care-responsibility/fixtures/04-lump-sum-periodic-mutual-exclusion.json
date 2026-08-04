@@ -1,0 +1,28 @@
+{
+  "id": "lump-sum-periodic-mutual-exclusion",
+  "topology": "standalone",
+  "responsibilities": [
+    {
+      "responsibilityId": "first_care_lump_sum",
+      "liability": "首次护理保险金",
+      "triggerCondition": "首次经评定达到约定护理状态。",
+      "insurerObligation": "保险人按已交保险费与现金价值二者较大者一次给付。",
+      "sourceExcerpt": "首次达到护理状态时，我们按已交保险费与现金价值二者较大者一次性给付，且仅给付一次。",
+      "benefit": {"paymentMode": "lump_sum", "cadence": "once", "terminationText": "仅给付一次"},
+      "formula": {"formulaText": "max(已交保险费,现金价值)", "normalizedFormula": "max(actual_paid_premium, cash_value)", "requiredInputs": ["actual_paid_premium", "cash_value"], "branches": [], "operands": [{"basisKey": "actual_paid_premium"}, {"basisKey": "cash_value"}]}
+    },
+    {
+      "responsibilityId": "continued_monthly_care",
+      "liability": "持续护理保险金",
+      "triggerCondition": "首次给付后仍持续符合护理状态并通过复核。",
+      "insurerObligation": "保险人按月给付约定护理金额。",
+      "sourceExcerpt": "首次护理保险金给付后仍持续符合护理状态并通过每年复核的，我们按月给付约定护理金额，最多36个月；未通过复核、恢复或身故时停止。",
+      "benefit": {"paymentMode": "periodic", "cadence": "monthly", "benefitPeriodText": "最多36个月", "terminationText": "未通过复核、恢复或身故时停止"},
+      "formula": {"formulaText": "月护理金=约定月护理金额", "normalizedFormula": "monthly_care = scheduled_monthly_care_amount", "requiredInputs": ["monthly_benefit_amount"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "mutual_exclusion_rule", "classification": "shared_rule", "text": "疾病与意外分支只按先发生者给付。"}
+  ],
+  "expected": {"acceptedCount": 2, "rejectedClassifications": ["shared_rule"]}
+}

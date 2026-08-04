@@ -1,0 +1,86 @@
+{
+  "fixtureId": "rider-main-contract-dependency",
+  "sourceText": "本附加合同依附于主合同。主合同终止时，本附加合同同时终止。本附加合同住院医疗保险金额以主合同基本保险金额的20%为限，保险费按主合同约定的交费方式一并交纳。住院医疗保险金：被保险人因疾病住院，我们按80%给付合理住院医疗费用。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例附加住院医疗保险",
+    "sourceDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+    "contractTopology": {
+      "type": "rider",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本附加合同依附于主合同。主合同终止时，本附加合同同时终止。"
+        }
+      ],
+      "parentContract": {
+        "company": "",
+        "productName": "",
+        "sourceDigest": "",
+        "dependencyText": "本附加合同依附于主合同",
+        "terminationLinkText": "主合同终止时，本附加合同同时终止",
+        "insuredAmountReferenceText": "本附加合同住院医疗保险金额以主合同基本保险金额的20%为限",
+        "premiumReferenceText": "保险费按主合同约定的交费方式一并交纳"
+      }
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "inpatient",
+        "liability": "住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因疾病住院",
+        "insurerObligation": "我们按80%给付合理住院医疗费用",
+        "sourceExcerpt": "住院医疗保险金：被保险人因疾病住院，我们按80%给付合理住院医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [
+            {
+              "valueText": "80%",
+              "scopeText": "按80%给付",
+              "sourceExcerpt": "我们按80%给付合理住院医疗费用"
+            }
+          ],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [
+              {
+                "valueText": "20%",
+                "scopeText": "本附加合同住院医疗保险金额以主合同基本保险金额的20%为限",
+                "sourceExcerpt": "本附加合同住院医疗保险金额以主合同基本保险金额的20%为限"
+              }
+            ],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "requiredInputs": [
+              "actualMedicalExpense",
+              "reimbursementRate",
+              "manualFormulaInputs"
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "rider",
+    "responsibilityTitles": [
+      "住院医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

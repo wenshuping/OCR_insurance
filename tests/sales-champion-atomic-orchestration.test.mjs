@@ -57,6 +57,34 @@ test('sales turn contract rejects customer statements not grounded in source tex
   );
 });
 
+test('sales turn contract rejects history evidence mislabeled as current message', () => {
+  assert.throws(
+    () => validateSalesTurnProposal(validProposal({
+      customerStatements: [{ text: '历史里已经确认的事实', source: 'current_message' }],
+    }), {
+      sourceTexts: ['本轮只是补充另一件事', '历史里已经确认的事实'],
+    }),
+    /customerStatements\[0\]\.source does not match evidence/u,
+  );
+});
+
+test('sales turn contract rejects advisor context mislabeled as a customer statement', () => {
+  assert.throws(
+    () => validateSalesTurnProposal(validProposal({
+      customerStatements: [],
+      kycFacts: [{
+        key: 'existing_insurance',
+        value: '已有一项安排',
+        source: 'customer_statement',
+        evidence: '人家不是已经有一项安排吗',
+      }],
+    }), {
+      sourceTexts: ['人家不是已经有一项安排吗'],
+    }),
+    /kycFacts\[0\]\.source requires explicit customer attribution/u,
+  );
+});
+
 test('sales turn contract rejects unknown fields and invalid enums', () => {
   assert.throws(
     () => validateSalesTurnProposal({ ...validProposal(), hiddenPlan: 'close_now' }, {
@@ -217,12 +245,22 @@ test('sales champion router returns a controlled route without producing a custo
   assert.equal('answer' in result, false);
   assert.equal(result.contractVersion, 1);
   assert.deepEqual(result.trainingPacks.map((pack) => pack.key), [
-    'facilitate_family_decision',
     'uncover_real_objection_with_reverse_question',
+    'facilitate_family_decision',
   ]);
   assert.equal(result.trainingPacks.every(
     (pack) => pack.source === 'cheng-jiye-practical-sales-2026-07',
   ), true);
+  assert.equal(result.executionPlan.primary.key, 'uncover_real_objection_with_reverse_question');
+  assert.deepEqual(result.executionPlan.supporting.map((pack) => pack.key), [
+    'facilitate_family_decision',
+  ]);
+  assert.equal(result.executionPlan.fallbackUsed, false);
+  assert.deepEqual(result.informationFollowUp.questions.map((item) => item.key), [
+    'future_fund_use',
+    'product_contract',
+  ]);
+  assert.equal(result.informationFollowUp.questions[1].owner, 'insurance_expert');
 });
 
 test('sales champion router contains invalid model proposals instead of guessing a route', () => {

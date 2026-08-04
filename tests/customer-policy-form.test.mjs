@@ -26,12 +26,14 @@ async function loadCustomerPolicyFormModule() {
   const hasConfirmedRelationSource = functionSource(source, 'hasConfirmedRelation', 'resolveBoundParticipantRelation');
   const resolveBoundParticipantRelationSource = functionSource(source, 'resolveBoundParticipantRelation', 'validatePolicyEntryForm');
   const validatePolicyEntryFormSource = functionSource(source, 'validatePolicyEntryForm', 'productLookupKey');
+  const updateOptionalResponsibilityItemsSource = functionSource(source, 'updateOptionalResponsibilityItems');
   const syncMainPolicyPlanFieldsSource = functionSource(source, 'syncMainPolicyPlanFields', 'syncMainPolicyPlanAmount');
   const buildPolicyUpdateDataSource = functionSource(source, 'buildPolicyUpdateData', 'scanToForm');
   const moduleSource = `
     type PolicyFormData = any;
     type PolicyScanResult = any;
     type MainPolicyPlanFieldSync = any;
+    type OptionalResponsibility = any;
     function normalizeBeneficiaryValue(value: unknown) {
       return String(value || '');
     }
@@ -66,7 +68,8 @@ async function loadCustomerPolicyFormModule() {
     ${hasConfirmedRelationSource}
     ${resolveBoundParticipantRelationSource}
     ${validatePolicyEntryFormSource}
-    export { scanToForm, mergeScanToForm, resolveBoundParticipantRelation, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue, sharePolicyPersonInfo };
+    ${updateOptionalResponsibilityItemsSource}
+    export { scanToForm, mergeScanToForm, resolveBoundParticipantRelation, validatePolicyEntryForm, buildPolicyUpdateData, normalizeDateInputValue, sharePolicyPersonInfo, updateOptionalResponsibilityItems };
   `;
   const output = ts.transpileModule(moduleSource, {
     compilerOptions: {
@@ -77,6 +80,24 @@ async function loadCustomerPolicyFormModule() {
   const encoded = Buffer.from(output, 'utf8').toString('base64');
   return import(`data:text/javascript;base64,${encoded}`);
 }
+
+test('optional responsibility edits persist an independent coverage amount and allow clearing it', async () => {
+  const { updateOptionalResponsibilityItems } = await loadCustomerPolicyFormModule();
+  const items = [{
+    id: 'optional_longevity',
+    liability: '祝寿金',
+    responsibilityScope: 'optional',
+    selectionStatus: 'unknown',
+  }];
+
+  const selected = updateOptionalResponsibilityItems(items, 'optional_longevity', 'selected', 30000);
+  assert.equal(selected[0].selectionStatus, 'selected');
+  assert.equal(selected[0].selectionEvidence, 'manual');
+  assert.equal(selected[0].coverageAmount, 30000);
+
+  const cleared = updateOptionalResponsibilityItems(selected, 'optional_longevity', 'selected', null);
+  assert.equal(Object.hasOwn(cleared[0], 'coverageAmount'), false);
+});
 
 test('buildPolicyUpdateData normalizes slash date values before saving policy edits', async () => {
   const { buildPolicyUpdateData, normalizeDateInputValue } = await loadCustomerPolicyFormModule();
@@ -507,7 +528,7 @@ test('validatePolicyEntryForm can allow pending top-pillar relations before core
   assert.ok(!relaxedErrors.includes('被保险人与顶梁柱的关系'));
 });
 
-test('validatePolicyEntryForm requires beneficiary relation when saving a policy', async () => {
+test('validatePolicyEntryForm allows saving without a beneficiary relation', async () => {
   const { validatePolicyEntryForm } = await loadCustomerPolicyFormModule();
   const form = {
     familyId: 1,
@@ -527,7 +548,7 @@ test('validatePolicyEntryForm requires beneficiary relation when saving a policy
     plans: [],
   };
 
-  assert.ok(validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
+  assert.ok(!validatePolicyEntryForm(form).includes('受益人与顶梁柱的关系'));
   assert.ok(!validatePolicyEntryForm({ ...form, beneficiaryRelation: '配偶' }).includes('受益人与顶梁柱的关系'));
   assert.ok(!validatePolicyEntryForm({ ...form, beneficiary: '法定' }).includes('受益人与顶梁柱的关系'));
 });

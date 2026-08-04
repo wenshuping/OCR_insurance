@@ -20,6 +20,12 @@ import {
   applyIncrementalWholeLifePurpose,
 } from './incremental-whole-life-purpose-evaluator.mjs';
 import {
+  standardizeResponsibilityIndicator,
+} from './responsibility-card-standardizer.mjs';
+import {
+  buildSpecialProductDatabaseSummary,
+} from './unified-special-product-responsibility.mjs';
+import {
   responsibilityCompanyIdentity,
   sameResponsibilityProduct,
 } from './product-responsibility-identity.mjs';
@@ -352,7 +358,21 @@ function normalizeCardRow(row = {}) {
     sourceUrl: text(payload.sourceUrl || payload.source_url || row.source_url),
     sourceTitle: text(payload.sourceTitle || payload.source_title),
     sourceExcerpt: text(payload.sourceExcerpt || payload.source_excerpt),
+    sourceDigest: text(payload.sourceDigest || payload.source_digest || payload.responsibilitySourceDigest || row.source_digest),
     indicators: normalizeArray(payload.indicators),
+  };
+}
+
+function normalizeIndicatorRow(row = {}) {
+  const payload = parseJson(row.payload, row);
+  return {
+    ...payload,
+    id: text(payload.id || row.id),
+    company: text(payload.company || row.company),
+    productName: text(payload.productName || payload.product_name || row.product_name),
+    productKey: text(payload.productKey || payload.product_key || row.product_key),
+    sourceDigest: text(payload.sourceDigest || payload.source_digest || payload.responsibilitySourceDigest || row.source_digest),
+    sourceUrl: text(payload.sourceUrl || payload.source_url || row.source_url),
   };
 }
 
@@ -431,18 +451,86 @@ function loadProductResponsibilityCards(db, { company, productName, productKey }
 function loadApprovedResponsibilityArtifacts(db, { company, productName }) {
   if (!db || typeof db.prepare !== 'function' || !text(company) || !text(productName)) return [];
   try {
-    return db.prepare(`
+    const exactRows = db.prepare(`
       SELECT id, company, product_name, source_digest, source_url, payload
       FROM product_responsibility_artifacts
       WHERE company = ? AND product_name = ?
       ORDER BY id ASC
-    `).all(text(company), text(productName)).map((row) => ({
+    `).all(text(company), text(productName));
+    const rows = exactRows.length ? exactRows : db.prepare(`
+      SELECT id, company, product_name, source_digest, source_url, payload
+      FROM product_responsibility_artifacts
+      WHERE product_name = ?
+      ORDER BY id ASC
+      LIMIT 20
+    `).all(text(productName)).filter((row) => sameResponsibilityProduct(
+      { company: row.company, productName: row.product_name },
+      { company, productName },
+    ));
+    return rows.map((row) => ({
       ...row,
       payload: parseJson(row.payload, {}),
     })).filter((row) => text(row.payload?.audit?.status || row.payload?.approvalStatus || row.payload?.status).toLowerCase() === 'approved');
   } catch {
     return [];
   }
+}
+
+function loadProductResponsibilityIndicators(db, product) {
+  if (!db || typeof db.prepare !== 'function') return [];
+  const company = text(product?.company);
+  const productName = text(product?.productName);
+  if (!company || !productName) return [];
+  try {
+    const exactRows = db.prepare(`
+      SELECT * FROM insurance_indicator_records
+      WHERE company = ? AND product_name = ?
+      ORDER BY id ASC
+    `).all(company, productName);
+    const rows = exactRows.length ? exactRows : db.prepare(`
+      SELECT * FROM insurance_indicator_records
+      WHERE product_name = ?
+      ORDER BY id ASC
+      LIMIT 100
+    `).all(productName).filter((row) => recordProductMatches(row, product));
+    return rows.map((row) => normalizeIndicatorRow(row));
+  } catch {
+    return [];
+  }
+}
+
+function alignCardsToApprovedArtifactSourceDigests(cards = [], artifacts = []) {
+  return normalizeArray(cards).map((card) => {
+    if (text(card?.sourceDigest)) return card;
+    const sourceUrl = sourceUrlFrom(card);
+    const matches = normalizeArray(artifacts).filter((artifact) => (
+      sourceUrl
+      && sourceUrl === text(artifact?.source_url || artifact?.sourceUrl)
+      && text(artifact?.source_digest || artifact?.sourceDigest)
+    ));
+    if (matches.length !== 1) return card;
+    return {
+      ...card,
+      sourceDigest: text(matches[0].source_digest || matches[0].sourceDigest),
+    };
+  });
+}
+
+function alignSourceRecordsToApprovedArtifactSourceDigests(records = [], artifacts = []) {
+  return normalizeArray(records).map((record) => {
+    if (text(record?.sourceDigest || record?.source_digest || record?.responsibilitySourceDigest)) return record;
+    const sourceUrl = sourceUrlFrom(record);
+    const matches = normalizeArray(artifacts).filter((artifact) => (
+      sourceUrl
+      && sourceUrl === text(artifact?.source_url || artifact?.sourceUrl)
+      && text(artifact?.source_digest || artifact?.sourceDigest)
+    ));
+    if (matches.length !== 1) return record;
+    return {
+      ...record,
+      sourceDigest: text(matches[0].source_digest || matches[0].sourceDigest),
+    };
+  });
 }
 
 function recordProductMatches(row, { company, productName, canonicalProductId }) {
@@ -1124,6 +1212,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   company = '',
   productName = '',
   canonicalProductId = '',
+  sourceRecords = [],
 } = {}) {
   const normalizedCompany = text(company);
   const normalizedProductName = text(productName);
@@ -1136,15 +1225,46 @@ export function buildCustomerResponsibilitySummaryFromCards({
     canonicalProductId: text(canonicalProductId),
   });
   if (!cards.length) return null;
-  const sourceUrls = uniqueStrings(cards.map((card) => text(card.sourceUrl || card.source_url)));
-  const responsibilities = cards
+  const approvedArtifacts = loadApprovedResponsibilityArtifacts(db, {
+    company: normalizedCompany,
+    productName: normalizedProductName,
+  });
+  const cardsWithSourceDigests = alignCardsToApprovedArtifactSourceDigests(cards, approvedArtifacts);
+  const sourceUrls = uniqueStrings(cardsWithSourceDigests.map((card) => text(card.sourceUrl || card.source_url)));
+  const responsibilities = cardsWithSourceDigests
     .map((card) => {
       const title = text(card.title);
-      const plainText = text(card.plainSummary || card.plain_summary || card.sourceExcerpt || card.source_excerpt);
       const triggerCondition = text(card.triggerCondition || card.trigger_condition);
-      const howItPays = text(card.payoutSummary || card.payout_summary);
-      const calculationStatus = text(card.calculationStatus || card.calculation_status);
-      const calculationReason = text(card.calculationReason || card.calculation_reason);
+      const standardizedIndicator = normalizeArray(card.indicators)
+        .map((indicator) => standardizeResponsibilityIndicator({
+          ...indicator,
+          company: text(indicator?.company) || text(card.company),
+          productName: text(indicator?.productName || indicator?.product_name) || text(card.productName),
+          liability: text(indicator?.liability) || title,
+          triggerCondition: text(indicator?.triggerCondition || indicator?.trigger_condition || indicator?.condition) || triggerCondition,
+          sourceUrl: text(indicator?.sourceUrl || indicator?.source_url) || text(card.sourceUrl),
+          sourceTitle: text(indicator?.sourceTitle || indicator?.source_title) || text(card.sourceTitle),
+          sourceExcerpt: text(indicator?.sourceExcerpt || indicator?.source_excerpt) || text(card.sourceExcerpt),
+        }, {
+          policy: { company: text(card.company), name: text(card.productName) },
+        }))
+        .find((indicator) => text(indicator.liability) === title)
+        || null;
+      const howItPays = text(
+        standardizedIndicator?.payoutSummary
+          || card.payoutSummary
+          || card.payout_summary,
+      );
+      const plainText = text(card.plainSummary || card.plain_summary)
+        || [title, triggerCondition, howItPays].filter(Boolean).join('：');
+      const calculationStatus = text(
+        standardizedIndicator?.calculationStatus
+          || card.calculationStatus
+          || card.calculation_status,
+      );
+      const calculationReason = standardizedIndicator
+        ? text(standardizedIndicator.calculationReason)
+        : text(card.calculationReason || card.calculation_reason);
       const requiredPolicyFields = requiredFieldsFromText(`${plainText} ${triggerCondition} ${howItPays}`);
       const sourceRefs = sourceUrls.length ? sourceUrls : uniqueStrings([text(card.sourceTitle || card.source_title)]);
       return {
@@ -1161,7 +1281,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   if (!responsibilities.length) return null;
   const titles = responsibilities.map((item) => item.title).filter(Boolean);
   const officialResponsibilityText = uniqueStrings(
-    cards.map((card) => text(card.sourceExcerpt || card.source_excerpt)),
+    cardsWithSourceDigests.map((card) => text(card.sourceExcerpt || card.source_excerpt)),
   ).join('\n\n');
   const summary = applyIncrementalWholeLifePurpose(normalizeStructuredSummaryToCustomerSummary({
     headline: titles.length ? `本产品包含${titles.slice(0, 3).join('、')}${titles.length > 3 ? '等' : ''}保险责任。` : '',
@@ -1178,14 +1298,47 @@ export function buildCustomerResponsibilitySummaryFromCards({
   }), {
     company: normalizedCompany,
     productName: normalizedProductName,
-    cards,
-    indicators: cards.flatMap((card) => normalizeArray(card.indicators)),
-    artifacts: loadApprovedResponsibilityArtifacts(db, {
-      company: normalizedCompany,
-      productName: normalizedProductName,
-    }),
+    cards: cardsWithSourceDigests,
+    indicators: cardsWithSourceDigests.flatMap((card) => normalizeArray(card.indicators)),
+    artifacts: approvedArtifacts,
   });
-  return safeCustomerSummary({ summaryJson: summary, payload: { officialResponsibilityText } });
+  const evidenceCompany = companyFrom(cardsWithSourceDigests[0]) || normalizedCompany;
+  const evidenceProductName = productNameFrom(cardsWithSourceDigests[0]) || normalizedProductName;
+  const evidenceProductKey = text(cardsWithSourceDigests[0]?.productKey);
+  const databaseIndicators = loadProductResponsibilityIndicators(db, {
+    company: evidenceCompany,
+    productName: evidenceProductName,
+    productKey: evidenceProductKey,
+  });
+  const nestedIndicators = cardsWithSourceDigests.flatMap((card) => normalizeArray(card.indicators).map((indicator) => ({
+    ...indicator,
+    company: text(indicator?.company) || evidenceCompany,
+    productName: text(indicator?.productName || indicator?.product_name) || evidenceProductName,
+    productKey: text(indicator?.productKey || indicator?.product_key) || evidenceProductKey,
+  })));
+  const specialSourceRecords = alignSourceRecordsToApprovedArtifactSourceDigests(sourceRecords, approvedArtifacts).map((record) => ({
+    ...record,
+    company: evidenceCompany,
+    productName: evidenceProductName,
+    productKey: evidenceProductKey,
+  }));
+  const special = buildSpecialProductDatabaseSummary({
+    summary,
+    evidence: {
+      company: evidenceCompany,
+      productName: evidenceProductName,
+      productKey: evidenceProductKey,
+      cards: cardsWithSourceDigests,
+      indicators: [...databaseIndicators, ...nestedIndicators],
+      artifacts: approvedArtifacts,
+      sourceRecords: specialSourceRecords,
+    },
+  });
+  // Special-product renderers own their purpose wording and quantified fields.
+  const summaryJson = ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
+    ? special.summary
+    : summary;
+  return safeCustomerSummary({ summaryJson, payload: { officialResponsibilityText } });
 }
 
 function requiredFieldsFromText(value) {
@@ -1688,10 +1841,28 @@ async function generateProductCustomerResponsibilitySummaryInternal({
 
   const generationGovernance = getResponsibilityGenerationGovernanceConfig(state);
   const generationGovernanceEnabled = generationGovernance.enabled === true;
-  const inputProductKey = productKeyFor(company, inputProductName);
-  const inputProduct = { company, productName: inputProductName, productKey: inputProductKey };
-  let cards = loadProductResponsibilityCards(db, inputProduct);
+  const inputProductKey = productKeyFor(company, inputProductName, canonicalProductId);
+  const inputProduct = { company, productName: inputProductName, productKey: inputProductKey, canonicalProductId };
   const scopedPrivateRecords = normalizeArray(privateSourceRecords);
+  // Canonical official products can return a ready summary before scanning the full knowledge snapshot.
+  if (!scopedPrivateRecords.length && canonicalProductId && typeof findSummary === 'function') {
+    const cachedCanonicalSummary = await findExistingCustomerResponsibilitySummary({
+      findSummary,
+      company,
+      productName: inputProductName,
+      canonicalProductId,
+      productKey: inputProductKey,
+      sourceDigest: '',
+    });
+    if (cachedCanonicalSummary) {
+      return {
+        ok: true,
+        source: 'database',
+        summary: safeCustomerSummary(cachedCanonicalSummary),
+      };
+    }
+  }
+  let cards = loadProductResponsibilityCards(db, inputProduct);
   let records = sourceRecordsForProduct(
     scopedPrivateRecords.length ? scopedPrivateRecords : state.knowledgeRecords,
     inputProduct,

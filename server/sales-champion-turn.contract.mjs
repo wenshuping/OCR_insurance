@@ -14,6 +14,8 @@ const CONCERN_TYPES = new Set([
   'risk_pooling', 'follow_up', 'unknown',
 ]);
 const PRIORITIES = new Set(['primary', 'secondary']);
+const TURN_RELATIONS = new Set(['new_request', 'follow_up_answer', 'context_update', 'correction']);
+const CUSTOMER_CASE_RELATIONS = new Set(['same_customer', 'new_customer', 'uncertain']);
 const STATEMENT_SOURCES = new Set(['current_message', 'confirmed_history']);
 export const SALES_CHAMPION_KYC_FACT_KEYS = Object.freeze([
   'age_life_stage', 'occupation', 'employment_status', 'income', 'income_type',
@@ -89,6 +91,20 @@ function normalizeGroundingText(value) {
   return String(value || '').replace(/\s+/gu, '');
 }
 
+export function hasExplicitCustomerAttribution(evidence, sourceTexts = []) {
+  const normalizedEvidence = normalizeGroundingText(evidence);
+  if (!normalizedEvidence) return false;
+  const customerExpression = /(?:客户|顾客|投保人|被保险人|他|她|对方|人家).{0,20}(?:说|表示|提到|回复|告诉|明确|要求|拒绝|同意|答应|认为|觉得|担心|希望|想要|想|不愿|愿意)/u;
+  return sourceTexts.some((sourceText) => {
+    const source = normalizeGroundingText(sourceText);
+    const index = source.indexOf(normalizedEvidence);
+    if (index < 0) return false;
+    const start = Math.max(0, index - 60);
+    const end = Math.min(source.length, index + normalizedEvidence.length + 20);
+    return customerExpression.test(source.slice(start, end));
+  });
+}
+
 export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
   assertObject(proposal, 'proposal');
   proposal = {
@@ -98,20 +114,42 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
     customerLabels: Object.hasOwn(proposal, 'customerLabels') ? proposal.customerLabels : [],
     unknownInformation: Object.hasOwn(proposal, 'unknownInformation')
       ? proposal.unknownInformation : [],
+    answeredInformation: Object.hasOwn(proposal, 'answeredInformation')
+      ? proposal.answeredInformation : [],
+    turnRelation: Object.hasOwn(proposal, 'turnRelation')
+      ? proposal.turnRelation : { value: 'new_request', confidence: 1 },
+    customerCase: Object.hasOwn(proposal, 'customerCase')
+      ? proposal.customerCase : { relation: 'uncertain', confidence: 0 },
   };
   assertExactKeys(proposal, [
     'contractVersion', 'customerStatements', 'stage', 'concerns', 'signals',
     'missingInformation', 'proposedCapabilities', 'insuranceNeeds', 'situations',
-    'kycFacts', 'customerLabels', 'unknownInformation',
+    'kycFacts', 'customerLabels', 'unknownInformation', 'answeredInformation', 'turnRelation',
+    'customerCase',
   ], 'proposal');
   if (proposal.contractVersion !== CONTRACT_VERSION) {
     throw new TypeError(`contractVersion must be ${CONTRACT_VERSION}`);
   }
 
-  if (!Array.isArray(proposal.customerStatements) || proposal.customerStatements.length > 8) {
-    throw new TypeError('customerStatements must be an array with at most 8 items');
+  assertObject(proposal.turnRelation, 'turnRelation');
+  assertExactKeys(proposal.turnRelation, ['value', 'confidence'], 'turnRelation');
+  if (!TURN_RELATIONS.has(proposal.turnRelation.value)) throw new TypeError('turnRelation.value is invalid');
+  assertConfidence(proposal.turnRelation.confidence, 'turnRelation.confidence');
+
+  assertObject(proposal.customerCase, 'customerCase');
+  assertExactKeys(proposal.customerCase, ['relation', 'confidence'], 'customerCase');
+  if (!CUSTOMER_CASE_RELATIONS.has(proposal.customerCase.relation)) {
+    throw new TypeError('customerCase.relation is invalid');
   }
+  assertConfidence(proposal.customerCase.confidence, 'customerCase.confidence');
+
+  if (!Array.isArray(proposal.customerStatements) || proposal.customerStatements.length > 20) {
+    throw new TypeError('customerStatements must be an array with at most 20 items');
+  }
+  let customerStatementCharacters = 0;
   const groundingSources = sourceTexts.map(normalizeGroundingText).filter(Boolean);
+  const currentGroundingSource = normalizeGroundingText(sourceTexts[0]);
+  const historicalGroundingSources = sourceTexts.slice(1).map(normalizeGroundingText).filter(Boolean);
   proposal.customerStatements.forEach((statement, index) => {
     assertObject(statement, `customerStatements[${index}]`);
     assertExactKeys(statement, ['text', 'source'], `customerStatements[${index}]`);
@@ -119,12 +157,23 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
     if (!statementText || statementText.length > 500) {
       throw new TypeError(`customerStatements[${index}].text is invalid`);
     }
+    customerStatementCharacters += statementText.length;
     if (!STATEMENT_SOURCES.has(statement.source)) {
       throw new TypeError(`customerStatements[${index}].source is invalid`);
     }
-    const grounded = groundingSources.some((source) => source.includes(normalizeGroundingText(statementText)));
+    const normalizedStatement = normalizeGroundingText(statementText);
+    const expectedSources = statement.source === 'current_message'
+      ? [currentGroundingSource].filter(Boolean)
+      : historicalGroundingSources;
+    const grounded = expectedSources.some((source) => source.includes(normalizedStatement));
+    if (!grounded && groundingSources.some((source) => source.includes(normalizedStatement))) {
+      throw new TypeError(`customerStatements[${index}].source does not match evidence`);
+    }
     if (!grounded) throw new TypeError(`customerStatements[${index}].text must be grounded`);
   });
+  if (customerStatementCharacters > 4_000) {
+    throw new TypeError('customerStatements exceed the character budget');
+  }
 
   if (!Array.isArray(proposal.kycFacts) || proposal.kycFacts.length > 16) {
     throw new TypeError('kycFacts must be an array with at most 16 items');
@@ -142,6 +191,10 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
     if (typeof fact.evidence !== 'string' || !fact.evidence.trim() || fact.evidence.length > 500
       || !groundingSources.some((source) => source.includes(normalizeGroundingText(fact.evidence)))) {
       throw new TypeError(`kycFacts[${index}].evidence must be grounded`);
+    }
+    if (fact.source === 'customer_statement'
+      && !hasExplicitCustomerAttribution(fact.evidence, sourceTexts)) {
+      throw new TypeError(`kycFacts[${index}].source requires explicit customer attribution`);
     }
   });
 
@@ -172,6 +225,10 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
     if (typeof label.evidence !== 'string' || !label.evidence.trim() || label.evidence.length > 500
       || !groundingSources.some((source) => source.includes(normalizeGroundingText(label.evidence)))) {
       throw new TypeError(`customerLabels[${index}].evidence must be grounded`);
+    }
+    if (label.source === 'customer_statement'
+      && !hasExplicitCustomerAttribution(label.evidence, sourceTexts)) {
+      throw new TypeError(`customerLabels[${index}].source requires explicit customer attribution`);
     }
     assertConfidence(label.confidence, `customerLabels[${index}].confidence`);
     const identity = `${label.dimension}\u0000${label.value}\u0000${label.status}`;
@@ -220,6 +277,16 @@ export function validateSalesTurnProposal(proposal, { sourceTexts = [] } = {}) {
       throw new TypeError(`unknownInformation duplicates missingInformation: ${value}`);
     }
     unknownInformation.add(value);
+  }
+  if (!Array.isArray(proposal.answeredInformation)) throw new TypeError('answeredInformation must be an array');
+  const answeredInformation = new Set();
+  for (const value of proposal.answeredInformation) {
+    if (!MISSING_INFORMATION.has(value)) throw new TypeError(`answeredInformation contains invalid value: ${value}`);
+    if (answeredInformation.has(value)) throw new TypeError(`answeredInformation contains duplicated value: ${value}`);
+    if (missingInformation.has(value) || unknownInformation.has(value)) {
+      throw new TypeError(`answeredInformation conflicts with unresolved information: ${value}`);
+    }
+    answeredInformation.add(value);
   }
   if (!Array.isArray(proposal.proposedCapabilities) || proposal.proposedCapabilities.length > 7) {
     throw new TypeError('proposedCapabilities must be an array with at most 7 items');

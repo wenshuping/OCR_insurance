@@ -1,0 +1,58 @@
+{
+  "fixtureId": "transport-additive-benefit",
+  "realSample": true,
+  "identity": {
+    "company": "工银安盛人寿保险有限公司",
+    "productName": "工银安盛人寿附加综合意外伤害保险",
+    "sourceDigest": "sha256:7901e9eae3b55bec87b36cce33cf5fdb14fc45231c36e5bd8275206a04d70758"
+  },
+  "contractTopology": "rider",
+  "topologyEvidence": {
+    "mainContractDependency": {
+      "required": true,
+      "sourceExcerpt": ""
+    },
+    "effectiveTerminationLinkage": {
+      "effectiveRule": "",
+      "terminationRule": "",
+      "sourceExcerpt": ""
+    },
+    "insuredAmountReference": {
+      "source": "rider_schedule",
+      "formulaText": "意外伤害发生当年度本附加合同的基本保险金额",
+      "sourceExcerpt": "按意外伤害发生当年度本附加合同的基本保险金额给付"
+    }
+  },
+  "sections": [
+    {
+      "sectionId": "base-accident-disability",
+      "heading": "意外伤残保险金",
+      "role": "responsibility",
+      "triggerCondition": "意外伤害事故导致伤残",
+      "insurerObligation": "按伤残等级比例乘以基本保险金额给付",
+      "sourceExcerpt": "按评定结果所对应的给付比例乘以意外伤害发生当年度本附加合同约定的基本保险金额给付意外伤残保险金。",
+      "requiredInputs": ["basic_insured_amount", "disability_grade"]
+    },
+    {
+      "sectionId": "public-transport-extra-disability",
+      "heading": "公共交通工具意外伤残保险金",
+      "role": "responsibility",
+      "triggerCondition": "以乘客身份搭乘公共交通工具期间遭受意外伤害事故并在180日内伤残",
+      "insurerObligation": "在给付基础意外伤残保险金的同时，再按同等金额给付",
+      "sourceExcerpt": "我们在给付上述第二项意外伤残保险金的同时，再按同等金额给付公共交通工具意外伤残保险金。",
+      "requiredInputs": ["base_accident_disability_benefit"],
+      "benefitRelationship": {
+        "baseResponsibilityIds": ["base-accident-disability"],
+        "additionalResponsibilityId": "public-transport-extra-disability",
+        "semantics": "additive",
+        "multiplierOrLimit": "1x base benefit"
+      }
+    }
+  ],
+  "expected": {
+    "status": "review",
+    "responsibilityIds": ["base-accident-disability", "public-transport-extra-disability"],
+    "supportingSectionIds": [],
+    "issueCodes": ["rider_main_contract_dependency_missing", "rider_effective_termination_linkage_missing"]
+  }
+}

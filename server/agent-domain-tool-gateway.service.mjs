@@ -300,12 +300,12 @@ export function createAgentDomainToolGateway({
     const hasProductTask = (tool === 'ask_insurance_expert' && input.operation === 'product_knowledge')
       || (tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
         && Array.isArray(input.productMentions) && input.productMentions.length > 0);
-    let confirmedProduct = hasProductTask ? productEntity(claims.confirmedProduct) : null;
-    if (hasProductTask
-      && !confirmedProduct
+    const isSalesCoaching = tool === 'ask_sales_champion' && input.operation === 'sales_coaching';
+    let activeConversationContext = null;
+    if ((hasProductTask || isSalesCoaching)
       && conversationContext && typeof conversationContext.loadContext === 'function') {
       try {
-        const context = await conversationContext.loadContext({
+        activeConversationContext = await conversationContext.loadContext({
           tenantId: claims.tenant,
           channel: claims.channel,
           channelUserId: claims.channelUserId,
@@ -313,14 +313,17 @@ export function createAgentDomainToolGateway({
           internalUserId: Number(claims.internalUserId),
           productContextTtlMinutes,
         });
-        confirmedProduct = productEntity({
-          officialName: context?.product?.productName,
-          company: context?.product?.company,
-          canonicalProductId: context?.product?.canonicalProductId,
-        });
       } catch {
-        confirmedProduct = null;
+        activeConversationContext = null;
       }
+    }
+    let confirmedProduct = hasProductTask ? productEntity(claims.confirmedProduct) : null;
+    if (hasProductTask && !confirmedProduct) {
+      confirmedProduct = productEntity({
+        officialName: activeConversationContext?.product?.productName,
+        company: activeConversationContext?.product?.company,
+        canonicalProductId: activeConversationContext?.product?.canonicalProductId,
+      });
     }
     const routed = tool === 'ask_insurance_expert' && input.operation === 'product_knowledge'
       ? await verifiedProductRouteInput(input, productResolver, confirmedProduct, {
@@ -330,9 +333,15 @@ export function createAgentDomainToolGateway({
       })
       : candidateFor(tool, input);
     if (routed.result) return routed.result;
-    const supportingSalesContext = tool === 'ask_sales_champion' && input.operation === 'sales_coaching'
+    const productSalesContext = isSalesCoaching
       ? await salesProductContext(input, productResolver, confirmedProduct)
       : null;
+    const supportingSalesContext = isSalesCoaching ? {
+      ...(productSalesContext || {}),
+      ...(activeConversationContext?.factBlock?.salesKyc
+        ? { salesKycState: activeConversationContext.factBlock.salesKyc }
+        : {}),
+    } : null;
     if (supportingSalesContext?.result) return supportingSalesContext.result;
     const verifiedEntities = routed.verifiedEntities || {};
     const result = await questionRouter.route({
@@ -340,6 +349,9 @@ export function createAgentDomainToolGateway({
       messageRef: toolMessageRef(claims),
       conversationId: claims.conversationId,
       candidate: routed.candidate,
+      ...(isSalesCoaching
+        ? { conversationHistory: activeConversationContext?.history || [] }
+        : {}),
       ...(routed.semanticContext ? { semanticContext: routed.semanticContext } : {}),
       ...(supportingSalesContext ? { salesContext: supportingSalesContext } : {}),
     });
@@ -355,6 +367,9 @@ export function createAgentDomainToolGateway({
       decision: result?.decision || 'deny',
       interaction: preserveExpertAnswer ? { ...interaction, delivery: 'verbatim' } : interaction,
       ...(Object.keys(entities).length ? { resolvedEntities: entities } : {}),
+      ...(tool === 'ask_sales_champion' && result?.agentContextUpdate?.salesKyc
+        ? { agentContextUpdate: { salesKyc: result.agentContextUpdate.salesKyc } }
+        : {}),
     };
   }
 

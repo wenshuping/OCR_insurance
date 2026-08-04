@@ -9,6 +9,7 @@ import {
   normalizeBeneficiary,
   selectedCoverageIndicators,
 } from '../server/policy-ocr.domain.mjs';
+import { computePolicyResponsibilityCalculations } from '../server/cashflow-compute.mjs';
 
 test('beneficiary normalization treats common legal-beneficiary OCR variants as legal', () => {
   assert.equal(normalizeBeneficiary('被保险人的法定继本人'), '法定');

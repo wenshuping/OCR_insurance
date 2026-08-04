@@ -869,7 +869,7 @@ export function createResponsibilityRoutes(context) {
     }
   });
 
-  router.post('/local-draft', (req, res) => {
+  router.post('/local-draft', async (req, res) => {
     try {
       const manualData = req.body?.manualData && typeof req.body.manualData === 'object' ? req.body.manualData : req.body;
       const data = normalizePolicyScanData(manualData || {});
@@ -881,7 +881,7 @@ export function createResponsibilityRoutes(context) {
           optionalResponsibilities: normalizeOptionalResponsibilities(manualData?.optionalResponsibilities),
         },
       };
-      const analysis = buildRecognizedPolicyAnalysisDraft({
+      const analysis = await buildRecognizedPolicyAnalysisDraft({
         state,
         scan,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
@@ -981,6 +981,22 @@ export function createResponsibilityRoutes(context) {
         // Keep the in-memory fallback for test stores and legacy runtimes.
       }
     }
+    if (!usesPrivateSource && typeof buildCustomerResponsibilitySummaryFromCards === 'function') {
+      const cardSummary = buildCustomerResponsibilitySummaryFromCards({
+        db,
+        company: input.company,
+        productName: input.name,
+        canonicalProductId,
+        sourceRecords: summaryState.knowledgeRecords,
+      });
+      if (cardSummary) {
+        return {
+          ok: true,
+          source: 'database',
+          summary: cardSummary,
+        };
+      }
+    }
     const result = await generateProductCustomerResponsibilitySummary({
       state: summaryState,
       db,
@@ -1004,7 +1020,7 @@ export function createResponsibilityRoutes(context) {
       }),
     });
     if (usesPrivateSource && result?.ok) result.source = 'customer_upload';
-    if (!usesPrivateSource && result?.ok && result?.summary
+    if (!usesPrivateSource && result?.source !== 'database' && result?.ok && result?.summary
       && typeof retrieveCustomerResponsibilityMaterials === 'function'
       && typeof enrichCustomerResponsibilitySummaryWithMaterials === 'function') {
       try {

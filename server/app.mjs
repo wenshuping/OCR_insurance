@@ -103,7 +103,11 @@ import {
   normalizeOfficialDomainProfile,
 } from './c-policy-analysis.service.mjs';
 import { deliverSmsCode, resolveSmsDeliveryPlan } from './sms-delivery.mjs';
-import { computePolicyCashflow, computeScenarioEntries } from './cashflow-compute.mjs';
+import {
+  computePolicyCashflow,
+  computePolicyResponsibilityCalculations,
+  computeScenarioEntries,
+} from './cashflow-compute.mjs';
 import { findProductCashflowTemplate } from './cashflow-template.mjs';
 import { createCashflowStore, createCashValueStore } from './cashflow-store.mjs';
 import {
@@ -114,11 +118,15 @@ import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
 import { createProductRagService } from './product-rag.service.mjs';
 import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
 import { createInsuranceExpertAgentPlanner } from './insurance-expert-agent-planner.service.mjs';
-import { createInsuranceExpertSkillRegistry } from './insurance-expert-skill-registry.service.mjs';
 import {
+  buildCustomerResponsibilitySummaryFromCards,
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
 } from './product-customer-responsibility-summary.service.mjs';
+import {
+  createProductResponsibilityPipelineQueue,
+  createProductResponsibilityPipelineRunner,
+} from './product-responsibility-pipeline-queue.service.mjs';
 import { buildFamilySalesReviewInput } from './family-sales-review.service.mjs';
 import {
   buildResponsibilityCardsForPolicy,
@@ -1104,13 +1112,14 @@ function clearPolicyReportForRegeneration(state, policy) {
 function normalizeResponsibilityQueryInput(value = {}) {
   const company = trim(value?.company).slice(0, 80);
   const name = trim(value?.name).slice(0, 160);
+  const canonicalProductId = trim(value?.canonicalProductId).slice(0, 200);
   if (!company || !name) {
     const error = new Error('请输入保险公司和保险名称');
     error.code = 'POLICY_RESPONSIBILITY_QUERY_INPUT_REQUIRED';
     error.status = 400;
     throw error;
   }
-  return { company, name };
+  return { company, name, canonicalProductId };
 }
 
 function policyInputMetrics(body = {}) {
@@ -1599,7 +1608,12 @@ function isProductSuggestionKnowledgeRecord(record = {}) {
   );
 }
 
-function buildResponsibilityProductSuggestions(state, { company = '', query = '', maxResults } = {}) {
+function buildResponsibilityProductSuggestions(state, {
+  company = '',
+  query = '',
+  maxResults,
+  knowledgeRecords,
+} = {}) {
   if (!normalizeSuggestionText(company)) return [];
   const normalizedQuery = normalizeSuggestionText(query);
   const parentheticalCode = String(query || '')
@@ -1610,7 +1624,10 @@ function buildResponsibilityProductSuggestions(state, { company = '', query = ''
     ? String(query || '').normalize('NFKC').replace(/\([A-Z0-9][A-Z0-9_-]{1,23}\)/iu, '')
     : query;
   const normalizedNameQuery = normalizeSuggestionText(nameQuery) || normalizedQuery;
-  const suggestionIndex = getResponsibilitySuggestionIndex(state);
+  const suggestionState = Array.isArray(knowledgeRecords)
+    ? { ...state, knowledgeRecords }
+    : state;
+  const suggestionIndex = getResponsibilitySuggestionIndex(suggestionState);
   const candidatesByKey = new Map();
   for (const companyKey of companyKeysForSuggestionIndex(company, suggestionIndex.officialDomainProfiles)) {
     for (const row of suggestionIndex.productRowsByCompanyKey.get(companyKey) || []) {
@@ -2108,6 +2125,89 @@ function buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfile
   };
 }
 
+async function loadRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfiles = [], loadKnowledgeRecords, loadResponsibilityIndexes } = {}) {
+  const data = normalizePolicyScanData(scan?.data || {});
+  const products = [];
+  const seen = new Set();
+  const addProduct = (company, productName) => {
+    const normalizedCompany = trim(company);
+    const normalizedProductName = trim(productName);
+    if (!normalizedCompany || !normalizedProductName) return;
+    const key = `${normalizedCompany}\u001f${normalizedProductName}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    products.push({ company: normalizedCompany, productName: normalizedProductName });
+  };
+
+  addProduct(data.company, data.name);
+  for (const plan of normalizePolicyPlans(scan?.data?.plans, data.company)) {
+    addProduct(
+      plan?.company || data.company,
+      plan?.matchedProductName || plan?.productName || plan?.name,
+    );
+  }
+
+  if (!products.length || (typeof loadKnowledgeRecords !== 'function' && typeof loadResponsibilityIndexes !== 'function')) {
+    return buildRecognizedPolicyAnalysisDraft({ state, scan, officialDomainProfiles });
+  }
+
+  const [knowledgeBatches, responsibilityBatches] = await Promise.all([
+    typeof loadKnowledgeRecords === 'function'
+      ? Promise.all(products.map((product) => loadKnowledgeRecords({
+          company: product.company,
+          productName: product.productName,
+        })))
+      : [],
+    typeof loadResponsibilityIndexes === 'function'
+      ? Promise.all(products.map(async (product) => {
+          const scoped = await loadResponsibilityIndexes({
+            company: product.company,
+            productName: product.productName,
+          });
+          if (
+            (Array.isArray(scoped?.indicatorRecords) && scoped.indicatorRecords.length)
+            || (Array.isArray(scoped?.optionalResponsibilityRecords) && scoped.optionalResponsibilityRecords.length)
+          ) return scoped;
+          return loadResponsibilityIndexes({ productName: product.productName });
+        }))
+      : [],
+  ]);
+
+  const dedupeBy = (rows, keyFor) => {
+    const byKey = new Map();
+    for (const row of rows) {
+      const key = keyFor(row);
+      if (key && !byKey.has(key)) byKey.set(key, row);
+    }
+    return [...byKey.values()];
+  };
+  const knowledgeRecords = dedupeBy(
+    knowledgeBatches.flatMap((batch) => Array.isArray(batch) ? batch : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.url)}`,
+  );
+  const indicatorRecords = dedupeBy(
+    responsibilityBatches.flatMap((batch) => Array.isArray(batch?.indicatorRecords) ? batch.indicatorRecords : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.liability)}`,
+  );
+  const optionalResponsibilityRecords = dedupeBy(
+    responsibilityBatches.flatMap((batch) => Array.isArray(batch?.optionalResponsibilityRecords) ? batch.optionalResponsibilityRecords : []),
+    (row) => trim(row?.id) || `${trim(row?.company)}\u001f${trim(row?.productName)}\u001f${trim(row?.liability)}`,
+  );
+
+  return buildRecognizedPolicyAnalysisDraft({
+    state: {
+      ...state,
+      knowledgeRecords: knowledgeRecords.length ? knowledgeRecords : state?.knowledgeRecords || [],
+      insuranceIndicatorRecords: indicatorRecords.length ? indicatorRecords : state?.insuranceIndicatorRecords || [],
+      optionalResponsibilityRecords: optionalResponsibilityRecords.length
+        ? optionalResponsibilityRecords
+        : state?.optionalResponsibilityRecords || [],
+    },
+    scan,
+    officialDomainProfiles,
+  });
+}
+
 function buildDraftOptionalResponsibilitiesByPlan({
   basePolicy,
   primaryPolicy,
@@ -2334,6 +2434,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: true,
       }));
@@ -2345,6 +2446,7 @@ export function createPolicyOcrApp(options = {}) {
         query: options.policyResponsibilityQuery,
         officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
         knowledgeRecords: state.knowledgeRecords || [],
+        loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
         preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer !== false,
         allowExternalReferences: Boolean(input.allowExternalReferences),
@@ -2430,6 +2532,36 @@ export function createPolicyOcrApp(options = {}) {
   const findProductCustomerResponsibilitySummary = typeof options.findProductCustomerResponsibilitySummary === 'function'
     ? (input = {}) => options.findProductCustomerResponsibilitySummary(input)
     : null;
+  let customerResponsibilitySummaryQuery = null;
+  const runProductResponsibilityPipeline = options.runProductResponsibilityPipeline
+    || (options.db && options.productResponsibilityPipelineDbPath
+      ? createProductResponsibilityPipelineRunner({
+        db: options.db,
+        dbPath: options.productResponsibilityPipelineDbPath,
+        runtimeDir: options.productResponsibilityPipelineRuntimeDir,
+      })
+      : null);
+  const productResponsibilityPipelineQueue = options.productResponsibilityPipelineQueue
+    || (options.db && runProductResponsibilityPipeline ? createProductResponsibilityPipelineQueue({
+      db: options.db,
+      runJob: runProductResponsibilityPipeline,
+      intervalMs: options.productResponsibilityPipelineIntervalMs,
+      afterPublished: async (job) => {
+        if (typeof customerResponsibilitySummaryQuery !== 'function') {
+          throw new Error('Customer responsibility summary query is not registered');
+        }
+        const result = await customerResponsibilitySummaryQuery({
+          company: job.company,
+          name: job.productName,
+        });
+        if (!result?.ok) {
+          throw new Error(result?.message || 'Customer responsibility summary generation failed');
+        }
+      },
+    }) : null);
+  const enqueueProductResponsibilityPipeline = productResponsibilityPipelineQueue
+    ? (input = {}) => productResponsibilityPipelineQueue.enqueue(input)
+    : null;
   const markPolicyDerivedResultsStaleByProductKeys = typeof options.markPolicyDerivedResultsStaleByProductKeys === 'function'
     ? (input = {}) => options.markPolicyDerivedResultsStaleByProductKeys({ state, ...input })
     : null;
@@ -2476,6 +2608,62 @@ export function createPolicyOcrApp(options = {}) {
     }
   }
 
+  function policyProductNamesForIndicatorLookup(policy = {}) {
+    const names = [
+      policy?.name,
+      ...(Array.isArray(policy?.plans) ? policy.plans.map((plan) => plan?.matchedProductName || plan?.productName || plan?.name) : []),
+    ].map((value) => String(value || '').trim()).filter(Boolean);
+    return [...new Set(names.flatMap((name) => [
+      name,
+      name.replace(/^.{2,80}?(?:人寿保险股份有限公司|保险股份有限公司|人寿保险有限公司|保险有限公司|保险公司)/u, '').trim(),
+    ]).filter(Boolean))];
+  }
+
+  function loadCurrentPolicyIndicators(policy) {
+    if (!cashflowDb || ownsCashflowDb) return [];
+    const productNames = policyProductNamesForIndicatorLookup(policy);
+    if (!productNames.length) return [];
+    try {
+      const placeholders = productNames.map(() => '?').join(', ');
+      return cashflowDb.prepare(`
+        SELECT payload FROM insurance_indicator_records
+        WHERE product_name IN (${placeholders})
+      `).all(...productNames).map((row) => {
+        try { return JSON.parse(row.payload || ''); } catch { return null; }
+      }).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  function hydrateCashflowIndicatorsFromCurrentProductIndex(policy, indicators = []) {
+    const existing = Array.isArray(indicators) ? indicators : [];
+    const needsHydration = !existing.length || existing.some((indicator) => (
+      String(indicator?.basisKey || '').startsWith('contract_defined_') && !indicator?.basisDefinition
+    ));
+    if (!needsHydration || !cashflowDb || ownsCashflowDb) return existing;
+
+    try {
+      const current = loadCurrentPolicyIndicators(policy);
+      if (!current.length) return existing;
+      if (!existing.length) return current;
+
+      const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
+      return existing.map((indicator) => {
+        const latest = byId.get(String(indicator?.id || ''));
+        if (!latest) return indicator;
+        return {
+          ...latest,
+          responsibilityScope: indicator.responsibilityScope || latest.responsibilityScope,
+          selectionStatus: indicator.selectionStatus || latest.selectionStatus,
+          selectionEvidence: indicator.selectionEvidence || latest.selectionEvidence,
+        };
+      });
+    } catch {
+      return existing;
+    }
+  }
+
   /**
    * Compute cashflow entries for a policy and persist them to the cashflow store.
    * Returns { cashflowEntries, scenarioEntries, totalCashflow }.
@@ -2486,7 +2674,9 @@ export function createPolicyOcrApp(options = {}) {
     const policyIndicators = derivedResult && Array.isArray(policyForCashflow.coverageIndicators)
       ? policyForCashflow.coverageIndicators
       : findPolicyCoverageIndicators(policy, state.insuranceIndicatorRecords);
-    const selectedIndicators = selectedCoverageIndicators(policyIndicators);
+    const selectedIndicators = selectedCoverageIndicators(
+      hydrateCashflowIndicatorsFromCurrentProductIndex(policyForCashflow, policyIndicators),
+    );
     const template = findProductCashflowTemplate(policyForCashflow, state.knowledgeRecords);
     const cashflowEntries = computePolicyCashflow(policyForCashflow, template, selectedIndicators);
     const scenarioEntries = computeScenarioEntries(selectedIndicators, policyForCashflow);
@@ -2519,7 +2709,6 @@ export function createPolicyOcrApp(options = {}) {
 
   let responsibilityAssistantQuery = null;
   let responsibilityAssistantProductMatch = null;
-  let customerResponsibilitySummaryQuery = null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
   const productRagService = options.productRagService
@@ -2544,6 +2733,7 @@ export function createPolicyOcrApp(options = {}) {
     persistMembershipState,
     persistOfficialDomainProfiles,
     persistResponsibilityLookupArtifacts,
+    parseCustomerUploadResponsibility: options.parseCustomerUploadResponsibility,
     persistPolicyDerivedResult,
     markPolicyDerivedResultsStaleByProductKeys,
     upsertProductIndicatorVersions,
@@ -2564,6 +2754,9 @@ export function createPolicyOcrApp(options = {}) {
     resolveOcrServiceUrl,
     resolveOcrProviderForScenario,
     computeAndStoreCashflow,
+    computePolicyResponsibilityCalculations,
+    hydrateCashflowIndicatorsFromCurrentProductIndex,
+    loadCurrentPolicyIndicators,
     recomputeAllCashflow,
     generateFamilySalesReview: options.generateFamilySalesReview,
     generateFamilySalesChatReply: options.generateFamilySalesChatReply,
@@ -2633,7 +2826,11 @@ export function createPolicyOcrApp(options = {}) {
     normalizePolicyPlans,
     normalizeOptionalResponsibilities,
     buildOptionalResponsibilityReview,
-    buildRecognizedPolicyAnalysisDraft,
+    buildRecognizedPolicyAnalysisDraft: (input) => loadRecognizedPolicyAnalysisDraft({
+      ...input,
+      loadKnowledgeRecords: options.loadKnowledgeRecords,
+      loadResponsibilityIndexes: options.loadResponsibilityIndexes,
+    }),
     buildEffectiveOfficialDomainProfiles,
     buildResponsibilitySummaryReportFromCards,
     buildResponsibilityCardsForPolicy,
@@ -2679,10 +2876,12 @@ export function createPolicyOcrApp(options = {}) {
     wechatPayMode: defaultWechatPayMode,
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
+    loadKnowledgeRecords: options.loadKnowledgeRecords,
     findKnowledgeProductCandidates,
     legacyExternalProductReferenceRecords,
     withPolicyProductMatchStatus,
     generateProductCustomerResponsibilitySummary,
+    buildCustomerResponsibilitySummaryFromCards,
     enrichCustomerResponsibilitySummaryWithMaterials,
     generateProductCustomerResponsibilitySummaryWithDeepSeek: options.generateProductCustomerResponsibilitySummaryWithDeepSeek,
     generateCustomerResponsibilityMaterialSummaryWithDeepSeek: options.generateCustomerResponsibilityMaterialSummaryWithDeepSeek,
@@ -2707,6 +2906,7 @@ export function createPolicyOcrApp(options = {}) {
     findProductCustomerResponsibilitySummary,
     persistProductCustomerResponsibilitySummary,
     persistProductCustomerSummaryGenerationRun,
+    enqueueProductResponsibilityPipeline,
     buildAdminOverview,
     buildOptionalResponsibilityGaps,
     buildAdminReportIssueDetail,
@@ -2858,8 +3058,7 @@ export function createPolicyOcrApp(options = {}) {
     && typeof agentStore.createAgentActionConfirmation === 'function'
     && typeof agentStore.transferPolicyBetweenFamilies === 'function';
   const insuranceExpertEnv = options.env || process.env;
-  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry
-    || createInsuranceExpertSkillRegistry();
+  const insuranceExpertSkillRegistry = options.insuranceExpertSkillRegistry || null;
   const insuranceExpertPlanner = options.insuranceExpertPlanner
     || (insuranceExpertEnv.DEEPSEEK_API_KEY
       ? createInsuranceExpertAgentPlanner({
@@ -3077,6 +3276,11 @@ export function createPolicyOcrApp(options = {}) {
   if (recovery) {
     app.locals.transferRegenerationRecovery = recovery;
     app.once('close', () => recovery.stop());
+  }
+  if (productResponsibilityPipelineQueue && options.disableProductResponsibilityPipelineWorker !== true) {
+    productResponsibilityPipelineQueue.start();
+    app.locals.productResponsibilityPipelineQueue = productResponsibilityPipelineQueue;
+    app.once('close', () => productResponsibilityPipelineQueue.stop());
   }
   app.locals.agentConfirmationService = agentConfirmationService;
   app.use('/api/agent', createAgentRouter({

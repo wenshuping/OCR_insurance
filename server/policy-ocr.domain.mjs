@@ -18,6 +18,7 @@ import {
   evidenceVerificationFields,
   isFormalResponsibilityEvidence,
 } from './evidence-classification.service.mjs';
+import { sameResponsibilityProduct } from './product-responsibility-identity.mjs';
 
 export function createInitialState() {
   return {
@@ -507,8 +508,29 @@ function indicatorQuantificationStatus(indicator = {}) {
   );
 }
 
+function optionalResponsibilityCoverageAmount(item = {}) {
+  for (const value of [item?.coverageAmount, item?.insuredAmount, item?.insuranceAmount, item?.amount]) {
+    const amount = Number(value);
+    if (Number.isFinite(amount) && amount > 0) return amount;
+  }
+  return 0;
+}
+
+function policyOptionalResponsibilityForIndicator(policy = {}, indicator = {}) {
+  const liability = normalizeLookupText(indicator?.liability || indicator?.coverageType);
+  if (!liability) return null;
+  const indicatorOptionalResponsibilityId = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId);
+  return (Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : []).find((item) => (
+    normalizeLookupText(item?.liability || item?.title || item?.coverageType) === liability
+    && (!indicatorOptionalResponsibilityId
+      || !normalizeOptionalResponsibilityId(item?.id)
+      || normalizeOptionalResponsibilityId(item?.id) === indicatorOptionalResponsibilityId)
+  )) || null;
+}
+
 function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
-  const optional = indicatorLooksOptional(indicator);
+  const policyOptionalResponsibility = policyOptionalResponsibilityForIndicator(policy, indicator);
+  const optional = Boolean(policyOptionalResponsibility) || indicatorLooksOptional(indicator);
   const canonicalProductId = canonicalProductIdForRecord(indicator, policy.company);
   if (!optional) {
     return {
@@ -519,16 +541,30 @@ function annotateCoverageIndicatorSelection(policy = {}, indicator = {}) {
       selectionEvidence: 'official_terms',
     };
   }
-  const explicitOptionalResponsibilityId = normalizeOptionalResponsibilityId(indicator?.optionalResponsibilityId);
+  const explicitOptionalResponsibilityId = normalizeOptionalResponsibilityId(
+    indicator?.optionalResponsibilityId || policyOptionalResponsibility?.id,
+  );
   const id = explicitOptionalResponsibilityId || buildOptionalResponsibilityId(indicator);
-  const selection = inferOptionalResponsibilitySelection(policy, indicator, id, Boolean(explicitOptionalResponsibilityId));
+  const selection = policyOptionalResponsibility
+    ? {
+      optionalResponsibilityId: explicitOptionalResponsibilityId || id,
+      selectionStatus: normalizeResponsibilitySelectionStatus(policyOptionalResponsibility.selectionStatus),
+      selectionEvidence: String(policyOptionalResponsibility.selectionEvidence || 'manual').trim() || 'manual',
+      ...(explicitOptionalResponsibilityId ? { selectedOptionalResponsibilityId: explicitOptionalResponsibilityId } : {}),
+    }
+    : inferOptionalResponsibilitySelection(policy, indicator, id, Boolean(explicitOptionalResponsibilityId));
+  const coverageAmount = optionalResponsibilityCoverageAmount(policyOptionalResponsibility);
   return {
     ...indicator,
     ...(canonicalProductId ? { canonicalProductId } : {}),
     optionalResponsibilityId: id,
     responsibilityScope: 'optional',
-    quantificationStatus: indicatorQuantificationStatus(indicator),
-    quantificationReason: String(indicator?.quantificationReason || '').trim(),
+    quantificationStatus: normalizeQuantificationStatus(
+      policyOptionalResponsibility?.quantificationStatus,
+      indicatorQuantificationStatus(indicator),
+    ),
+    quantificationReason: String(policyOptionalResponsibility?.quantificationReason || indicator?.quantificationReason || '').trim(),
+    ...(coverageAmount > 0 ? { optionalResponsibilityCoverageAmount: coverageAmount } : {}),
     ...selection,
   };
 }
@@ -549,6 +585,7 @@ export function normalizeOptionalResponsibilities(items = []) {
       const coverageType = String(item?.coverageType || '').trim();
       const liability = String(item?.liability || item?.name || item?.title || '').trim();
       const canonicalProductId = String(item?.canonicalProductId || '').trim();
+      const coverageAmount = optionalResponsibilityCoverageAmount(item);
       const id = normalizeOptionalResponsibilityId(item?.id) || buildOptionalResponsibilityId({ company, productName, canonicalProductId, coverageType, liability });
       if (!id || (!productName && !coverageType && !liability)) return null;
       return normalizeGovernanceOptionalResponsibilityRecord({
@@ -562,6 +599,7 @@ export function normalizeOptionalResponsibilities(items = []) {
         selectionEvidence: String(item?.selectionEvidence || 'manual').trim() || 'manual',
         quantificationStatus: normalizeQuantificationStatus(item?.quantificationStatus),
         quantificationReason: String(item?.quantificationReason || '').trim(),
+        ...(coverageAmount > 0 ? { coverageAmount } : {}),
         indicatorIds: Array.isArray(item?.indicatorIds) ? item.indicatorIds : [],
         sourceExcerpt: String(item?.sourceExcerpt || '').trim().slice(0, 500),
       });
@@ -998,10 +1036,58 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
     (Array.isArray(indicatorRecords) ? indicatorRecords : []).filter((record) => {
       if (!isFormalResponsibilityEvidence(record)) return false;
       const recordCanonicalProductId = explicitCanonicalProductId(record);
-      if (canonicalIds.size && recordCanonicalProductId) return canonicalIds.has(recordCanonicalProductId);
-      return keys.has(`${normalizeLookupText(resolveRecordCompany(record))}\u001f${normalizeLookupText(resolveRecordProductName(record))}`);
+      if (canonicalIds.size && recordCanonicalProductId && canonicalIds.has(recordCanonicalProductId)) return true;
+      if (keys.has(`${normalizeLookupText(resolveRecordCompany(record))}\u001f${normalizeLookupText(resolveRecordProductName(record))}`)) return true;
+      // OCR product names often contain a full legal insurer prefix while
+      // official indicator records use the short filing name. Resolve only
+      // through the shared insurer alias plus normalized product identity;
+      // this preserves version suffixes and does not use fuzzy name guessing.
+      return sameResponsibilityProduct({
+        company: policy.company,
+        productName: policy.name || policy.productName,
+      }, {
+        company: resolveRecordCompany(record),
+        productName: resolveRecordProductName(record),
+      });
     }),
   ).map((record) => annotateCoverageIndicatorSelection(policy, record));
+}
+
+// Derived policy results may retain an older, reduced projection of an
+// indicator. Rehydrate it from the current product record by id so current
+// formula semantics (for example a compound basis definition) are not lost.
+export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecords = []) {
+  const indicatorId = (value) => String(value || '').trim();
+  const expandPayload = (record) => {
+    if (!record || typeof record !== 'object') return {};
+    if (typeof record.payload !== 'string') return record;
+    try {
+      const payload = JSON.parse(record.payload);
+      return payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? { ...record, ...payload }
+        : record;
+    } catch {
+      return record;
+    }
+  };
+  const latestById = new Map(
+    (Array.isArray(indicatorRecords) ? indicatorRecords : [])
+      .map(expandPayload)
+      .filter((record) => indicatorId(record?.id))
+      .map((record) => [indicatorId(record.id), record]),
+  );
+  return (Array.isArray(indicators) ? indicators : []).map((indicator) => {
+    const latest = latestById.get(indicatorId(indicator?.id));
+    if (!latest) return indicator;
+    return {
+      ...latest,
+      responsibilityScope: indicatorId(indicator.responsibilityScope) || latest.responsibilityScope,
+      selectionStatus: indicatorId(indicator.selectionStatus) || latest.selectionStatus,
+      selectionEvidence: indicatorId(indicator.selectionEvidence) || latest.selectionEvidence,
+      quantificationStatus: indicatorId(indicator.quantificationStatus) || latest.quantificationStatus,
+      canonicalProductId: indicatorId(indicator.canonicalProductId) || latest.canonicalProductId,
+    };
+  });
 }
 
 export function attachPolicyCoverageIndicators(policy = {}, indicatorRecords = [], knowledgeRecords = [], optionalResponsibilityRecords = []) {

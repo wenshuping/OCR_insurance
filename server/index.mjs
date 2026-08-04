@@ -76,7 +76,19 @@ const dbPath = process.env.POLICY_OCR_APP_DB_PATH || path.resolve(__dirname, '..
 const port = Number(process.env.POLICY_OCR_APP_API_PORT || 4206);
 const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 
-const store = await createSqliteStateStore({ dbPath, seedStatePath: statePath });
+const store = await createSqliteStateStore({
+  dbPath,
+  seedStatePath: statePath,
+  lazyKnowledgeRecords: ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.POLICY_OCR_LAZY_KNOWLEDGE_RECORDS || 'true').trim().toLowerCase(),
+  ),
+  lazyFamilyReports: ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.POLICY_OCR_LAZY_FAMILY_REPORTS || 'true').trim().toLowerCase(),
+  ),
+  lazyLargeState: ['1', 'true', 'yes', 'on'].includes(
+    String(process.env.POLICY_OCR_LAZY_LARGE_STATE || 'true').trim().toLowerCase(),
+  ),
+});
 const state = await store.load();
 const agentGatewayOptions = createProductionAgentGatewayOptions({
   env: process.env,
@@ -104,12 +116,15 @@ const app = createPolicyOcrApp({
   persistProductCustomerResponsibilitySummary: store.persistProductCustomerResponsibilitySummary,
   persistProductCustomerSummaryGenerationRun: store.persistProductCustomerSummaryGenerationRun,
   persistResponsibilityLookupArtifacts: store.persistResponsibilityLookupArtifacts,
+  loadKnowledgeRecords: store.loadKnowledgeRecords,
+  loadResponsibilityIndexes: store.loadResponsibilityIndexes,
   findProductCustomerResponsibilitySummary: store.findProductCustomerResponsibilitySummary,
   markPolicyDerivedResultsStaleByProductKeys: store.markPolicyDerivedResultsStaleByProductKeys,
   upsertProductIndicatorVersions: store.upsertProductIndicatorVersions,
   recordIndicatorUpdateBatch: store.recordIndicatorUpdateBatch,
   agentStore: store,
   db: store.db,
+  productResponsibilityPipelineDbPath: dbPath,
 });
 
 const server = app.listen(port, host, () => {
@@ -123,6 +138,7 @@ function closeRuntime() {
   if (closed) return;
   closed = true;
   app.locals.transferRegenerationRecovery?.stop?.();
+  app.locals.productResponsibilityPipelineQueue?.stop?.();
   store.close();
 }
 server.once('close', closeRuntime);

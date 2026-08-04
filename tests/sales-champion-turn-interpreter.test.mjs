@@ -13,6 +13,7 @@ function response(content) {
 function proposal(question, overrides = {}) {
   return {
     contractVersion: 1,
+    turnRelation: { value: 'new_request', confidence: 0.9 },
     customerStatements: [{ text: question, source: 'current_message' }],
     stage: { value: 'discovery', confidence: 0.9 },
     concerns: [{ type: 'follow_up', priority: 'primary', confidence: 0.9 }],
@@ -157,4 +158,115 @@ test('sales champion interpreter drops one ungrounded statement when grounded st
   assert.deepEqual(interpreted.customerStatements, [
     { text: '客户五十多岁', source: 'current_message' },
   ]);
+});
+
+test('sales champion interpreter deduplicates and prioritizes evidence within a bounded budget', async () => {
+  const statements = Array.from({ length: 21 }, (_, index) => `已确认背景${index + 1}`);
+  statements.push('客户希望先解决养老安排');
+  const question = `${statements.join('，')}，我怎么跟进？`;
+  let calls = 0;
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => {
+      calls += 1;
+      return response(proposal(question, {
+        customerStatements: [...statements, statements[0]].map((statement) => ({
+          text: statement,
+          source: 'current_message',
+        })),
+        kycFacts: [{
+          key: 'customer_goal', value: '先解决养老安排', source: 'advisor_fact',
+          evidence: '客户希望先解决养老安排',
+        }],
+      }));
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.equal(interpreted.customerStatements.length, 20);
+  assert.equal(interpreted.customerStatements[0].text, '客户希望先解决养老安排');
+  assert.equal(new Set(interpreted.customerStatements.map((item) => item.text)).size, 20);
+});
+
+test('sales champion interpreter drops optional KYC evidence that paraphrases the advisor', async () => {
+  const question = '客户五十多岁，在工厂上班，比较在意养老，我怎么跟进？';
+  let calls = 0;
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => {
+      calls += 1;
+      return response(proposal(question, {
+        kycFacts: [
+          { key: 'age_life_stage', value: '50多岁', source: 'advisor_fact', evidence: '客户五十多岁' },
+          { key: 'occupation', value: '工厂职员', source: 'advisor_fact', evidence: '客户是普通工厂职员' },
+        ],
+        customerLabels: [{
+          dimension: 'family_stage',
+          value: '养老准备期',
+          status: 'candidate',
+          source: 'advisor_inference',
+          evidence: '客户已进入养老准备阶段',
+          confidence: 0.7,
+        }],
+      }));
+    },
+  });
+
+  assert.equal(calls, 1);
+  assert.deepEqual(interpreted.kycFacts, [
+    { key: 'age_life_stage', value: '50多岁', source: 'advisor_fact', evidence: '客户五十多岁' },
+  ]);
+  assert.deepEqual(interpreted.customerLabels, []);
+});
+
+test('sales champion interpreter marks an advisor correction as overriding prior context', async () => {
+  const question = '前面的方向是我自己判断的，客户没有说想了解这件事。我补充一下新的情况。';
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => response(proposal(question, {
+      stage: { value: 'contact', confidence: 0.9 },
+      concerns: [{ type: 'follow_up', priority: 'primary', confidence: 0.9 }],
+      missingInformation: ['customer_goal'],
+      proposedCapabilities: ['appointment_scope', 'follow_up_consent'],
+      situations: [],
+    })),
+  });
+
+  assert.deepEqual(interpreted.turnRelation, { value: 'correction', confidence: 1 });
+  assert.deepEqual(interpreted.concerns.map((item) => item.type), ['unknown']);
+  assert.deepEqual(interpreted.missingInformation, []);
+  assert.deepEqual(interpreted.proposedCapabilities, ['general_sales_clarification']);
+  assert.deepEqual(interpreted.situations, []);
+});
+
+test('sales champion interpreter recognizes a rhetorical reminder as a correction', async () => {
+  const question = '人家不是已经有一项安排吗';
+  const interpreted = await interpretSalesChampionTurn({
+    question,
+    history: [{ role: 'assistant', content: '可以继续了解客户有没有这项需求。' }],
+    env: { DEEPSEEK_API_KEY: 'test-key', DEEPSEEK_BASE_URL: 'https://deepseek.test' },
+    fetchImpl: async () => response(proposal(question, {
+      turnRelation: { value: 'context_update', confidence: 0.9 },
+      customerStatements: [],
+      kycFacts: [{
+        key: 'existing_insurance', value: '已有一项安排',
+        source: 'advisor_fact', evidence: question,
+      }],
+      concerns: [{ type: 'affordability', priority: 'primary', confidence: 0.8 }],
+      missingInformation: ['budget', 'objection_reason'],
+      proposedCapabilities: ['five_question_diagnosis', 'needs_discovery'],
+      situations: ['retirement_planning', 'investment_comparison'],
+    })),
+  });
+
+  assert.deepEqual(interpreted.turnRelation, { value: 'correction', confidence: 1 });
+  assert.deepEqual(interpreted.concerns, [{
+    type: 'unknown', priority: 'primary', confidence: 1,
+  }]);
+  assert.deepEqual(interpreted.missingInformation, []);
+  assert.deepEqual(interpreted.proposedCapabilities, ['general_sales_clarification']);
+  assert.deepEqual(interpreted.situations, []);
 });

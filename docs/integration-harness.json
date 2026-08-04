@@ -1,0 +1,19 @@
+{
+  "format": "ocr-insurance-integration-config/v1",
+  "canonicalWorktree": ".",
+  "canonicalBranch": "codex/dev-agent-semantic-integration",
+  "skillRoot": ".agents/skills",
+  "allowedUncommittedPrefixes": ["artifacts"],
+  "requiredSkills": [
+    "ocr-insurance-fast-responsibility-pipeline",
+    "ocr-insurance-incremental-whole-life-responsibility",
+    "ocr-insurance-universal-account-responsibility",
+    "ocr-insurance-responsibility-merge",
+    "ocr-insurance-official-source-acquisition",
+    "ocr-insurance-unified-responsibility-parser",
+    "ocr-insurance-medical-health-responsibility",
+    "ocr-insurance-critical-illness-responsibility",
+    "ocr-insurance-accident-responsibility",
+    "ocr-insurance-term-life-responsibility"
+  ]
+}

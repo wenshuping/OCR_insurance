@@ -65,6 +65,7 @@ const runtimeEnvKeys = new Set([
   'POLICY_OCR_FALLBACK_PADDLE',
   'POLICY_OCR_PADDLE_PYTHON',
 ]);
+const devRuntimeEnvKeys = new Set([...runtimeEnvKeys, 'POLICY_OCR_APP_DB_PATH']);
 const profileConfigs = createProfileConfigs();
 const dingtalkGatewayEnvKeys = [
   'DINGTALK_APP_KEY',
@@ -88,7 +89,7 @@ function createProfileConfigs() {
   const devRuntimeDir = path.join(prodRuntimeDir, 'local');
   const prodDbPath = path.join(prodRuntimeDir, 'policy-ocr.sqlite');
   const prodRuntimeEnv = readRuntimeEnvConfig(prodRuntimeDir);
-  const devRuntimeEnv = readRuntimeEnvConfig(devRuntimeDir);
+  const devRuntimeEnv = readRuntimeEnvConfig(devRuntimeDir, devRuntimeEnvKeys);
   return {
     prod: createProfileConfig({
       name: 'prod',
@@ -135,7 +136,7 @@ function createProfileConfigs() {
   };
 }
 
-function readRuntimeEnvConfig(runtimeDir) {
+function readRuntimeEnvConfig(runtimeDir, allowedKeys = runtimeEnvKeys) {
   const configPath = path.join(runtimeDir, 'policy-ocr-env.json');
   let payload = null;
   try {
@@ -145,7 +146,7 @@ function readRuntimeEnvConfig(runtimeDir) {
   }
   const env = {};
   for (const [key, value] of Object.entries(payload || {})) {
-    if (!runtimeEnvKeys.has(key)) continue;
+    if (!allowedKeys.has(key)) continue;
     const normalized = String(value || '').trim();
     if (normalized) env[key] = normalized;
   }

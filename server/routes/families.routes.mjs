@@ -18,7 +18,9 @@ import {
 } from '../family-sales-memory.service.mjs';
 import {
   buildFamilyPolicyAnalysisInput,
+  buildLocalFamilyPolicyAnalysisReport,
   generateFamilyPolicyAnalysisReport,
+  hasLocalFamilyPolicyAnalysisEvidence,
 } from '../family-policy-analysis-report.service.mjs';
 import { sanitizeStoredPolicyAnalysis } from '../c-policy-analysis.service.mjs';
 import {
@@ -52,6 +54,7 @@ export function createFamilyRoutes(context) {
     cashflowStore,
     cashValueStore,
     computeAndStoreCashflow,
+    computeCurrentPolicyCashflow,
     createFamilyMember,
     createFamilyProfile,
     ensureDefaultFamilyProfileForPrincipal,
@@ -94,6 +97,8 @@ export function createFamilyRoutes(context) {
     allowDingTalkPolicyUpload = false,
     extractFamilySalesMemories: extractFamilySalesMemoriesImpl = extractFamilySalesMemories,
     generateFamilyPolicyAnalysisReport: generateFamilyPolicyAnalysisReportImpl = generateFamilyPolicyAnalysisReport,
+    loadKnowledgeRecords = null,
+    loadResponsibilityIndexes = null,
     nowIso = () => new Date().toISOString(),
   } = context;
   const ownerResolverContext = { resolveAuthUser, requestOwner, state };
@@ -126,6 +131,39 @@ export function createFamilyRoutes(context) {
     error.status = 503;
     throw error;
   };
+
+  async function knowledgeRecordsForPolicies(policies = []) {
+    if (typeof loadKnowledgeRecords !== 'function') return Array.isArray(state.knowledgeRecords) ? state.knowledgeRecords : [];
+    const records = await Promise.all((Array.isArray(policies) ? policies : []).map((policy) => loadKnowledgeRecords({
+      company: policy?.company || '',
+      productName: policy?.name || policy?.productName || '',
+    })));
+    const byId = new Map();
+    for (const rows of records) {
+      for (const row of Array.isArray(rows) ? rows : []) {
+        const key = Number(row?.id || 0) || JSON.stringify(row);
+        if (!byId.has(key)) byId.set(key, row);
+      }
+    }
+    return [...byId.values()];
+  }
+
+  async function responsibilityIndexesForPolicies(policies = []) {
+    if (typeof loadResponsibilityIndexes !== 'function') {
+      return {
+        indicatorRecords: Array.isArray(state.insuranceIndicatorRecords) ? state.insuranceIndicatorRecords : [],
+        optionalResponsibilityRecords: Array.isArray(state.optionalResponsibilityRecords) ? state.optionalResponsibilityRecords : [],
+      };
+    }
+    const batches = await Promise.all((Array.isArray(policies) ? policies : []).map((policy) => loadResponsibilityIndexes({
+      company: policy?.company || '',
+      productName: policy?.name || policy?.productName || '',
+    })));
+    return {
+      indicatorRecords: batches.flatMap((batch) => Array.isArray(batch?.indicatorRecords) ? batch.indicatorRecords : []),
+      optionalResponsibilityRecords: batches.flatMap((batch) => Array.isArray(batch?.optionalResponsibilityRecords) ? batch.optionalResponsibilityRecords : []),
+    };
+  }
 
   function hasOwn(value, key) {
     return Object.prototype.hasOwnProperty.call(value || {}, key);
@@ -379,7 +417,9 @@ export function createFamilyRoutes(context) {
       report: nextReport,
     });
     let changed = false;
-    if (reportJson(draftRecord.report) !== reportJson(record.report)) {
+    const requiresEngineRefresh = force
+      && Number(record.engineVersion || 0) < Number(familyReportEngineVersion || 0);
+    if (requiresEngineRefresh || reportJson(draftRecord.report) !== reportJson(record.report)) {
       updateFamilyReportRecordReport({
         record,
         members: reportMembers,
@@ -728,6 +768,7 @@ export function createFamilyRoutes(context) {
       status: report.status || 'complete',
       content: report.content || '',
       model: '',
+      source: report.source || (report.model ? 'model' : 'database'),
       generatedAt: report.generatedAt || record.updatedAt || record.generatedAt || '',
       error: report.error || '',
       stale: String(record?.status || 'active') !== 'active',
@@ -806,9 +847,12 @@ export function createFamilyRoutes(context) {
         snapshot.optionalResponsibilityRecords,
       );
     }
-    const cashflowEntries = typeof cashflowStore?.getEntries === 'function'
-      ? cashflowStore.getEntries(policy.id)
-      : [];
+    // Family reports must consume the same current projection as policy detail.
+    // A persisted cashflow row can be older than the responsibility formula or
+    // policy inputs, so it is only a compatibility fallback.
+    const cashflowEntries = typeof computeCurrentPolicyCashflow === 'function'
+      ? computeCurrentPolicyCashflow(displayed)
+      : (typeof cashflowStore?.getEntries === 'function' ? cashflowStore.getEntries(policy.id) : []);
     const cashValues = typeof cashValueStore?.getValues === 'function'
       ? cashValueStore.getValues(policy.id)
       : [];
@@ -1606,22 +1650,26 @@ export function createFamilyRoutes(context) {
         reportRecord = latestFamilyReport(family.id, owner);
       }
 
+      const responsibilityIndexes = await responsibilityIndexesForPolicies(policies);
       const input = buildFamilyPolicyAnalysisInput({
         family,
         members,
         policies,
         familyReport,
         planningProfile,
-        knowledgeRecords: state.knowledgeRecords || [],
-        indicatorRecords: state.insuranceIndicatorRecords || [],
-        optionalResponsibilityRecords: state.optionalResponsibilityRecords || [],
+        knowledgeRecords: await knowledgeRecordsForPolicies(policies),
+        indicatorRecords: responsibilityIndexes.indicatorRecords,
+        optionalResponsibilityRecords: responsibilityIndexes.optionalResponsibilityRecords,
       });
-      const analysisReport = await generateFamilyPolicyAnalysisReportImpl({ input });
+      const analysisReport = hasLocalFamilyPolicyAnalysisEvidence(input)
+        ? buildLocalFamilyPolicyAnalysisReport(input, { generatedAt: nowIso() })
+        : await generateFamilyPolicyAnalysisReportImpl({ input });
       reportRecord.report = reportRecord.report || {};
       reportRecord.report.familyPolicyAnalysisReport = {
         status: analysisReport.status || 'complete',
         content: analysisReport.content || '',
         model: analysisReport.model || '',
+        source: analysisReport.source || (analysisReport.model ? 'model' : 'database'),
         generatedAt: analysisReport.generatedAt || nowIso(),
       };
       reportRecord.updatedAt = nowIso();

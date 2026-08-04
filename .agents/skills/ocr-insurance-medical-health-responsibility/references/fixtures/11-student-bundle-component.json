@@ -1,0 +1,109 @@
+{
+  "fixtureId": "student-bundle-component",
+  "sourceText": "学生综合保障计划说明书载明：住院医疗组件对应示例保险公司《示例附加学生疾病住院医疗保险条款》，备案条款摘要sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb。说明书仅用于识别组合组件，不作为保险责任证据。示例附加学生疾病住院医疗保险条款：本附加合同依附于主合同。疾病住院医疗保险金：被保险人在等待期后因疾病住院，我们对符合约定的住院医疗费用扣除500元免赔额后按80%给付。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例附加学生疾病住院医疗保险",
+    "sourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "contractTopology": {
+      "type": "bundle_component",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "示例附加学生疾病住院医疗保险条款：本附加合同依附于主合同。"
+        }
+      ],
+      "bundle": {
+        "marketingPlanName": "学生综合保障计划",
+        "componentCompany": "示例保险公司",
+        "componentProductName": "示例附加学生疾病住院医疗保险",
+        "componentSourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "marketingEvidenceRole": "discovery_only",
+        "mappingEvidenceSegments": [
+          {
+            "sourceExcerpt": "学生综合保障计划说明书载明：住院医疗组件对应示例保险公司《示例附加学生疾病住院医疗保险条款》，备案条款摘要sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb。"
+          },
+          {
+            "sourceExcerpt": "说明书仅用于识别组合组件，不作为保险责任证据。"
+          }
+        ]
+      },
+      "parentContract": {
+        "company": "",
+        "productName": "",
+        "sourceDigest": "",
+        "dependencyText": "本附加合同依附于主合同",
+        "terminationLinkText": "",
+        "insuredAmountReferenceText": "",
+        "premiumReferenceText": ""
+      }
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "student-inpatient",
+        "liability": "疾病住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人在等待期后因疾病住院",
+        "insurerObligation": "我们对符合约定的住院医疗费用扣除500元免赔额后按80%给付",
+        "sourceExcerpt": "疾病住院医疗保险金：被保险人在等待期后因疾病住院，我们对符合约定的住院医疗费用扣除500元免赔额后按80%给付。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {},
+          "socialInsurance": {},
+          "deductibles": [
+            {
+              "valueText": "500元",
+              "scopeText": "500元免赔额",
+              "sourceExcerpt": "扣除500元免赔额后"
+            }
+          ],
+          "reimbursementRates": [
+            {
+              "valueText": "80%",
+              "scopeText": "按80%给付",
+              "sourceExcerpt": "按80%给付"
+            }
+          ],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {
+            "requiredInputs": [
+              "actualMedicalExpense",
+              "deductible",
+              "reimbursementRate"
+            ]
+          }
+        }
+      }
+    ],
+    "nonResponsibilities": [
+      {
+        "title": "学生综合保障计划说明书",
+        "classification": "group_heading",
+        "sourceExcerpt": "说明书仅用于识别组合组件，不作为保险责任证据。"
+      }
+    ]
+  },
+  "expected": {
+    "topologyType": "bundle_component",
+    "responsibilityTitles": [
+      "疾病住院医疗保险金"
+    ],
+    "nonResponsibilityTitles": [
+      "学生综合保障计划说明书"
+    ]
+  }
+}

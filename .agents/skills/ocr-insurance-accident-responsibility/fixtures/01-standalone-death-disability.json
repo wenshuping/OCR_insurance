@@ -1,0 +1,39 @@
+{
+  "fixtureId": "standalone-death-disability",
+  "realSample": true,
+  "identity": {
+    "company": "上海人寿保险股份有限公司",
+    "productName": "上海人寿大金刚个人综合意外伤害保险",
+    "sourceDigest": "sha256:a2be83fa43dbd8e1536927425479ff927717f387835e6050913a2a65b3fc6bf4"
+  },
+  "contractTopology": "standalone",
+  "topologyEvidence": {
+    "sourceTypeEvidence": "上海人寿[2018]意外伤害保险002号；个人综合意外伤害保险",
+    "ownContractRule": "给付意外身故保险金，同时本合同终止"
+  },
+  "sections": [
+    {
+      "sectionId": "accident-death",
+      "heading": "意外身故保险金",
+      "role": "responsibility",
+      "triggerCondition": "遭受意外伤害事故，且自事故发生之日起180日内因该事故身故",
+      "insurerObligation": "按基本保险金额给付，扣除已给付的意外残疾保险金后合同终止",
+      "sourceExcerpt": "若被保险人遭受意外伤害事故，且自意外伤害事故发生之日起180日内，被保险人因该意外伤害事故导致身故，我们按合同约定的基本保险金额给付意外身故保险金，同时本合同终止。",
+      "requiredInputs": ["basic_insured_amount", "paid_accident_disability_benefit"]
+    },
+    {
+      "sectionId": "accident-disability",
+      "heading": "意外残疾保险金",
+      "role": "responsibility",
+      "triggerCondition": "遭受意外伤害事故，且180日内因该事故导致伤残",
+      "insurerObligation": "按基本保险金额乘以伤残等级对应比例给付",
+      "sourceExcerpt": "我们根据伤残标准对伤残进行评定，确定伤残等级及给付比例，我们将按本合同的基本保险金额乘以该比例给付意外残疾保险金。",
+      "requiredInputs": ["basic_insured_amount", "disability_grade"]
+    }
+  ],
+  "expected": {
+    "status": "approved",
+    "responsibilityIds": ["accident-death", "accident-disability"],
+    "supportingSectionIds": []
+  }
+}

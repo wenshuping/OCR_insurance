@@ -1,0 +1,4 @@
+interface:
+  display_name: "OCR Insurance Endowment Responsibility"
+  short_description: "Parse and audit exact-source endowment responsibilities"
+  default_prompt: "Use $ocr-insurance-endowment-responsibility to parse and verify endowment insurance responsibilities from an exact-digest official evidence packet."

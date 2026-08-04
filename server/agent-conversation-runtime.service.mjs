@@ -315,6 +315,7 @@ export function createAgentConversationRuntime({
       productContextTtlMinutes: settings.productContextTtlMinutes,
     });
     const history = Array.isArray(context?.history) ? context.history : [];
+    const conversationSalesKyc = context?.factBlock?.salesKyc || null;
     const agentLoopMode = runtimeMode === 'agent_loop'
       || (runtimeMode === 'hermes' && typeof agentLoopClient?.runTurn === 'function'
         && typeof hermesClient?.runTurn !== 'function');
@@ -358,6 +359,8 @@ export function createAgentConversationRuntime({
       const product = authoritativeProduct(toolResults);
       const candidateToolResult = [...toolResults].reverse()
         .find((item) => Array.isArray(item?.result?.interaction?.candidates));
+      const salesToolResult = [...toolResults].reverse()
+        .find((item) => item?.tool === 'ask_sales_champion');
       const toolInteraction = candidateToolResult?.result?.interaction;
       const products = candidateProducts(toolInteraction);
       const candidateQuestion = rejectsProductCandidates
@@ -411,6 +414,7 @@ export function createAgentConversationRuntime({
             product: committedProduct,
             productSource: product ? 'domain_agent' : 'conversation_context',
             productCandidates: committedCandidates,
+            salesKyc: salesToolResult?.result?.agentContextUpdate?.salesKyc,
             updatedAt,
           }),
         });
@@ -690,6 +694,7 @@ export function createAgentConversationRuntime({
         ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
         question,
         runtime: usedRuntime,
+        salesContext: { salesKycState: conversationSalesKyc },
       });
     } else if (proposal) {
       const bound = bindActiveProductReference(proposal, question, activeProductName);
@@ -701,6 +706,7 @@ export function createAgentConversationRuntime({
         question: bound.question,
         runtime: usedRuntime,
         proposal: bound.proposal,
+        salesContext: { salesKycState: conversationSalesKyc },
         ...(usedRuntime === 'direct' && semanticFallbackReason
           ? { fallbackReason: semanticFallbackReason }
           : {}),
@@ -725,7 +731,10 @@ export function createAgentConversationRuntime({
         ...(channelEnvelope?.conversationId ? { conversationId: identity.channelConversationId } : {}),
         candidate,
         ...(selectedSemanticContext ? { semanticContext: selectedSemanticContext } : {}),
-        ...(selectedSalesContext ? { salesContext: selectedSalesContext } : {}),
+        salesContext: {
+          ...(selectedSalesContext || {}),
+          ...(conversationSalesKyc ? { salesKycState: conversationSalesKyc } : {}),
+        },
       });
     }
     await ensureIdentityCurrent();
@@ -786,6 +795,7 @@ export function createAgentConversationRuntime({
           product: committedProduct,
           productSource: result?.provenance?.domainAgent ? 'domain_agent' : 'conversation_context',
           productCandidates: committedCandidates,
+          salesKyc: result?.agentContextUpdate?.salesKyc,
           updatedAt,
         }),
       });

@@ -1,0 +1,63 @@
+{
+  "fixtureId": "rider-main-contract-linkage",
+  "sourceText": "本附加合同须附加于主合同方可生效，主合同终止时本附加合同同时终止。在本附加合同保险期间内，被保险人身故或全残，我们按本附加合同基本保险金额给付身故或全残保险金，本附加合同终止。被保险人生存至本附加合同满期日，我们按本附加合同基本保险金额给付满期保险金，本附加合同终止。",
+  "artifact": {
+    "sourceDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "contractTopology": {
+      "type": "rider",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本附加合同须附加于主合同方可生效，主合同终止时本附加合同同时终止。"
+        }
+      ],
+      "parentContract": {
+        "dependencyText": "本附加合同须附加于主合同方可生效",
+        "terminationLinkText": "主合同终止时本附加合同同时终止"
+      }
+    },
+    "productFunctions": [],
+    "responsibilities": [
+      {
+        "responsibilityId": "rider-death-total-disability",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "在本附加合同保险期间内，被保险人身故或全残",
+        "insurerObligation": "按本附加合同基本保险金额给付身故或全残保险金",
+        "terminationEffect": "本附加合同终止",
+        "sourceExcerpt": "在本附加合同保险期间内，被保险人身故或全残，我们按本附加合同基本保险金额给付身故或全残保险金，本附加合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "本附加合同基本保险金额",
+            "normalizedFormula": "rider_basic_insured_amount",
+            "requiredInputs": ["rider_basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      },
+      {
+        "responsibilityId": "rider-maturity",
+        "responsibilityRole": "maturity_survival",
+        "triggerCondition": "被保险人生存至本附加合同满期日",
+        "insurerObligation": "按本附加合同基本保险金额给付满期保险金",
+        "terminationEffect": "本附加合同终止",
+        "sourceExcerpt": "被保险人生存至本附加合同满期日，我们按本附加合同基本保险金额给付满期保险金，本附加合同终止。",
+        "cashflowTreatment": "scheduled_cashflow",
+        "cashflowCadence": "once_at_maturity",
+        "indicators": [
+          {
+            "formulaText": "本附加合同基本保险金额",
+            "normalizedFormula": "rider_basic_insured_amount",
+            "requiredInputs": ["rider_basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "approved",
+    "classification": "endowment"
+  }
+}

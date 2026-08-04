@@ -343,6 +343,11 @@ const emptyForm: PolicyFormData = {
   insuredMemberId: null,
 };
 
+type OptionalResponsibilitySelectionDraft = {
+  selectionStatus: OptionalResponsibility['selectionStatus'];
+  coverageAmount?: number | null;
+};
+
 function chooseFamilyMemberByName(members: FamilyMember[], name: string, coreMemberId?: number | null) {
   const normalizedName = name.trim();
   if (!normalizedName) return null;
@@ -644,7 +649,7 @@ export function CustomerApp() {
   const familySalesReviewReportRef = useRef<HTMLDivElement | null>(null);
   const formProductDraftRequestRef = useRef(0);
   const membershipStatusRequestRef = useRef(0);
-  const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibility['selectionStatus']>>(new Map());
+  const optionalResponsibilitySelectionRef = useRef<Map<string, OptionalResponsibilitySelectionDraft>>(new Map());
   const [guestId] = useState(getOrCreateGuestId);
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
   const [mobile, setMobile] = useState(() => localStorage.getItem(USER_MOBILE_KEY) || '');
@@ -905,7 +910,10 @@ export function CustomerApp() {
     for (const item of items) {
       const id = String(item?.id || '').trim();
       if (!id || item.selectionEvidence !== 'manual') continue;
-      optionalResponsibilitySelectionRef.current.set(id, item.selectionStatus || 'unknown');
+      optionalResponsibilitySelectionRef.current.set(id, {
+        selectionStatus: item.selectionStatus || 'unknown',
+        coverageAmount: item.coverageAmount,
+      });
     }
   }
 
@@ -915,15 +923,21 @@ export function CustomerApp() {
     let changed = false;
     const nextItems = items.map((item) => {
       const id = String(item?.id || '').trim();
-      const selectionStatus = id ? remembered.get(id) : undefined;
-      if (!selectionStatus) return item;
-      if (item.selectionStatus === selectionStatus && item.selectionEvidence === 'manual') return item;
+      const rememberedSelection = id ? remembered.get(id) : undefined;
+      if (!rememberedSelection) return item;
+      const nextItem = updateOptionalResponsibilityItems(
+        [item],
+        id,
+        rememberedSelection.selectionStatus,
+        rememberedSelection.coverageAmount,
+      )[0];
+      if (
+        item.selectionStatus === nextItem.selectionStatus
+        && item.selectionEvidence === nextItem.selectionEvidence
+        && item.coverageAmount === nextItem.coverageAmount
+      ) return item;
       changed = true;
-      return {
-        ...item,
-        selectionStatus,
-        selectionEvidence: 'manual',
-      };
+      return nextItem;
     });
     return changed ? nextItems : items;
   }
@@ -2212,13 +2226,18 @@ export function CustomerApp() {
     const sharedMember = sameParticipant ? applicantMember || insuredMember : null;
     const finalApplicantMember = sharedMember || applicantMember;
     const finalInsuredMember = sharedMember || insuredMember;
-    const applicantRelation = resolveBoundParticipantRelation(
-      syncedData.applicantRelationLabel || syncedData.applicantRelation,
-      finalApplicantMember ? relationLabelForEntryMember(finalApplicantMember) : '',
+    const relationForBoundMember = (member: FamilyMember | null, enteredRelation: unknown) => (
+      member && Number(member.id) === Number(entrySelectedFamily?.coreMemberId || 0)
+        ? '本人'
+        : resolveBoundParticipantRelation(enteredRelation, member ? relationLabelForEntryMember(member) : '')
     );
-    const insuredRelation = resolveBoundParticipantRelation(
+    const applicantRelation = relationForBoundMember(
+      finalApplicantMember,
+      syncedData.applicantRelationLabel || syncedData.applicantRelation,
+    );
+    const insuredRelation = relationForBoundMember(
+      finalInsuredMember,
       syncedData.insuredRelationLabel || syncedData.insuredRelation,
-      finalInsuredMember ? relationLabelForEntryMember(finalInsuredMember) : '',
     );
     return sharePolicyPersonInfo({
       ...syncedData,
@@ -2886,12 +2905,27 @@ export function CustomerApp() {
     }
   }
 
-  function updateAnalysisOptionalResponsibility(id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
-    optionalResponsibilitySelectionRef.current.set(id, selectionStatus);
+  function updateAnalysisOptionalResponsibility(
+    id: string,
+    selectionStatus: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) {
+    const rememberedSelection = optionalResponsibilitySelectionRef.current.get(id);
+    optionalResponsibilitySelectionRef.current.set(id, {
+      selectionStatus,
+      coverageAmount: coverageAmount === undefined
+        ? rememberedSelection?.coverageAmount
+        : coverageAmount,
+    });
     setAnalysisDraft((current) => current
       ? {
           ...current,
-          optionalResponsibilities: updateOptionalResponsibilityItems(current.optionalResponsibilities, id, selectionStatus),
+          optionalResponsibilities: updateOptionalResponsibilityItems(
+            current.optionalResponsibilities,
+            id,
+            selectionStatus,
+            coverageAmount,
+          ),
         }
       : current,
     );
@@ -3303,7 +3337,7 @@ export function CustomerApp() {
       const insuredRelationForSubmit = submitBaseData.insuredRelationLabel || submitBaseData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
-      if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭顶梁柱只能选择一个');
         return;
       }
@@ -3355,6 +3389,7 @@ export function CustomerApp() {
         && (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
       );
       const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
+        if (Number(member.id) === Number(submitFamily.coreMemberId || 0)) return '本人';
         if (shouldPersistAsCore(member, relationLabel)) return '本人';
         if (relationLabel !== '本人') return relationLabel || '待确认';
         return member.relationLabel && member.relationLabel !== '本人' ? member.relationLabel : '待确认';
@@ -3703,9 +3738,19 @@ export function CustomerApp() {
     }
   }
 
-  async function handleUpdateOptionalResponsibility(policy: Policy, id: string, selectionStatus: OptionalResponsibility['selectionStatus']) {
+  async function handleUpdateOptionalResponsibility(
+    policy: Policy,
+    id: string,
+    selectionStatus: OptionalResponsibility['selectionStatus'],
+    coverageAmount?: number | null,
+  ) {
     if (savingPolicyId) return;
-    const optionalResponsibilities = updateOptionalResponsibilityItems(policy.optionalResponsibilities, id, selectionStatus);
+    const optionalResponsibilities = updateOptionalResponsibilityItems(
+      policy.optionalResponsibilities,
+      id,
+      selectionStatus,
+      coverageAmount,
+    );
     setSavingPolicyId(policy.id);
     setMessage('正在保存可选责任');
     try {

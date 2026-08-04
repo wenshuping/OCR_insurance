@@ -3,36 +3,26 @@ name: ocr-insurance-responsibility-backfill
 description: Use when supplementing or repairing OCR_insurance insurance product responsibility data from exact-version official insurer or regulator sources into local SQLite and Feishu, including legacy DeepSeek artifact repair, source-digest conflict protection, 403/browser/screenshot source acquisition, and low-cost model orchestration. Applies to daily-refresh handoffs, low-coverage insurer crawls, blank or weak responsibility repairs, responsibility-card backfills, indicator review, source checks, replaceable candidate-model proposal batches, capability-based conflict merges, exact audits, Feishu verification, and stuck batch recovery.
 ---
 
-# OCR Insurance Responsibility Backfill
+# Insurance Responsibility Backfill
 
-Use this skill to add or repair insurance product responsibility text in the
-OCR_insurance knowledge base, or to review product responsibility cards and
-indicator records from official sources.
+Batch the same four-stage review used for one product. A product with existing cards is not automatically complete.
 
-## Success Criteria
+## Required Pipeline Per Product
 
-A knowledge-row backfill run is complete only when all of these are true:
+Run `$ocr-insurance-product-responsibility-pipeline` once for every target product. It automatically applies the inventory, card, indicator, mapping, and independent-audit stages. Use `$ocr-insurance-single-product-responsibility-review` for disputed products or any product that fails batch audit.
 
-- Each accepted row has an official source URL and a concrete product name.
-- Responsibility text passes the source gate and responsibility gate below.
-- Local SQLite rows are written to the active development database.
-- Feishu dry-run, write, post-write dry-run, and readback all pass.
-- The run directory contains enough artifacts to reproduce the decision.
+## Product States
 
-A product-responsibility-card run is complete only when all of these are true:
+Classify every target product, not only products with zero cards:
 
-- Each reviewed product has one JSONL artifact row with accepted, rejected, and
-  blocker evidence.
-- Accepted customer summaries contain only customer-facing responsibility text,
-  not internal indicator or calculation audit fields.
-- Each accepted responsibility has a matching accepted manual indicator.
-- The exact audit passes: artifact accepted liability names equal
-  `product_responsibility_cards.title` and accepted
-  `insurance_indicator_records.liability` for every product in the batch.
-- A SQLite backup exists from before the import.
-- Focused materialization tests and `npm run check` pass.
-- Feishu is synced and read back only when the user explicitly asks for Feishu
-  parity for this data shape. Never claim Feishu completion without readback.
+- `uncovered`: no reviewed inventory/cards;
+- `partial`: official checklist has missing cards or indicator decisions;
+- `stale`: source version or source digest changed;
+- `conflicted`: duplicate, merged, generic-group, basis, formula, or selection disagreement;
+- `blocked`: exact official source or product version unresolved;
+- `approved`: independent semantic audit passed for the current source digest.
+
+Only `approved` products for the current source digest may be skipped. The presence of one or more cards must never exclude a product from completeness review.
 
 ## Hard Rules
 
@@ -63,31 +53,32 @@ A product-responsibility-card run is complete only when all of these are true:
 - If code changes are required, follow this repo's AGENTS.md and the
   karpathy-guidelines coding standard first.
 
-## Source Gate
+## Batch Workflow
 
-Apply the policy-qa source discipline before accepting any material:
+For unattended development-database backfill, use the bundled pipeline runner. It selects official PDF-backed products, parses products concurrently, repairs validator failures, writes approved products serially, and isolates remaining failures for manual review:
 
-- Capture source URL, source host, access time, product name, company, and file
-  type.
-- Verify the source host is official enough for the claim being made.
-- Preserve enough quote or extracted text context to audit the row later.
-- Reject text that cannot be tied to a specific product or source URL.
-- Reject OCR garbage, continuation fragments, table-of-contents text, claim
-  procedure text, exclusions-only text, and marketing text without obligations.
+```bash
+PIPELINE_SKILL_DIR="$PWD/.agents/skills/ocr-insurance-product-responsibility-pipeline"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+python3 "$PIPELINE_SKILL_DIR/scripts/batch_deepseek_backfill.py" \
+  --db-path="$PWD/.runtime/local/policy-ocr.sqlite" \
+  --output-dir="$PWD/artifacts/responsibility-backfill-$STAMP" \
+  --env-file="$PWD/.env.local" \
+  --limit=20 \
+  --workers=3 \
+  --repair-rounds=3
+```
 
-## Responsibility Gate
+Run with `--plan-only` first when changing selection filters. Use `--manifest=<json-array>` to process an explicit product/source list. Do not increase concurrent workers for SQLite publication: only parsing is parallel; the runner publishes approved products serially.
 
-Apply the policy-liability-qa threshold before writing page text. Accepted text
-must include a covered event or condition and the insurer obligation, such as:
+Required outputs:
 
-- death, disability, disease, critical illness, medical expense, accident,
-  maternity, survival, maturity, annuity, waiver, reimbursement, or benefit;
-- payment, reimbursement, benefit amount, insured amount, annuity payment,
-  premium waiver, or settlement responsibility.
+- `selected-products.json`: exact batch queue;
+- `published.jsonl`: approved products with publication/readback receipts;
+- `manual-review.jsonl`: products still failing source retrieval, model generation, deterministic validation, or publication;
+- `summary.json`: selected, published, and manual-review counts plus the batch backup path.
 
-Do not write cash-value-only text, eligibility-only text, exclusions, claim
-documents, renewal rules, underwriting questions, or isolated headings as
-responsibility text.
+Each product directory also preserves `responsibility-candidate.pages.txt` and `responsibility-retrieval-report.json`. The first model pass uses those candidate pages. Any deterministic validation failure automatically escalates the next repair pass to the complete official source text, so keyword retrieval cannot silently remove a responsibility.
 
 ## DeepSeek Repair Mode
 
@@ -108,7 +99,7 @@ only with `manualFormulaInputs`.
 
 ## Standard Workflow
 
-1. Lock the active local environment:
+1. Pin the development database and create a run directory.
 
 ```bash
 export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
@@ -118,22 +109,37 @@ export RUN_DIR="$PWD/.runtime/responsibility-backfill-$STAMP"
 mkdir -p "$RUN_DIR"
 ```
 
-2. Capture baseline counts before any write:
+2. Capture baseline counts and a source digest for each product.
+3. Classify all products using the states above. Do not build a `missing cards only` queue.
+4. Process small product batches. Produce one JSONL row per product containing:
+   - exact product identity and source digest;
+   - product overview;
+   - independent official responsibility checklist;
+   - optional groups and concrete child responsibilities;
+   - customer cards;
+   - indicator decisions and mapped indicators;
+   - rejected fragments and blockers;
+   - independent audit matrix and status.
+5. Reject an artifact before import when:
+   - product identity/version is unresolved;
+   - an official checklist item lacks a card or indicator decision;
+   - a generic group heading became a card;
+   - a formula constant/basis lacks same-responsibility evidence;
+   - optional selection is missing or an unselected benefit would enter current totals;
+   - audit status is not `approved`.
+6. Back up SQLite before each accepted import group.
 
 ```bash
 sqlite3 "$POLICY_OCR_APP_DB_PATH" \
-  "select count(*) from knowledge_records;" > "$RUN_DIR/baseline-count.txt"
-sqlite3 "$POLICY_OCR_APP_DB_PATH" \
-  "select company, count(*) from knowledge_records group by company order by count(*) asc;" \
-  > "$RUN_DIR/company-counts.tsv"
+  "VACUUM INTO '$RUN_DIR/policy-ocr-before-import.sqlite';"
 ```
 
-3. Create a SQLite backup:
+7. Import approved artifacts serially. Upsert by stable responsibility ID and source digest. Prune stale cards/indicators only when the approved official inventory explicitly supersedes them.
+8. Read back the affected products and run the independent audit again against SQLite.
+9. Run focused materialization/import tests and `npm run check` when implementation code changed.
+10. Sync Feishu only after local audit passes, then save readback evidence.
 
-```bash
-sqlite3 "$POLICY_OCR_APP_DB_PATH" \
-  "VACUUM INTO '$RUN_DIR/policy-ocr-before.sqlite';"
-```
+## Required Artifact Acceptance
 
 4. Build a source profile for each target company:
 
@@ -340,8 +346,9 @@ node scripts/import-reviewed-responsibility-artifacts.mjs \
    until:
 
 ```text
-rawAccepted == totalCards == totalAcceptedIndicators
-issueCount == 0
+independent official responsibility IDs == inventory responsibility IDs
+inventory responsibility IDs == card responsibility IDs
+inventory responsibility IDs == indicator-decision responsibility IDs
 ```
 
 11. If import counts disagree, stop and diagnose before continuing. Common causes
@@ -353,10 +360,7 @@ issueCount == 0
 
 12. Verify after every imported group:
 
-```bash
-node --test tests/materialize-product-responsibility-cards.test.mjs
-npm run check
-```
+Count equality without these semantic checks is not sufficient.
 
 13. Report separate statuses:
 
@@ -371,51 +375,14 @@ npm run check
   provider/model IDs used for each role.
 - remaining uncovered products from the active development database.
 
-## Stuck Batch Handling
+## Final Report
 
-- Distinguish no progress from slow official-source extraction. Check source
-  cache file counts and JSONL hashes before deciding that a subagent is stuck.
-- Do not wait on non-essential cleanup such as closing old subagents when it
-  blocks progress. Reuse existing agents or spawn fresh ones if allowed.
-- Treat replacement artifacts explicitly. If a retry artifact is canonical, copy
-  or rename it to the expected `agent-N-review.jsonl` only after auditing it.
-- If a tool call is interrupted, inspect whether files were partially written
-  before retrying or importing.
-- Never continue to the next import while a previous import or exact audit is
-  unfinished.
+Report:
 
-## Quality Metadata
-
-Blank quality fields are not automatically bad data. They usually mean the
-ingestion path did not populate quality metadata. Treat them as a follow-up
-quality task unless pageText, source URL, or responsibility content fails the
-gates above.
-
-When adding or updating ingestion scripts, populate both the legacy quality
-field and the responsibility-specific quality field if the schema supports them.
-
-## Common Pitfalls
-
-- Wrong database: always verify `.runtime/local/policy-ocr.sqlite`, not an old
-  `.runtime/policy-ocr.sqlite` copy.
-- Wrong app state: export `POLICY_OCR_APP_STATE_PATH`; some scripts read the
-  environment rather than a command-line state path.
-- Feishu routing mismatch: if historical rows for a company live in a shared
-  table, keep using that table and document the reason.
-- Feishu config churn: sync helpers may rewrite config files; re-check routing
-  notes after a sync.
-- Markdown readback: prefer JSON or TSV readback artifacts when comparing local
-  IDs and page text lengths.
-- Current catalog confusion: a product can be officially disclosed or historical
-  without being currently sold on the insurer website.
-
-## When To Stop
-
-Stop the batch and report status when:
-
-- official sources are blocked or unavailable after the crawler ladder has been
-  tried for public disclosure pages;
-- local write succeeds but Feishu write or readback fails;
-- a company needs a new crawler adapter rather than a small repair;
-- source evidence is insufficient for the responsibility gate;
-- duplicate or conflicting official materials need manual product matching.
+- products by state before and after the run;
+- official sources and version evidence;
+- responsibilities/cards/indicator decisions per product;
+- semantic audit failures, unsupported formulas, and optional-selection issues;
+- SQLite backup, imported/pruned IDs, and readback result;
+- Feishu write/readback status when requested;
+- remaining partial, stale, conflicted, and blocked products.

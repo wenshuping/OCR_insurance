@@ -1016,6 +1016,87 @@ test('pasting an exact displayed candidate confirms it without a new search', as
   assert.equal(context.rows.get('default:dingtalk:ding-a:7:exact-candidate').productCandidates, null);
 });
 
+test('direct sales coaching persists KYC slots into the next DingTalk turn', async () => {
+  const context = createMemoryContext();
+  const routed = [];
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    runtimeMode: 'direct',
+    directInterpreter: async ({ question }) => ({
+      intent: 'sales_coaching', question, confidence: 1, requestedOperation: 'read', entities: {},
+    }),
+    questionRouter: { async route(input) {
+      routed.push(input);
+      return {
+        decision: 'execute',
+        interaction: { type: 'answer', text: '已记录 KYC。' },
+        agentContextUpdate: {
+          salesKyc: {
+            knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+            unknownSlots: [],
+          },
+        },
+      };
+    } },
+  });
+
+  await runtime.processMessage(envelope('ding-a', 'sales-kyc', 'sales-1', '客户是公司分配的老客户'));
+  await runtime.processMessage(envelope('ding-a', 'sales-kyc', 'sales-2', '客户这次让我整理保单'));
+
+  assert.deepEqual(routed[1].salesContext.salesKycState, {
+    caseVersion: 1,
+    knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+    unknownSlots: [],
+    facts: [],
+    labels: [],
+  });
+  assert.deepEqual(
+    context.rows.get('default:dingtalk:ding-a:7:sales-kyc').factBlock.salesKyc,
+    routed[1].salesContext.salesKycState,
+  );
+});
+
+test('Agent Loop persists ordinary sales KYC without requiring product candidates', async () => {
+  const context = createMemoryContext();
+  const salesKyc = {
+    caseVersion: 2,
+    knownSlots: ['customer_relationship_origin', 'explicit_customer_request'],
+    unknownSlots: [],
+    facts: [
+      { key: 'relationship_origin', value: '公司转交的老保单客户', source: 'advisor_fact' },
+      { key: 'service_request', value: '整理保单', source: 'advisor_fact' },
+    ],
+    labels: [{ dimension: 'source', value: 'SRC8', status: 'confirmed' }],
+  };
+  const claims = { callCount: 1, toolResults: [{
+    tool: 'ask_sales_champion',
+    result: {
+      status: 'ok', decision: 'execute',
+      interaction: { type: 'answer', text: '先把保单整理服务收尾。' },
+      agentContextUpdate: { salesKyc },
+    },
+  }] };
+  const runtime = createAgentConversationRuntime({
+    conversationContext: context,
+    agentLoopClient: { async runTurn() {
+      return { sessionId: 'sales-kyc-loop', finalReply: '先把保单整理服务收尾。' };
+    } },
+    toolCapabilityService: { inspect() { return claims; } },
+    toolGatewayUrl: 'http://127.0.0.1:4207/api/agent/hermes-tools',
+    questionRouter: { async route() { throw new Error('must not route'); } },
+  });
+
+  await runtime.processMessage({
+    ...envelope('ding-a', 'agent-loop-sales-kyc', 'sales-kyc-loop-1', '客户是公司转交的老客户'),
+    toolCapability: 'opaque-capability',
+  });
+
+  assert.deepEqual(
+    context.rows.get('default:dingtalk:ding-a:7:agent-loop-sales-kyc').factBlock.salesKyc,
+    salesKyc,
+  );
+});
+
 test('selecting a numbered product candidate keeps its company and original question aspect', async () => {
   const context = createMemoryContext();
   const runtime = createAgentConversationRuntime({

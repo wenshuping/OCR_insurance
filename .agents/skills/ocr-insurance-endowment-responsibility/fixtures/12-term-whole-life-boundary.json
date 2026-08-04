@@ -1,0 +1,54 @@
+{
+  "fixtureId": "term-whole-life-boundary",
+  "sourceText": "本合同独立生效。在本合同保险期间内，被保险人身故，我们按基本保险金额给付身故保险金，本合同终止。释义：满期日是保险期间的最后一日。责任免除：因约定情形导致身故的，我们不承担给付责任。保险金申请人应提交申请书。",
+  "artifact": {
+    "sourceDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同独立生效。"
+        }
+      ]
+    },
+    "productFunctions": [],
+    "rejectedFragments": [
+      {
+        "text": "释义：满期日是保险期间的最后一日。",
+        "reason": "definition_without_obligation"
+      },
+      {
+        "text": "责任免除：因约定情形导致身故的，我们不承担给付责任。",
+        "reason": "exclusion"
+      },
+      {
+        "text": "保险金申请人应提交申请书。",
+        "reason": "claims_process"
+      }
+    ],
+    "responsibilities": [
+      {
+        "responsibilityId": "death-only",
+        "responsibilityRole": "death_or_total_disability",
+        "triggerCondition": "在本合同保险期间内，被保险人身故",
+        "insurerObligation": "按基本保险金额给付身故保险金",
+        "terminationEffect": "本合同终止",
+        "sourceExcerpt": "在本合同保险期间内，被保险人身故，我们按基本保险金额给付身故保险金，本合同终止。",
+        "cashflowTreatment": "claim_contingent",
+        "indicators": [
+          {
+            "formulaText": "基本保险金额",
+            "normalizedFormula": "basic_insured_amount",
+            "requiredInputs": ["basic_insured_amount"],
+            "branches": [],
+            "operands": []
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "status": "review",
+    "classification": "not_endowment"
+  }
+}

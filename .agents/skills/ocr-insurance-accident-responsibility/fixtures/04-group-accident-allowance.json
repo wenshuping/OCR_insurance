@@ -1,0 +1,40 @@
+{
+  "fixtureId": "group-accident-allowance",
+  "realSample": true,
+  "identity": {
+    "company": "上海人寿保险股份有限公司",
+    "productName": "上海人寿意外住院津贴团体医疗保险",
+    "sourceDigest": "sha256:f33a74ddb8dccbe38c46bd7c201a9056edc5c80dcf12ddf29a4b7e51216dd84d"
+  },
+  "contractTopology": "group",
+  "topologyEvidence": {
+    "memberEligibility": {
+      "entryRule": "",
+      "exitRule": "",
+      "sourceExcerpt": ""
+    },
+    "planTier": {
+      "tierId": "",
+      "insuredAmountOrLimitSource": "保单中载明的该被保险人对应的基本保险金额",
+      "sourceExcerpt": ""
+    }
+  },
+  "sections": [
+    {
+      "sectionId": "accident-hospital-allowance",
+      "heading": "意外住院津贴医疗保险金",
+      "role": "responsibility",
+      "triggerCondition": "因意外伤害事故在指定或认可医疗机构住院",
+      "insurerObligation": "按实际住院天数扣除三天后乘以每日基本保险金额给付",
+      "sourceExcerpt": "我们按实际住院天数扣除三天后乘以保单中载明的该被保险人对应的基本保险金额的乘积给付意外住院津贴医疗保险金。每一保单年度累计给付天数最高180日，同一次住院累计给付天数不超过90日。",
+      "requiredInputs": ["actual_inpatient_days", "deductible_days", "daily_allowance"],
+      "limits": ["per_stay_90_days", "annual_180_days"]
+    }
+  ],
+  "expected": {
+    "status": "review",
+    "responsibilityIds": ["accident-hospital-allowance"],
+    "supportingSectionIds": [],
+    "issueCodes": ["group_member_eligibility_missing", "group_plan_tier_missing"]
+  }
+}

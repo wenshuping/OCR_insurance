@@ -8,7 +8,9 @@ const RADAR_DIMENSIONS = [
 const TRUSTED_CORRECTION_STATUSES = new Set(['auto_applied', 'accepted']);
 const AUTO_APPLY_ACTIONS = new Set(['exclude_amount', 'mark_unquantifiable', 'replace_amount', 'override_cashflow']);
 const AUTO_APPLY_DIMENSIONS = new Set(['critical', 'accident', 'medical', 'life', 'wealth']);
-export const FAMILY_REPORT_ENGINE_VERSION = 2;
+// Bump whenever the deterministic cashflow contract changes so existing
+// persisted reports are rebuilt from the current policy cashflow rows.
+export const FAMILY_REPORT_ENGINE_VERSION = 5;
 
 const CRITICAL_ROWS = [
   { key: 'critical_multiple', label: '重疾多次给付' },

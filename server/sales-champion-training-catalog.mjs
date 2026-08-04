@@ -765,18 +765,61 @@ function isAntiTriggered(pack, signals = {}) {
   ));
 }
 
-function selectionScore(pack, requested, stage, concerns) {
+function selectionScore(pack, requested, stage, concerns, situations, primaryConcern) {
+  const situationMatch = pack.situations.some((situation) => situations.has(situation)) ? 1 : 0;
   const capabilityMatches = pack.capabilities.filter((capability) => requested.has(capability)).length;
   const stageMatch = pack.stages.includes(stage) ? 1 : 0;
   const concernMatch = pack.concerns.some((concern) => concerns.has(concern)) ? 1 : 0;
-  return capabilityMatches * 100 + concernMatch * 20 + stageMatch * 10 + pack.priority;
+  const primaryConcernMatch = pack.concerns.includes(primaryConcern) ? 1 : 0;
+  return situationMatch * 1_000 + primaryConcernMatch * 300
+    + capabilityMatches * 100 + concernMatch * 20 + stageMatch * 10 + pack.priority;
+}
+
+function customerLabelIndex(customerLabels = []) {
+  const index = new Map();
+  for (const label of Array.isArray(customerLabels) ? customerLabels : []) {
+    if (!label?.dimension || !label?.value) continue;
+    if (!index.has(label.dimension)) index.set(label.dimension, new Map());
+    const confidence = Number.isFinite(label.confidence) ? label.confidence : 0.5;
+    const statusWeight = label.status === 'confirmed' ? 1 : 0.5;
+    index.get(label.dimension).set(label.value, confidence * statusWeight);
+  }
+  return index;
+}
+
+function conditionWeight(index, conditions = {}) {
+  let weight = 0;
+  for (const [dimension, values] of Object.entries(conditions)) {
+    const actual = index.get(dimension);
+    if (!actual) continue;
+    weight += Math.max(0, ...values.map((value) => actual.get(value) || 0));
+  }
+  return weight;
+}
+
+function trainingLabelScore(pack, customerLabels = []) {
+  const index = customerLabelIndex(customerLabels);
+  if (!index.size) return 0;
+  const applicability = SALES_CHAMPION_TRAINING_LABEL_MAPPINGS[pack.key]
+    || createExternalSalesChampionTrainingLabelMapping(pack);
+  const stopped = ['B3', 'B4'].some((value) => index.get('contact_permission')?.has(value));
+  if (stopped && applicability.excludedLabels?.contact_permission?.some(
+    (value) => ['B3', 'B4'].includes(value),
+  )) return -10_000;
+
+  let score = conditionWeight(index, applicability.preferredLabels) * 60;
+  score += conditionWeight(index, applicability.probeLabels) * 35;
+  score -= conditionWeight(index, applicability.notTriggeredBy) * 50;
+  return score;
 }
 
 export function getSalesChampionTrainingPacks(capabilityKeys = [], {
   stage = '',
   concerns = [],
+  primaryConcern = concerns[0] || '',
   situations = [],
   signals = {},
+  customerLabels = [],
 } = {}) {
   const requested = new Set(Array.isArray(capabilityKeys) ? capabilityKeys : []);
   const concernSet = new Set(Array.isArray(concerns) ? concerns : []);
@@ -788,10 +831,19 @@ export function getSalesChampionTrainingPacks(capabilityKeys = [], {
     .filter((pack) => activeSourceIds.has(pack.source)
       && matches(pack, requested, stage, concernSet, situationSet)
       && !isAntiTriggered(pack, signals))
-    .map((pack) => ({ pack, score: selectionScore(pack, requested, stage, concernSet) }))
+    .map((pack) => {
+      const labelScore = trainingLabelScore(pack, customerLabels);
+      return {
+        pack,
+        labelScore,
+        score: selectionScore(pack, requested, stage, concernSet, situationSet, primaryConcern)
+          + labelScore,
+      };
+    })
+    .filter(({ labelScore }) => labelScore > -10_000)
     .sort((left, right) => right.score - left.score || left.pack.order - right.pack.order)
     .slice(0, MAX_PACKS)
-    .map(({ pack }) => ({
+    .map(({ pack, score, labelScore }) => ({
       key: pack.key,
       version: pack.version,
       source: pack.source,
@@ -807,13 +859,18 @@ export function getSalesChampionTrainingPacks(capabilityKeys = [], {
       boundary: pack.boundary,
       labelApplicability: pack.labelApplicability,
       mappingStatus: 'confirmed',
-      selectionReason: 'capability+stage+concern+priority',
+      selectionScore: score,
+      labelScore,
+      selectionReason: pack.situations.some((situation) => situationSet.has(situation))
+        ? 'explicit_situation+capability+stage+concern+priority'
+        : 'capability+stage+concern+priority',
     }));
 }
 
 export function getSalesChampionTrainingPackBoundaryCandidates(capabilityKeys = [], {
   stage = '',
   concerns = [],
+  primaryConcern = concerns[0] || '',
   situations = [],
   missingInformation = [],
   signals = {},
@@ -842,8 +899,8 @@ export function getSalesChampionTrainingPackBoundaryCandidates(capabilityKeys = 
     .filter(({ confirmationSlots }) => confirmationSlots.length > 0)
     .sort((left, right) => (
       right.confirmationSlots.length - left.confirmationSlots.length
-      || selectionScore(right.pack, requested, stage, concernSet)
-        - selectionScore(left.pack, requested, stage, concernSet)
+      || selectionScore(right.pack, requested, stage, concernSet, situationSet, primaryConcern)
+        - selectionScore(left.pack, requested, stage, concernSet, situationSet, primaryConcern)
       || left.pack.order - right.pack.order
     ))
     .slice(0, MAX_BOUNDARY_CANDIDATES)

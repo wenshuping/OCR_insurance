@@ -1,0 +1,97 @@
+{
+  "fixtureId": "inpatient-and-outpatient",
+  "sourceText": "本合同为主险合同。住院医疗保险金：被保险人因疾病入住医院，我们报销住院期间的合理医疗费用。一般门急诊医疗保险金：被保险人在医院接受一般门诊或急诊治疗，我们报销合理门急诊医疗费用。两项均为独立保险责任。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例住院门诊医疗保险",
+    "sourceDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "inpatient",
+        "liability": "住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人因疾病入住医院",
+        "insurerObligation": "我们报销住院期间的合理医疗费用",
+        "sourceExcerpt": "住院医疗保险金：被保险人因疾病入住医院，我们报销住院期间的合理医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "住院期间的合理医疗费用"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {
+            "hospitalText": "医院"
+          },
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      },
+      {
+        "responsibilityId": "outpatient",
+        "liability": "一般门急诊医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人在医院接受一般门诊或急诊治疗",
+        "insurerObligation": "我们报销合理门急诊医疗费用",
+        "sourceExcerpt": "一般门急诊医疗保险金：被保险人在医院接受一般门诊或急诊治疗，我们报销合理门急诊医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "门急诊医疗费用"
+          ],
+          "careSettings": [
+            "ordinary_outpatient",
+            "emergency"
+          ],
+          "facilityScope": {
+            "hospitalText": "医院"
+          },
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [],
+          "calculation": {}
+        }
+      }
+    ],
+    "nonResponsibilities": []
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "住院医疗保险金",
+      "一般门急诊医疗保险金"
+    ],
+    "nonResponsibilityTitles": []
+  }
+}

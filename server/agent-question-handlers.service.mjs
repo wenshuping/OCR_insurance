@@ -152,7 +152,7 @@ function safeSalesChatSources(sources = []) {
 }
 
 function safeSalesChatHistory(history = []) {
-  return (Array.isArray(history) ? history : []).slice(-12).flatMap((message) => {
+  return (Array.isArray(history) ? history : []).slice(-20).flatMap((message) => {
     const role = text(message?.role);
     const content = text(message?.content).slice(0, 4_000);
     return ['user', 'assistant'].includes(role) && content ? [{ role, content }] : [];
@@ -641,6 +641,7 @@ export function createAgentQuestionHandlers({
             latestSalesReview: null,
             latestFamilyReport: null,
             ...productSupport,
+            ...(context?.salesTurn ? { salesTurn: context.salesTurn } : {}),
           },
           history: safeSalesChatHistory(context?.history),
           question: text(context?.question).replace(/\s+/gu, ' ').slice(0, 2_000),
@@ -687,7 +688,11 @@ export function createAgentQuestionHandlers({
       generatedAt: clock().toISOString(),
     });
     const result = await generateFamilySalesChatReply({
-      context: { ...chatContext, ...productSupport },
+      context: {
+        ...chatContext,
+        ...productSupport,
+        ...(context?.salesTurn ? { salesTurn: context.salesTurn } : {}),
+      },
       history: safeSalesChatHistory([
         ...(Array.isArray(trusted.history) ? trusted.history : []),
         ...(Array.isArray(context?.history) ? context.history : []),

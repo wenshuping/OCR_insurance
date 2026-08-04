@@ -1,0 +1,97 @@
+{
+  "fixtureId": "definitions-and-process-false-titles",
+  "sourceText": "本合同为主险合同。住院医疗保险金：被保险人在等待期后因疾病住院，我们给付合理且必要的住院医疗费用。释义：医院是指二级及以上公立医院普通部。医疗费用范围：包括床位费、药品费和检查费。除外责任：既往症导致的医疗费用不承担保险责任。就医流程：被保险人应先联系服务电话预约。如何申请理赔：受益人提交申请书和费用票据。",
+  "artifact": {
+    "company": "示例保险公司",
+    "productName": "示例边界医疗保险",
+    "sourceDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+    "contractTopology": {
+      "type": "standalone",
+      "evidenceSegments": [
+        {
+          "sourceExcerpt": "本合同为主险合同。"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "inpatient",
+        "liability": "住院医疗保险金",
+        "classification": "insurance_responsibility",
+        "triggerCondition": "被保险人在等待期后因疾病住院",
+        "insurerObligation": "我们给付合理且必要的住院医疗费用",
+        "sourceExcerpt": "住院医疗保险金：被保险人在等待期后因疾病住院，我们给付合理且必要的住院医疗费用。",
+        "medicalProfile": {
+          "paymentMode": "reimbursement",
+          "coveredExpenseItems": [
+            "床位费",
+            "药品费",
+            "检查费"
+          ],
+          "careSettings": [
+            "inpatient"
+          ],
+          "facilityScope": {
+            "hospitalText": "二级及以上公立医院普通部"
+          },
+          "socialInsurance": {},
+          "deductibles": [],
+          "reimbursementRates": [],
+          "limits": {
+            "annual": [],
+            "lifetime": [],
+            "perEvent": [],
+            "shared": [],
+            "subLimits": []
+          },
+          "waitingPeriod": [],
+          "paymentCounts": [],
+          "preExistingOrExclusionRefs": [
+            "既往症导致的医疗费用不承担保险责任"
+          ],
+          "calculation": {}
+        }
+      }
+    ],
+    "nonResponsibilities": [
+      {
+        "title": "医院",
+        "classification": "definition",
+        "sourceExcerpt": "释义：医院是指二级及以上公立医院普通部。"
+      },
+      {
+        "title": "医疗费用范围",
+        "classification": "expense_definition",
+        "sourceExcerpt": "医疗费用范围：包括床位费、药品费和检查费。"
+      },
+      {
+        "title": "既往症",
+        "classification": "exclusion",
+        "sourceExcerpt": "除外责任：既往症导致的医疗费用不承担保险责任。"
+      },
+      {
+        "title": "就医流程",
+        "classification": "care_process",
+        "sourceExcerpt": "就医流程：被保险人应先联系服务电话预约。"
+      },
+      {
+        "title": "如何申请理赔",
+        "classification": "claims_process",
+        "sourceExcerpt": "如何申请理赔：受益人提交申请书和费用票据。"
+      }
+    ]
+  },
+  "expected": {
+    "topologyType": "standalone",
+    "responsibilityTitles": [
+      "住院医疗保险金"
+    ],
+    "nonResponsibilityTitles": [
+      "医院",
+      "医疗费用范围",
+      "既往症",
+      "就医流程",
+      "如何申请理赔"
+    ]
+  }
+}

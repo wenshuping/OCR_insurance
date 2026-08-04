@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { normalizeSalesKycState } from './agent-context-fact-block.service.mjs';
 import {
   AGENT_QUESTION_POLICIES,
   AGENT_QUESTION_POLICY_TOOLS,
@@ -141,7 +142,13 @@ function projectSalesContext(value) {
     .filter((product, index, products) => products.findIndex((candidate) => (
       candidate.canonicalProductId === product.canonicalProductId
     )) === index);
-  return { productMentions, officialFactNeeds, resolvedProducts };
+  const salesKycState = normalizeSalesKycState(value?.salesKycState);
+  return {
+    productMentions,
+    officialFactNeeds,
+    resolvedProducts,
+    ...(salesKycState ? { salesKycState } : {}),
+  };
 }
 
 async function defaultFamilyResolver({ store, state, internalUserId }) {
@@ -267,12 +274,14 @@ function publicResult(result, fallbackDecision = 'execute') {
   const decision = DECISIONS.has(result?.decision) ? result.decision : fallbackDecision;
   const requestedType = result?.interaction?.type;
   const type = INTERACTIONS.has(requestedType) ? requestedType : 'answer';
+  const salesKyc = normalizeSalesKycState(result?.agentContextUpdate?.salesKyc);
   return {
     decision,
     interaction: {
       ...(result?.interaction && typeof result.interaction === 'object' ? result.interaction : {}),
       type,
     },
+    ...(salesKyc ? { agentContextUpdate: { salesKyc } } : {}),
   };
 }
 
@@ -476,6 +485,9 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
       authorizedContext.productMentions = trustedSalesContext.productMentions;
       authorizedContext.officialFactNeeds = trustedSalesContext.officialFactNeeds;
       authorizedContext.resolvedProducts = trustedSalesContext.resolvedProducts;
+      if (trustedSalesContext.salesKycState) {
+        authorizedContext.salesKycState = trustedSalesContext.salesKycState;
+      }
     }
     if (policy.intent === 'insurance_product_knowledge') {
       const semanticProduct = projectSemanticProduct(candidate, semanticContext);
@@ -497,7 +509,11 @@ export function createAgentQuestionRouter({ store, handlers = {}, familyResolver
     let handled;
     try {
       handled = await handler(authorizedContext);
-    } catch {
+    } catch (error) {
+      console.warn('[agent-question-router] handler unavailable', {
+        handler: boundedString(policy.handler, 80),
+        code: boundedString(error?.code || 'HANDLER_ERROR', 100),
+      });
       return finish({ decision: 'deny', interaction: { type: 'denied', text: '该请求当前不可用。' } }, 'handler_error');
     }
     return finish({ ...handled, decision: execution.decision }, 'handled');

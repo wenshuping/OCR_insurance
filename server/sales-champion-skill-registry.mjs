@@ -261,7 +261,11 @@ function capabilityMatches(definition, proposal) {
   return stageMatches && concernMatches;
 }
 function skillRef(key) {
-  return { key, version: DEFINITIONS[key].version };
+  return {
+    key,
+    version: DEFINITIONS[key]?.version || 1,
+    labelApplicability: SALES_CHAMPION_CAPABILITY_LABEL_MAPPINGS[key],
+  };
 }
 
 export function selectSalesChampionSkills(proposal) {

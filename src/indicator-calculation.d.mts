@@ -16,6 +16,9 @@ export type IndicatorCalculationResult = {
   minimumAmount?: number;
   partial?: boolean;
   isMinimumEstimate?: boolean;
+  hasBranchScenarios?: boolean;
+  scenarioKind?: 'scheduled_benefit' | 'claim_event';
+  uncertaintyNote?: string;
   formula?: string;
   calculationText: string;
   meta: IndicatorCalculationMeta;

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Insurance Responsibility Card Builder"
+  short_description: "Convert approved responsibilities into customer-facing cards"
+  default_prompt: "Use $ocr-insurance-responsibility-card-builder to build one customer-facing card for each approved insurance responsibility."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "保险责任统一解析"
+  short_description: "统一编排责任 inventory、领域 owner、公式门禁与模型路由"
+  default_prompt: "Use $ocr-insurance-unified-responsibility-parser to build and audit a source-locked responsibility manifest with one owner per responsibility."

@@ -1,0 +1,69 @@
+{
+  "fixtureId": "fixed-guaranteed-monthly",
+  "realSample": true,
+  "identity": {
+    "company": "友邦人寿保险有限公司",
+    "productName": "友邦金瑞年金保险",
+    "sourceDigest": "sha256:94025d36bd35dfc1c2fa0f56d7abc7414b8de2ac7bf4803c8ff6c39173f87528"
+  },
+  "sourceText": "若被保险人生存至保险品种规定的首期年金领取日且本合同仍然有效，则本公司将每月给付年金予被保险人，其金额等于首期年金领取日的基本保险金额的百分之十。若被保险人在领取年金期间身故，则本公司将继续给付年金予合法的继任年金受领人。年金给付期限为二十年。",
+  "contractTopology": {
+    "type": "standalone",
+    "evidenceSegments": []
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "resp_annuity",
+      "liability": "年金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "若被保险人生存至保险品种规定的首期年金领取日且本合同仍然有效",
+      "insurerObligation": "本公司将每月给付年金予被保险人",
+      "sourceExcerpt": "若被保险人生存至保险品种规定的首期年金领取日且本合同仍然有效，则本公司将每月给付年金予被保险人，其金额等于首期年金领取日的基本保险金额的百分之十。若被保险人在领取年金期间身故，则本公司将继续给付年金予合法的继任年金受领人。年金给付期限为二十年。",
+      "annuityProfile": {
+        "startConditionText": "若被保险人生存至保险品种规定的首期年金领取日且本合同仍然有效",
+        "survivalConditionText": "被保险人生存至保险品种规定的首期年金领取日",
+        "frequency": {
+          "type": "monthly",
+          "optionTexts": [
+            "每月"
+          ]
+        },
+        "paymentPeriod": {
+          "type": "fixed_term",
+          "startText": "首期年金领取日",
+          "endText": "",
+          "durationText": "二十年"
+        },
+        "guarantee": {
+          "type": "fixed_period",
+          "periodText": "二十年",
+          "deathDuringGuaranteeText": "若被保险人在领取年金期间身故",
+          "remainingPaymentText": "继续给付年金予合法的继任年金受领人"
+        },
+        "growthRule": {
+          "type": "level"
+        },
+        "terminationConditions": [
+          "年金给付期限届满"
+        ]
+      },
+      "indicators": [
+        {
+          "formulaText": "基本保险金额×10%",
+          "basisKey": "basic_insurance_amount",
+          "requiredInputs": [
+            "basic_insurance_amount"
+          ],
+          "evidenceTokens": [
+            "基本保险金额",
+            "百分之十",
+            "二十年"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": []
+}

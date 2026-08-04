@@ -1,0 +1,21 @@
+{
+  "id": "group-care-plan-tier",
+  "topology": "group",
+  "responsibilities": [
+    {
+      "responsibilityId": "group_annual_care",
+      "liability": "团体长期护理保险金",
+      "triggerCondition": "在团体成员资格有效期间达到约定护理状态。",
+      "insurerObligation": "保险人按该成员所属计划档次的年度护理金额给付。",
+      "sourceExcerpt": "被保险人在团体成员资格有效期间达到约定护理状态的，我们按该成员所属计划档次每年给付护理金额，最多3年；退出团体、恢复、身故或满3年时停止。",
+      "careTrigger": {"continuousState": {"durationText": "持续符合护理状态"}},
+      "benefit": {"paymentMode": "periodic", "cadence": "annual", "benefitPeriodText": "最多3年", "terminationText": "退出团体、恢复、身故或满3年"},
+      "formula": {"formulaText": "年度护理金=成员计划表约定金额", "normalizedFormula": "annual_care = member_plan_tier_amount", "requiredInputs": ["member_plan_tier_amount", "member_eligibility"], "branches": [], "operands": []}
+    }
+  ],
+  "supportingFragments": [
+    {"fragmentId": "member_entry_exit", "classification": "shared_rule", "text": "列明成员加入和退出规则。"},
+    {"fragmentId": "plan_table_heading", "classification": "group_heading", "text": "计划档次标题不是责任。"}
+  ],
+  "expected": {"acceptedCount": 1, "rejectedClassifications": ["shared_rule", "group_heading"]}
+}

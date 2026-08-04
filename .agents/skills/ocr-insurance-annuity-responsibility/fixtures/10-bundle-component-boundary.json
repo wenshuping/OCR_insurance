@@ -1,0 +1,71 @@
+{
+  "fixtureId": "bundle-component-boundary",
+  "realSample": false,
+  "identity": {
+    "company": "示例保险股份有限公司",
+    "productName": "示例教育年金保险",
+    "sourceDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "sourceText": "“成长保障计划”由示例教育年金保险和示例附加医疗保险组成，计划名称仅用于组合展示。示例教育年金保险责任：被保险人生存至18周岁后的首个保单周年日，本公司按基本保险金额的50%给付大学教育金。",
+  "contractTopology": {
+    "type": "bundle_component",
+    "evidenceSegments": [
+      {
+        "sourceExcerpt": "“成长保障计划”由示例教育年金保险和示例附加医疗保险组成"
+      }
+    ]
+  },
+  "responsibilities": [
+    {
+      "responsibilityId": "education",
+      "liability": "大学教育金",
+      "role": "annuity_responsibility",
+      "triggerCondition": "被保险人生存至18周岁后的首个保单周年日",
+      "insurerObligation": "本公司按基本保险金额的50%给付大学教育金",
+      "sourceExcerpt": "示例教育年金保险责任：被保险人生存至18周岁后的首个保单周年日，本公司按基本保险金额的50%给付大学教育金。",
+      "annuityProfile": {
+        "startConditionText": "被保险人生存至18周岁后的首个保单周年日",
+        "survivalConditionText": "被保险人生存至18周岁后的首个保单周年日",
+        "frequency": {
+          "type": "lump_sum",
+          "optionTexts": []
+        },
+        "paymentPeriod": {
+          "type": "single_payment",
+          "startText": "18周岁后的首个保单周年日",
+          "endText": "18周岁后的首个保单周年日",
+          "durationText": ""
+        },
+        "guarantee": {
+          "type": "none"
+        },
+        "growthRule": {
+          "type": "level"
+        },
+        "terminationConditions": []
+      },
+      "indicators": [
+        {
+          "formulaText": "基本保险金额×50%",
+          "basisKey": "basic_insurance_amount",
+          "requiredInputs": [
+            "basic_insurance_amount"
+          ],
+          "evidenceTokens": [
+            "基本保险金额",
+            "50%"
+          ],
+          "branches": [],
+          "operands": []
+        }
+      ]
+    }
+  ],
+  "nonResponsibilities": [
+    {
+      "title": "成长保障计划",
+      "role": "group_heading",
+      "sourceExcerpt": "计划名称仅用于组合展示"
+    }
+  ]
+}

@@ -18,26 +18,32 @@ function needsDiscoveryTurn(overrides = {}) {
   };
 }
 
-test('needs discovery skill consumes structured facts without classifying raw keywords', () => {
+test('ordinary needs discovery yields to the sales champion final responder', () => {
   const result = executeSalesChampionAtomicSkill({
     context: { question: '这里即使出现比较，也不能触发产品比较。' },
+    salesTurn: needsDiscoveryTurn(),
+  });
+  assert.equal(result, null);
+});
+
+test('specific training pack runs before the generic needs discovery shortcut', () => {
+  const result = executeSalesChampionAtomicSkill({
+    context: {},
     salesTurn: needsDiscoveryTurn({
       trainingPacks: [{
-        key: 'advance_relationship_by_stage',
-        evidenceRefs: ['training:cheng-jiye:video-29-sales-like-dating'],
+        key: 'handle_age_based_delay_without_scare',
+        evidenceRefs: ['local:yirong-66-tips:3'],
+        promptRules: ['先确认客户为什么想晚点办。'],
       }],
+      executionPlan: {
+        primary: { key: 'handle_age_based_delay_without_scare' },
+        supporting: [],
+        fallbackUsed: false,
+      },
     }),
   });
 
-  assert.match(result.interaction.text, /客户现在明确说到的是：客户五十多岁；比较在意养老/u);
-  assert.match(result.interaction.text, /下一步只做一件事/u);
-  assert.match(result.interaction.text, /可以直接这样发/u);
-  assert.match(result.interaction.text, /客户希望解决的核心问题/u);
-  assert.match(result.interaction.text, /现有保障和保单资料/u);
-  assert.doesNotMatch(result.interaction.text, /顾问本轮提供|客户理解|当前阶段|优先确认/u);
-  assert.equal(result.provenance.skill, 'needs_discovery');
-  assert.deepEqual(result.provenance.trainingPacks, ['advance_relationship_by_stage']);
-  assert.deepEqual(result.provenance.evidenceRefs, ['training:cheng-jiye:video-29-sales-like-dating']);
+  assert.equal(result, null);
 });
 
 test('atomic skill yields to family workflows and other selected skills', () => {
@@ -63,7 +69,7 @@ test('readiness gate stops promotion before any selected skill runs', () => {
   assert.equal(result.provenance.source, 'sales_champion_readiness_gate');
 });
 
-test('readiness clarification gives a follow-up method before requesting more information', () => {
+test('readiness clarification yields to the sales champion final responder', () => {
   const result = executeSalesChampionAtomicSkill({
     context: {},
     salesTurn: needsDiscoveryTurn({
@@ -72,15 +78,10 @@ test('readiness clarification gives a follow-up method before requesting more in
     }),
   });
 
-  const answer = result.interaction.text;
-  assert.match(answer, /不用等资料全了才跟进/u);
-  assert.match(answer, /先轻轻碰一下/u);
-  assert.match(answer, /可以直接这样发/u);
-  assert.ok(answer.indexOf('先轻轻碰一下') < answer.indexOf('你再补我两点'));
-  assert.doesNotMatch(answer, /补充完整信息后/u);
+  assert.equal(result, null);
 });
 
-test('needs discovery limits optional information requests to two items', () => {
+test('needs discovery with multiple missing slots still yields to the final responder', () => {
   const result = executeSalesChampionAtomicSkill({
     context: {},
     salesTurn: needsDiscoveryTurn({
@@ -91,7 +92,25 @@ test('needs discovery limits optional information requests to two items', () => 
     }),
   });
 
-  assert.match(result.interaction.text, /1\. 客户希望解决/u);
-  assert.match(result.interaction.text, /2\. 不影响当前生活/u);
-  assert.doesNotMatch(result.interaction.text, /3\. /u);
+  assert.equal(result, null);
+});
+
+test('needs discovery question plans remain input for the final responder', () => {
+  const result = executeSalesChampionAtomicSkill({
+    context: {},
+    salesTurn: needsDiscoveryTurn({
+      informationFollowUp: {
+        maxQuestions: 2,
+        questions: [{
+          key: 'customer_goal',
+          askAdvisor: '这个客户这次最想解决什么？',
+          askCustomerIfUnknown: '您这次最想先解决哪件事？',
+          impact: '决定下一步沟通目标。',
+          owner: 'sales_champion',
+        }],
+      },
+    }),
+  });
+
+  assert.equal(result, null);
 });
