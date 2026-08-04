@@ -92,21 +92,56 @@ test('entry form requires family profile and supports core setup after OCR', () 
 
 test('customer app exposes family profile management surface', () => {
   const customerSource = componentSource('CustomerApp', 'CashflowAnnualTable');
+  const familyPolicyPanelSource = componentSource('FamilyPolicyManagerPanel', 'FamilyCoverageOverview');
   const pageSource = componentSource('UploadPolicyPage', 'AnalysisReportPage');
   assert.match(customerSource, /FamilyProfileManager/);
   assert.match(customerSource, /onOpenFamilies=\{\(\) => setActiveTab\('families'\)\}/);
+  assert.match(customerSource, /<CustomerBottomTabs activeTab=\{activeTab\} onChange=\{setActiveTab\} hidePolicies \/>/);
   assert.match(pageSource, /onOpenFamilies/);
   assert.match(customerSource, /家庭档案列表/);
   assert.match(pageSource, /家庭档案/);
+  assert.match(pageSource, /<header[\s\S]*<h1 className="text-lg font-bold">录入保单<\/h1>[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
+  assert.match(pageSource, /bg-blue-50 px-3 text-sm font-black text-blue-600[\s\S]*onClick=\{onOpenFamilies\}[\s\S]*家庭档案/);
+  assert.doesNotMatch(pageSource, /onOpenReport/);
+  assert.doesNotMatch(pageSource, /查看报告/);
   assert.match(customerSource, /成员数/);
   assert.match(customerSource, /查看报告/);
   assert.match(customerSource, /管理成员/);
-  assert.match(customerSource, /添加成员/);
+  assert.match(customerSource, /保单管理/);
+  assert.match(customerSource, /FamilyPolicyManagerPanel/);
+  assert.match(customerSource, /policies=\{policies\}/);
+  assert.match(customerSource, /onOpenPolicy=\{\(policy\) => void openPolicy\(policy\)\}/);
+  assert.match(customerSource, /Number\(policy\.familyId\) === Number\(family\.id\)/);
+  assert.match(familyPolicyPanelSource, /groupPoliciesByInsured\(policies\)/);
+  assert.match(familyPolicyPanelSource, /<PolicyListItem[\s\S]*onOpen=\{\(\) => onOpenPolicy\(policy\)\}/);
+  assert.doesNotMatch(customerSource, /添加成员/);
+  assert.doesNotMatch(customerSource, /成员姓名/);
+  assert.doesNotMatch(customerSource, /handleAddFamilyMember/);
   assert.match(customerSource, /设为核心/);
   assert.match(customerSource, /onUpdateFamilyMemberRelation/);
   assert.match(customerSource, /设置\$\{member\.name\}家庭关系/);
   assert.doesNotMatch(customerSource, /编辑家庭/);
   assert.match(customerSource, /录入保单/);
+});
+
+test('customer bottom tabs do not expose the family report shortcut', () => {
+  const source = componentSource('CustomerBottomTabs', 'CustomerAccountSheet');
+
+  assert.match(source, /hidePolicies = false/);
+  assert.match(source, /tab\.key !== 'policies'/);
+  assert.match(source, /tabs\.length === 2 \? 'grid grid-cols-2 gap-2' : 'grid grid-cols-3 gap-2'/);
+  assert.doesNotMatch(source, /onOpenReport/);
+  assert.doesNotMatch(source, /查看报告/);
+  assert.doesNotMatch(source, /查看家庭保障分析报告/);
+});
+
+test('policy relation controls use the same full family relation options', () => {
+  const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /const FAMILY_MEMBER_RELATION_OPTIONS = \['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'\]/u);
+  assert.match(source, /const POLICY_RELATION_OPTIONS = FAMILY_MEMBER_RELATION_OPTIONS/u);
+  assert.match(source, /SelectField label="投保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
+  assert.match(source, /SelectField label="被保人关系"[\s\S]*options=\{POLICY_RELATION_OPTIONS\}/u);
 });
 
 test('customer app exposes family report share flow', () => {
@@ -816,6 +851,16 @@ test('family report wealth section explains dividend and universal account stati
   assert.match(typeSource, /statisticsScopeNote: string/);
 });
 
+test('family report renders plan types separately instead of a merged policy type cell', () => {
+  const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
+
+  assert.match(familySource, /function PolicyPlanTypeList/);
+  assert.match(familySource, /<PolicyPlanTypeList row=\{row\} \/>/);
+  assert.match(familySource, /item\.roleLabel/);
+  assert.match(familySource, /item\.typeLabel/);
+  assert.doesNotMatch(familySource, /<td className=\{tdClassName\}>\{emptyText\(row\.typeLabel\)\}<\/td>/);
+});
+
 test('family report renders amount-based radar sections in the agreed order without chart dependencies', () => {
   const familySource = fs.readFileSync(new URL('../src/FamilyReport.tsx', import.meta.url), 'utf8');
   const appSource = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
@@ -1067,4 +1112,15 @@ test('deleting a rider does not force-refresh optional responsibilities when mai
   assert.doesNotMatch(source, /primary\?\.canonicalProductId \|\| formData\.canonicalProductId/u);
   assert.doesNotMatch(source, /canonicalProductId: primary\.canonicalProductId \|\| formData\.canonicalProductId/u);
   assert.doesNotMatch(source, /已删除附加险，正在重新带出可选责任['"`]\);\s*void loadFormProductAnalysisDraft\(nextData/u);
+});
+
+test('policy save keeps existing core when another scanned member relation is recognized as self', () => {
+  const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(source, /!submitFamily\.coreMemberId && applicantShouldBeCore && insuredShouldBeCore/u);
+  assert.match(source, /const shouldPersistAsCore = \(member: FamilyMember, relationLabel: string\) => \(/u);
+  assert.match(source, /!submitFamily\.coreMemberId \|\| Number\(member\.id\) === Number\(submitFamily\.coreMemberId\)/u);
+  assert.match(source, /return member\.relationLabel && member\.relationLabel !== '本人' \? member\.relationLabel : '待确认'/u);
+  assert.match(source, /applicantRelation: applicantFinalRelation/u);
+  assert.match(source, /insuredRelation: insuredFinalRelation/u);
 });

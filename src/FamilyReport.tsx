@@ -825,6 +825,81 @@ function MemberRadarSection({ report }: { report: FamilyReport }) {
   );
 }
 
+function rowPlanItems(row: FamilyPolicyInventoryRow) {
+  if (Array.isArray(row.planItems) && row.planItems.length) return row.planItems;
+  return [{
+    roleLabel: '主险',
+    productName: row.productName,
+    matchedProductName: '',
+    typeLabel: row.typeLabel,
+    coverageText: row.coverageText,
+    premiumText: row.annualPremiumText,
+    paymentPeriod: row.paymentPeriod,
+    coveragePeriod: row.coveragePeriod,
+    statusLabel: row.isInactive ? row.policyStatusText || '已失效' : '',
+  }];
+}
+
+function PolicyPlanList({ row }: { row: FamilyPolicyInventoryRow }) {
+  return (
+    <div className="space-y-1.5">
+      {rowPlanItems(row).map((item, index) => {
+        const productName = item.productName || item.matchedProductName;
+        const officialName = item.matchedProductName && compactText(item.matchedProductName) !== compactText(item.productName)
+          ? item.matchedProductName
+          : '';
+        const meta = [
+          item.statusLabel,
+          item.coverageText && item.coverageText !== '按条款' ? `保额 ${item.coverageText}` : '',
+          item.premiumText ? `保费 ${item.premiumText}` : '',
+          item.coveragePeriod ? `保障 ${item.coveragePeriod}` : '',
+        ].filter(Boolean).join(' · ');
+
+        return (
+          <div key={`${item.roleLabel}-${productName}-${index}`} className="rounded-[10px] bg-[#F8FBFE] px-2 py-1.5 ring-1 ring-[#E6EEF5]">
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 rounded-full bg-white px-1.5 py-0.5 text-[10px] font-black text-[#0B72B9] ring-1 ring-[#D7E2EA]">{emptyText(item.roleLabel)}</span>
+              <div className="min-w-0">
+                <span className="block break-words font-black text-slate-900">{emptyText(productName)}</span>
+                {officialName ? (
+                  <span className="mt-0.5 block break-words text-[11px] font-medium text-slate-400">{officialName}</span>
+                ) : null}
+                {meta ? (
+                  <span className="mt-0.5 block break-words text-[11px] font-semibold leading-4 text-[#64748B]">{meta}</span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function PolicyPlanTypeList({ row }: { row: FamilyPolicyInventoryRow }) {
+  const plans = rowPlanItems(row);
+  return (
+    <div className="space-y-1.5">
+      {plans.map((item, index) => {
+        const typeLabel = item.typeLabel || (plans.length === 1 ? row.typeLabel : '');
+        return (
+          <div key={`${item.roleLabel}-${item.productName || item.matchedProductName}-${index}`} className="rounded-[10px] bg-white px-2 py-1.5 ring-1 ring-[#E6EEF5]">
+            <div className="flex items-start gap-2">
+              <span className="shrink-0 rounded-full bg-[#EEF6FF] px-1.5 py-0.5 text-[10px] font-black text-[#0B72B9] ring-1 ring-[#CFE5FF]">{emptyText(item.roleLabel)}</span>
+              <div className="min-w-0">
+                <span className="block break-words text-xs font-black leading-5 text-[#102033]">{emptyText(typeLabel)}</span>
+                {item.statusLabel ? (
+                  <span className="mt-0.5 block text-[11px] font-semibold text-[#9A4A16]">{item.statusLabel}</span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
   return (
     <Section title="家庭保单清单">
@@ -856,10 +931,12 @@ function InventorySection({ rows }: { rows: FamilyPolicyInventoryRow[] }) {
                   </td>
                   <td className={tdClassName}>{emptyText(row.relationLabel)}</td>
                   <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
-                    <span className="block font-black text-slate-900">{emptyText(row.productName)}</span>
+                    <PolicyPlanList row={row} />
                     <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{emptyText(row.company)}</span>
                   </td>
-                  <td className={tdClassName}>{emptyText(row.typeLabel)}</td>
+                  <td className="min-w-[180px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-[#334155]">
+                    <PolicyPlanTypeList row={row} />
+                  </td>
                   <td className={`${tdClassName} text-right`}>{row.annualPremiumText || formatMoney(row.annualPremium)}</td>
                   <td className={tdClassName}>{emptyText(row.coverageText)}</td>
                   <td className={`${tdClassName} text-right`}>{row.cashValueText || '-'}</td>
@@ -925,7 +1002,9 @@ function InsuredPolicyDetailSection({ rows }: { rows: FamilyPolicyInventoryRow[]
                             <span className="mt-0.5 block text-[11px] font-medium text-slate-400">{row.policyNumber}</span>
                           ) : null}
                         </td>
-                        <td className="min-w-[200px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-black text-slate-800">{emptyText(row.productName)}</td>
+                        <td className="min-w-[220px] border-b border-[#E6EEF5] bg-white px-3 py-2.5 text-xs font-semibold text-slate-800">
+                          <PolicyPlanList row={row} />
+                        </td>
                         <td className={`${tdClassName} text-right`}>{formatMoney(row.annualPremium)}</td>
                         <td className={tdClassName}>{emptyText(row.paymentPeriod)}</td>
                         <td className={tdClassName}>{emptyText(row.coveragePeriod)}</td>

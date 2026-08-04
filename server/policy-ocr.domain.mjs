@@ -65,10 +65,11 @@ export function normalizeGuestId(value) {
 
 export function normalizePolicyRelation(value) {
   const text = String(value || '').trim();
-  if (['父亲', '母亲', '爸爸', '妈妈'].includes(text)) return '父母';
-  if (['儿子', '女儿', '孩子'].includes(text)) return '子女';
-  if (['配偶', '丈夫', '妻子', '先生', '太太'].includes(text)) return '夫妻';
-  return ['本人', '子女', '父母', '夫妻'].includes(text) ? text : '';
+  if (['丈夫', '妻子', '先生', '太太', '夫妻'].includes(text)) return '配偶';
+  if (['爸爸'].includes(text)) return '父亲';
+  if (['妈妈'].includes(text)) return '母亲';
+  if (['孩子', '小孩'].includes(text)) return '子女';
+  return ['本人', '配偶', '儿子', '女儿', '子女', '父亲', '母亲', '父母', '其他', '待确认'].includes(text) ? text : '';
 }
 
 export function normalizeIdNumber(value) {
@@ -829,6 +830,19 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
       }))
     : [];
   const optionalResponsibilities = normalizeOptionalResponsibilities(analysis?.optionalResponsibilities);
+  const useFamilyRelationLabels = String(familyBinding?.familyBindingSource || '').trim() === 'explicit';
+  const applicantRelation = String(
+    (useFamilyRelationLabels ? familyBinding?.applicantRelationLabel : '') ||
+      data.applicantRelation ||
+      familyBinding?.applicantRelationLabel ||
+      '',
+  ).trim();
+  const insuredRelation = String(
+    (useFamilyRelationLabels ? familyBinding?.insuredRelationLabel : '') ||
+      data.insuredRelation ||
+      familyBinding?.insuredRelationLabel ||
+      '',
+  ).trim();
 
   return {
     id: allocateId(state),
@@ -838,9 +852,9 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     name: data.name,
     applicant: data.applicant,
     beneficiary: data.beneficiary,
-    applicantRelation: data.applicantRelation,
+    applicantRelation,
     insured: data.insured,
-    insuredRelation: data.insuredRelation,
+    insuredRelation,
     insuredIdNumber: data.insuredIdNumber,
     insuredBirthday: data.insuredBirthday,
     date: data.date,
@@ -855,6 +869,7 @@ export function buildPolicyFromScan({ state, userId = null, guestId = '', scan, 
     optionalResponsibilities,
     report: String(analysis?.report || '').trim(),
     sources: normalizePolicySources(analysis?.sources),
+    familyBindingSource: String(familyBinding?.familyBindingSource || '').trim(),
     familyId: familyBinding?.familyId || null,
     applicantMemberId: familyBinding?.applicantMemberId || null,
     insuredMemberId: familyBinding?.insuredMemberId || null,

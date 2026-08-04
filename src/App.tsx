@@ -118,8 +118,8 @@ const OCR_MODE_LABELS: Record<string, string> = {
   paddleocr_vl_1_5: 'PaddleOCR-VL',
   minicpm_v_4x_local: 'MiniCPM-V',
 };
-const POLICY_RELATION_OPTIONS = ['本人', '子女', '父母', '夫妻'];
 const FAMILY_MEMBER_RELATION_OPTIONS = ['本人', '配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
+const POLICY_RELATION_OPTIONS = FAMILY_MEMBER_RELATION_OPTIONS;
 
 declare global {
   interface Window {
@@ -4003,7 +4003,7 @@ function CustomerApp() {
       const insuredRelationForSubmit = formData.insuredRelationLabel || formData.insuredRelation || '待确认';
       const applicantShouldBeCore = applicantRelationForSubmit === '本人';
       const insuredShouldBeCore = insuredRelationForSubmit === '本人';
-      if (applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
+      if (!submitFamily.coreMemberId && applicantShouldBeCore && insuredShouldBeCore && applicantName && insuredName && !participantNamesMatch) {
         setMessage('家庭核心人员只能选择一个');
         return;
       }
@@ -4048,19 +4048,30 @@ function CustomerApp() {
         setMessage('请确认被保险人的家庭成员身份后再保存');
         return;
       }
-      if (applicantShouldBeCore) applicantMember = await setSubmitCoreMember(applicantMember);
-      if (insuredShouldBeCore) insuredMember = await setSubmitCoreMember(insuredMember);
-      if (!applicantShouldBeCore) applicantMember = await syncSubmitMemberRelation(applicantMember, applicantRelationForSubmit);
-      if (!insuredShouldBeCore) insuredMember = await syncSubmitMemberRelation(insuredMember, insuredRelationForSubmit);
+      const shouldPersistAsCore = (member: FamilyMember, relationLabel: string) => (
+        relationLabel === '本人' &&
+        (!submitFamily.coreMemberId || Number(member.id) === Number(submitFamily.coreMemberId))
+      );
+      const relationLabelForMember = (member: FamilyMember, relationLabel: string) => {
+        if (shouldPersistAsCore(member, relationLabel)) return '本人';
+        if (relationLabel !== '本人') return relationLabel || '待确认';
+        return member.relationLabel && member.relationLabel !== '本人' ? member.relationLabel : '待确认';
+      };
+      const applicantFinalRelation = relationLabelForMember(applicantMember, applicantRelationForSubmit);
+      const insuredFinalRelation = relationLabelForMember(insuredMember, insuredRelationForSubmit);
+      if (applicantFinalRelation === '本人') applicantMember = await setSubmitCoreMember(applicantMember);
+      if (insuredFinalRelation === '本人') insuredMember = await setSubmitCoreMember(insuredMember);
+      if (applicantFinalRelation !== '本人') applicantMember = await syncSubmitMemberRelation(applicantMember, applicantFinalRelation);
+      if (insuredFinalRelation !== '本人') insuredMember = await syncSubmitMemberRelation(insuredMember, insuredFinalRelation);
       const submitData: PolicyFormData = {
         ...formData,
         familyId: submitFamily.id,
         applicantMemberId: applicantMember.id,
         insuredMemberId: insuredMember.id,
-        applicantRelation: applicantRelationForSubmit,
-        insuredRelation: insuredRelationForSubmit,
-        applicantRelationLabel: applicantRelationForSubmit,
-        insuredRelationLabel: insuredRelationForSubmit,
+        applicantRelation: applicantFinalRelation,
+        insuredRelation: insuredFinalRelation,
+        applicantRelationLabel: applicantFinalRelation,
+        insuredRelationLabel: insuredFinalRelation,
       };
       setFormData(submitData);
       const payload = await scanPolicy({
@@ -4729,7 +4740,6 @@ function CustomerApp() {
           mobile={mobile}
           onOpenAccount={() => setShowAccountSheet(true)}
           onOpenFamilies={() => setActiveTab('families')}
-          onOpenReport={() => setShowFamilyReport(true)}
           uploadItem={uploadItem}
           fileInputRef={fileInputRef}
         />
@@ -4746,12 +4756,12 @@ function CustomerApp() {
       <>
         <FamilyProfileManager
           familyProfiles={familyProfiles}
+          policies={policies}
           selectedFamilyId={selectedFamilyId}
           onSelectFamily={(familyId) => handleSelectFamily(familyId)}
           onCreateFamily={async (familyName) => {
             await createFamilyProfileByName(familyName);
           }}
-          onCreateFamilyMemberForFamily={createFamilyMemberForFamily}
           onSetCoreMember={setCoreMemberForCurrentFamily}
           onUpdateFamilyMemberRelation={updateFamilyMemberRelationForFamily}
           onBackToEntry={() => {
@@ -4759,8 +4769,23 @@ function CustomerApp() {
             setMessage('可以继续录入保单');
           }}
           onOpenReport={openFamilyReport}
+          onOpenPolicy={(policy) => void openPolicy(policy)}
         />
-        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+        <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} hidePolicies />
+        {selectedPolicy ? (
+          <PolicyDetailSheet
+            policy={selectedPolicy}
+            onClose={() => setSelectedPolicy(null)}
+            onRetryReport={retryPolicyReport}
+            retrying={retryingPolicyId === selectedPolicy.id}
+            onUpdatePolicy={handleUpdatePolicy}
+            onUpdateOptionalResponsibility={handleUpdateOptionalResponsibility}
+            updating={savingPolicyId === selectedPolicy.id}
+            onDeletePolicy={handleDeletePolicy}
+            deleting={deletingPolicyId === selectedPolicy.id}
+            onEditCashValue={openManualCashValueEditor}
+          />
+        ) : null}
         {authDialog}
         {accountSheet}
         {cashValueDialog}
@@ -4891,7 +4916,7 @@ function CustomerApp() {
         </section>
       </main>
 
-      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} onOpenReport={() => setShowFamilyReport(true)} />
+      <CustomerBottomTabs activeTab={activeTab} onChange={setActiveTab} />
       {!selectedPolicy ? responsibilityAssistant : null}
 
       {selectedPolicy ? (
@@ -4917,29 +4942,31 @@ function CustomerApp() {
 
 function FamilyProfileManager({
   familyProfiles,
+  policies,
   selectedFamilyId,
   onSelectFamily,
   onCreateFamily,
-  onCreateFamilyMemberForFamily,
   onSetCoreMember,
   onUpdateFamilyMemberRelation,
   onBackToEntry,
   onOpenReport,
+  onOpenPolicy,
 }: {
   familyProfiles: FamilyProfile[];
+  policies: Policy[];
   selectedFamilyId: number | null;
   onSelectFamily: (familyId: number) => void;
   onCreateFamily: (familyName: string) => Promise<void>;
-  onCreateFamilyMemberForFamily: (family: FamilyProfile, input: { name: string; relationLabel: string; setAsCore?: boolean }) => Promise<FamilyMember | null>;
   onSetCoreMember: (family: FamilyProfile, member: FamilyMember) => Promise<FamilyProfile>;
   onUpdateFamilyMemberRelation: (family: FamilyProfile, member: FamilyMember, relationLabel: string) => Promise<FamilyProfile>;
   onBackToEntry: () => void;
   onOpenReport: (familyId: number) => void;
+  onOpenPolicy: (policy: Policy) => void;
 }) {
   const families = Array.isArray(familyProfiles) ? familyProfiles : [];
+  const familyPolicies = Array.isArray(policies) ? policies : [];
   const [editingFamilyId, setEditingFamilyId] = useState<number | null>(null);
-  const [memberDraftName, setMemberDraftName] = useState('');
-  const [memberDraftRelation, setMemberDraftRelation] = useState('待确认');
+  const [policyManagingFamilyId, setPolicyManagingFamilyId] = useState<number | null>(null);
   const [editingMessage, setEditingMessage] = useState('');
   const [editingBusy, setEditingBusy] = useState(false);
 
@@ -4950,9 +4977,20 @@ function FamilyProfileManager({
     }
   }, [editingFamilyId, families]);
 
+  useEffect(() => {
+    if (!policyManagingFamilyId) return;
+    if (!families.some((family) => Number(family.id) === Number(policyManagingFamilyId))) {
+      setPolicyManagingFamilyId(null);
+    }
+  }, [policyManagingFamilyId, families]);
+
   function activeMembers(family: FamilyProfile) {
     const members = Array.isArray(family.members) ? family.members : [];
     return members.filter((member) => member.status === 'active');
+  }
+
+  function policiesForFamily(family: FamilyProfile) {
+    return familyPolicies.filter((policy) => Number(policy.familyId) === Number(family.id));
   }
 
   function corePersonLabel(family: FamilyProfile) {
@@ -4980,35 +5018,16 @@ function FamilyProfileManager({
     const nextEditing = Number(editingFamilyId) === Number(family.id) ? null : family.id;
     onSelectFamily(family.id);
     setEditingFamilyId(nextEditing);
+    if (nextEditing) setPolicyManagingFamilyId(null);
     setEditingMessage('');
-    setMemberDraftName('');
-    setMemberDraftRelation('待确认');
   }
 
-  async function handleAddFamilyMember(family: FamilyProfile) {
-    const name = memberDraftName.trim();
-    if (!name) {
-      setEditingMessage('请输入成员姓名');
-      return;
-    }
-    setEditingBusy(true);
+  function toggleFamilyPolicies(family: FamilyProfile) {
+    const nextManaging = Number(policyManagingFamilyId) === Number(family.id) ? null : family.id;
+    onSelectFamily(family.id);
+    setPolicyManagingFamilyId(nextManaging);
+    if (nextManaging) setEditingFamilyId(null);
     setEditingMessage('');
-    try {
-      const member = await onCreateFamilyMemberForFamily(family, {
-        name,
-        relationLabel: memberDraftRelation || '待确认',
-        setAsCore: memberDraftRelation === '本人',
-      });
-      if (member) {
-        setMemberDraftName('');
-        setMemberDraftRelation('待确认');
-        setEditingMessage(`已添加成员：${member.name}`);
-      }
-    } catch (error) {
-      setEditingMessage(error instanceof Error ? error.message : '添加成员失败');
-    } finally {
-      setEditingBusy(false);
-    }
   }
 
   async function handleSetCoreMember(family: FamilyProfile, member: FamilyMember) {
@@ -5061,6 +5080,8 @@ function FamilyProfileManager({
       <main className="mx-auto w-full max-w-3xl space-y-3 p-4">
         {families.length ? families.map((family) => {
           const members = activeMembers(family);
+          const currentFamilyPolicies = policiesForFamily(family);
+          const policyManaging = Number(family.id) === Number(policyManagingFamilyId);
           const selected = Number(family.id) === Number(selectedFamilyId);
           const editing = Number(family.id) === Number(editingFamilyId);
           return (
@@ -5094,7 +5115,7 @@ function FamilyProfileManager({
                 </div>
               </div>
 
-              <div className="mt-4 grid grid-cols-3 gap-2">
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <button
                   type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-500 text-xs font-black text-white shadow-lg shadow-blue-500/20"
@@ -5113,6 +5134,14 @@ function FamilyProfileManager({
                 </button>
                 <button
                   type="button"
+                  className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-blue-50 text-xs font-black text-blue-700 ring-1 ring-blue-100"
+                  onClick={() => toggleFamilyPolicies(family)}
+                >
+                  <FileText size={16} />
+                  {policyManaging ? '收起保单' : '保单管理'}
+                </button>
+                <button
+                  type="button"
                   className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-emerald-50 text-xs font-black text-emerald-700 ring-1 ring-emerald-100"
                   onClick={() => {
                     onSelectFamily(family.id);
@@ -5123,6 +5152,14 @@ function FamilyProfileManager({
                   录入保单
                 </button>
               </div>
+
+              {policyManaging ? (
+                <FamilyPolicyManagerPanel
+                  family={family}
+                  policies={currentFamilyPolicies}
+                  onOpenPolicy={onOpenPolicy}
+                />
+              ) : null}
 
               {editing ? (
                 <div className="mt-4 space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
@@ -5166,34 +5203,6 @@ function FamilyProfileManager({
                     )) : (
                       <p className="rounded-xl bg-white px-3 py-3 text-sm font-semibold text-slate-500">暂无成员</p>
                     )}
-                  </div>
-
-                  <div className="grid gap-2 sm:grid-cols-[1fr_140px_auto]">
-                    <input
-                      type="text"
-                      value={memberDraftName}
-                      onChange={(event) => setMemberDraftName(event.target.value)}
-                      placeholder="成员姓名"
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    />
-                    <select
-                      value={memberDraftRelation}
-                      onChange={(event) => setMemberDraftRelation(event.target.value)}
-                      className="h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
-                    >
-                      {FAMILY_MEMBER_RELATION_OPTIONS.map((relation) => (
-                        <option key={relation} value={relation}>{relation}</option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      className="flex h-11 items-center justify-center gap-1.5 rounded-xl bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
-                      disabled={editingBusy}
-                      onClick={() => void handleAddFamilyMember(family)}
-                    >
-                      <Plus size={16} />
-                      添加成员
-                    </button>
                   </div>
 
                   {editingMessage ? <p className="text-xs font-bold text-slate-500">{editingMessage}</p> : null}
@@ -5530,6 +5539,62 @@ function CashflowDetailPage({
         ) : null}
       </main>
       {cashValueDialog}
+    </div>
+  );
+}
+
+function FamilyPolicyManagerPanel({
+  family,
+  policies,
+  onOpenPolicy,
+}: {
+  family: FamilyProfile;
+  policies: Policy[];
+  onOpenPolicy: (policy: Policy) => void;
+}) {
+  const groups = groupPoliciesByInsured(policies);
+  const totalCoverage = policies.reduce((sum, policy) => sum + Number(policy.amount || 0), 0);
+
+  return (
+    <div className="mt-4 space-y-3 rounded-2xl border border-blue-100 bg-blue-50/45 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="text-sm font-black text-slate-950">保单管理</h3>
+          <p className="mt-1 text-xs font-semibold text-slate-500">{family.familyName || '当前家庭'} · {policies.length} 张保单 · 总保额 {formatCoverageAmount(totalCoverage)}</p>
+        </div>
+        <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-blue-700 ring-1 ring-blue-100">家庭保单</span>
+      </div>
+
+      {groups.length ? (
+        <div className="space-y-3">
+          {groups.map((group) => (
+            <section key={group.insured} className="rounded-2xl border border-blue-100 bg-white p-3">
+              <div className="mb-2 flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <h4 className="truncate text-sm font-black text-slate-950">{group.insured}</h4>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">{group.policies.length} 张保单 · 总保额 {formatCoverageAmount(group.totalCoverage)}</p>
+                </div>
+                <span className="shrink-0 rounded-full bg-slate-50 px-2.5 py-1 text-xs font-black text-slate-600 ring-1 ring-slate-100">被保人</span>
+              </div>
+              <div className="space-y-2">
+                {group.policies.map((policy, index) => (
+                  <PolicyListItem
+                    key={policy.id}
+                    policy={policy}
+                    index={index}
+                    onOpen={() => onOpenPolicy(policy)}
+                  />
+                ))}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-blue-200 bg-white px-4 py-8 text-center">
+          <p className="text-sm font-black text-slate-950">暂无家庭保单</p>
+          <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">从这个家庭录入保单后，会按家庭成员统一放到这里。</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -7142,22 +7207,22 @@ function PolicyListItem({ policy, index, onOpen }: { policy: Policy; index: numb
 function CustomerBottomTabs({
   activeTab,
   onChange,
-  onOpenReport,
   fixed = true,
+  hidePolicies = false,
 }: {
   activeTab: CustomerTab;
   onChange: (tab: CustomerTab) => void;
-  onOpenReport?: () => void;
   fixed?: boolean;
+  hidePolicies?: boolean;
 }) {
-  const tabs: Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }> = [
+  const tabs = ([
     { key: 'entry', label: '录入保单', icon: UploadCloud },
     { key: 'policies', label: '我的保单', icon: FileText },
     { key: 'families', label: '家庭档案', icon: Users },
-  ];
+  ] as Array<{ key: CustomerTab; label: string; icon: typeof UploadCloud }>).filter((tab) => !hidePolicies || tab.key !== 'policies');
   return (
     <nav className={fixed ? 'pb-safe fixed bottom-0 left-0 right-0 z-40 border-t border-slate-100 bg-white px-4 pt-2 shadow-[0_-10px_20px_-12px_rgba(15,23,42,0.12)]' : ''}>
-      <div className={`grid gap-2 ${onOpenReport ? 'grid-cols-4' : 'grid-cols-3'}`}>
+      <div className={tabs.length === 2 ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-3 gap-2'}>
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const active = activeTab === tab.key;
@@ -7175,17 +7240,6 @@ function CustomerBottomTabs({
             </button>
           );
         })}
-        {onOpenReport ? (
-          <button
-            type="button"
-            onClick={onOpenReport}
-            className="flex h-12 items-center justify-center gap-1.5 rounded-2xl bg-blue-50 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition hover:bg-blue-100 active:bg-blue-100 sm:text-sm"
-            aria-label="查看家庭保障分析报告"
-          >
-            <LayoutDashboard size={18} />
-            查看报告
-          </button>
-        ) : null}
       </div>
     </nav>
   );
@@ -7440,7 +7494,6 @@ function UploadPolicyPage(props: {
   onOcrTextChange: (value: string) => void;
   onOpenAccount: () => void;
   onOpenFamilies: () => void;
-  onOpenReport: () => void;
   onScanClick: () => void;
   onSelectFamily: (familyId: number | null) => void;
   onSelectFormCompany: (company: string) => void;
@@ -7480,7 +7533,6 @@ function UploadPolicyPage(props: {
     onOcrTextChange,
     onOpenAccount,
     onOpenFamilies,
-    onOpenReport,
     onScanClick,
     onSelectFamily,
     onSelectFormCompany,
@@ -7706,27 +7758,17 @@ function UploadPolicyPage(props: {
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
       <header className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center border-b border-slate-100 bg-white px-4 py-4">
-        <div className="flex justify-start">
-          <button
-            className="flex h-10 items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"
-            type="button"
-            onClick={onOpenFamilies}
-          >
-            <Users size={18} />
-            <span>家庭档案</span>
-          </button>
-        </div>
+        <div />
         <h1 className="text-lg font-bold">录入保单</h1>
         <div className="flex justify-end">
           <div className="flex items-center gap-2">
             <button
-              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-xs font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
+              className="flex h-10 items-center gap-1.5 rounded-full bg-blue-50 px-3 text-sm font-black text-blue-600 ring-1 ring-blue-100 transition-colors hover:bg-blue-100"
               type="button"
-              onClick={onOpenReport}
-              aria-label="查看家庭保障分析报告"
+              onClick={onOpenFamilies}
             >
-              <LayoutDashboard size={18} />
-              <span className="hidden sm:inline">查看报告</span>
+              <Users size={18} />
+              <span className="hidden sm:inline">家庭档案</span>
             </button>
             <button
               className="flex h-10 max-w-[128px] items-center gap-1.5 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-200"

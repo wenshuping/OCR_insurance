@@ -2027,8 +2027,8 @@ test('manual relation variants are normalized and saved when reusing a recognize
     });
 
     assert.equal(saved.response.status, 201);
-    assert.equal(saved.payload.policy.applicantRelation, '父母');
-    assert.equal(saved.payload.policy.insuredRelation, '子女');
+    assert.equal(saved.payload.policy.applicantRelation, '母亲');
+    assert.equal(saved.payload.policy.insuredRelation, '儿子');
   } finally {
     await server.close();
   }
@@ -4548,6 +4548,118 @@ test('family APIs create family, set core member, and save policy with participa
     assert.equal(scanRes.payload.policy.applicantMemberId, coreRes.payload.member.id);
     assert.equal(scanRes.payload.policy.insuredMemberName, '李四');
     assert.equal(scanRes.payload.policy.insuredRelationLabel, '配偶');
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy save applies confirmed spouse relation before binding family snapshots', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({
+      ocrText: '投保人:李四\n被保险人:李四',
+      data: { company: '新华保险', name: '配偶保单', applicant: '李四', insured: '李四' },
+    }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const familyRes = await jsonFetch(server.baseUrl, '/api/family-profiles?guestId=guest-family-spouse-save', {
+      method: 'POST',
+      body: JSON.stringify({ familyName: '张三家庭' }),
+    });
+    const familyId = familyRes.payload.family.id;
+
+    await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-spouse-save`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '张三', relationLabel: '本人', setAsCore: true }),
+    });
+    const spouseRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=guest-family-spouse-save`, {
+      method: 'POST',
+      body: JSON.stringify({ name: '李四', relationLabel: '待确认' }),
+    });
+
+    const scanRes = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+      method: 'POST',
+      body: JSON.stringify({
+        guestId: 'guest-family-spouse-save',
+        scan: { ocrText: '投保人:李四\n被保险人:李四', data: { company: '新华保险', name: '配偶保单', applicant: '李四', insured: '李四' } },
+        analysis: { report: 'ok', coverageTable: [] },
+        manualData: {
+          familyId,
+          applicantMemberId: spouseRes.payload.member.id,
+          insuredMemberId: spouseRes.payload.member.id,
+          applicantRelationLabel: '配偶',
+          insuredRelationLabel: '配偶',
+        },
+      }),
+    });
+
+    assert.equal(scanRes.response.status, 201);
+    assert.equal(scanRes.payload.policy.applicantRelationLabel, '配偶');
+    assert.equal(scanRes.payload.policy.insuredRelationLabel, '配偶');
+    const savedSpouse = state.familyMembers.find((member) => Number(member.id) === Number(spouseRes.payload.member.id));
+    assert.equal(savedSpouse.relationToCore, 'spouse');
+    assert.equal(savedSpouse.relationLabel, '配偶');
+  } finally {
+    await server.close();
+  }
+});
+
+test('policy save preserves every selectable family relation exactly', async () => {
+  const state = createInitialState();
+  const app = createPolicyOcrApp({
+    state,
+    persist: async () => {},
+    scanner: async () => ({ ocrText: '', data: { company: '新华保险', name: '家庭关系保单' } }),
+    analyzer: async () => ({ report: 'ok', coverageTable: [] }),
+  });
+  const server = await listen(app);
+  try {
+    const relations = ['配偶', '儿子', '女儿', '父亲', '母亲', '其他', '待确认'];
+    for (const [index, relation] of relations.entries()) {
+      const guestId = `guest-family-relations-${index}`;
+      const familyRes = await jsonFetch(server.baseUrl, `/api/family-profiles?guestId=${guestId}`, {
+        method: 'POST',
+        body: JSON.stringify({ familyName: `全关系家庭-${relation}` }),
+      });
+      const familyId = familyRes.payload.family.id;
+      await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=${guestId}`, {
+        method: 'POST',
+        body: JSON.stringify({ name: '核心', relationLabel: '本人', setAsCore: true }),
+      });
+      const name = `${relation}成员`;
+      const memberRes = await jsonFetch(server.baseUrl, `/api/family-profiles/${familyId}/members?guestId=${guestId}`, {
+        method: 'POST',
+        body: JSON.stringify({ name, relationLabel: '待确认' }),
+      });
+      const scanRes = await jsonFetch(server.baseUrl, '/api/policies/scan', {
+        method: 'POST',
+        body: JSON.stringify({
+          guestId,
+          scan: { ocrText: `投保人:${name}\n被保险人:${name}`, data: { company: '新华保险', name: `${relation}保单`, applicant: name, insured: name } },
+          analysis: { report: 'ok', coverageTable: [] },
+          manualData: {
+            familyId,
+            applicantMemberId: memberRes.payload.member.id,
+            insuredMemberId: memberRes.payload.member.id,
+            applicantRelationLabel: relation,
+            insuredRelationLabel: relation,
+          },
+        }),
+      });
+
+      assert.equal(scanRes.response.status, 201);
+      assert.equal(scanRes.payload.policy.applicantRelation, relation);
+      assert.equal(scanRes.payload.policy.insuredRelation, relation);
+      assert.equal(scanRes.payload.policy.applicantRelationLabel, relation);
+      assert.equal(scanRes.payload.policy.insuredRelationLabel, relation);
+      assert.equal(scanRes.payload.policy.familyBindingSource, 'explicit');
+      const savedMember = state.familyMembers.find((member) => Number(member.id) === Number(memberRes.payload.member.id));
+      assert.equal(savedMember.relationLabel, relation);
+    }
   } finally {
     await server.close();
   }
