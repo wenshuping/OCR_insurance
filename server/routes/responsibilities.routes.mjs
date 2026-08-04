@@ -17,6 +17,41 @@ import {
 import { loadProjectionKnowledgeRecordsForPolicy } from '../policy-knowledge-projection.mjs';
 import { standardizeResponsibilityIndicator } from '../responsibility-card-standardizer.mjs';
 
+function uniqueSourceIdentityValues(values = []) {
+  return [...new Set(values.map(trim).filter(Boolean))];
+}
+
+export function boundOfficialSourceIdentityForPolicy(policy = {}) {
+  const responsibilitySources = [
+    ...(Array.isArray(policy?.responsibilities) ? policy.responsibilities : []),
+    ...(Array.isArray(policy?.optionalResponsibilities) ? policy.optionalResponsibilities : []),
+  ];
+  const responsibilityUrls = uniqueSourceIdentityValues(responsibilitySources.map((item) => item?.sourceUrl));
+  const responsibilityDigests = uniqueSourceIdentityValues(responsibilitySources.map((item) => (
+    item?.sourceDigest || item?.responsibilitySourceDigest
+  )));
+  if (responsibilityUrls.length === 1) {
+    return {
+      sourceUrl: responsibilityUrls[0],
+      ...(responsibilityDigests.length === 1 ? { sourceDigest: responsibilityDigests[0] } : {}),
+    };
+  }
+
+  const explicitlyBoundSources = (Array.isArray(policy?.sources) ? policy.sources : [])
+    .filter((source) => /当前保单已绑定/u.test(trim(source?.snippet)));
+  const explicitlyBoundUrls = uniqueSourceIdentityValues(explicitlyBoundSources.map((source) => (
+    source?.url || source?.sourceUrl || source?.officialUrl
+  )));
+  if (explicitlyBoundUrls.length === 1) return { sourceUrl: explicitlyBoundUrls[0] };
+
+  const directUrls = uniqueSourceIdentityValues([
+    policy?.officialPdfUrl,
+    policy?.sourceUrl,
+    policy?.clauseUrl,
+  ]);
+  return directUrls.length === 1 ? { sourceUrl: directUrls[0] } : null;
+}
+
 function trim(value) {
   return String(value || '').trim();
 }
@@ -1148,7 +1183,7 @@ export function createResponsibilityRoutes(context) {
 
   async function queryCustomerResponsibilitySummary(
     { company, name, canonicalProductId },
-    { privateSourceRecords = [], policyDerivedResult = null } = {},
+    { privateSourceRecords = [], policyDerivedResult = null, boundSourceIdentity = null } = {},
   ) {
     const routeStartedAt = nowMs();
     const privateRecord = privateSourceRecords[0];
@@ -1170,7 +1205,7 @@ export function createResponsibilityRoutes(context) {
         // Keep the in-memory fallback for test stores and legacy runtimes.
       }
     }
-    if (!usesPrivateSource && typeof buildCustomerResponsibilitySummaryFromCards === 'function') {
+    if (!usesPrivateSource && !boundSourceIdentity && typeof buildCustomerResponsibilitySummaryFromCards === 'function') {
       const cardSummary = buildCustomerResponsibilitySummaryFromCards({
         db,
         company: input.company,
@@ -1202,6 +1237,7 @@ export function createResponsibilityRoutes(context) {
         ? (run) => persistProductCustomerSummaryGenerationRun({ state, run })
         : undefined,
       privateSourceRecords,
+      boundSourceIdentity,
       requireApprovedPipelineArtifact: !usesPrivateSource && typeof enqueueProductResponsibilityPipeline === 'function',
       enqueueProductResponsibilityPipeline: usesPrivateSource ? undefined : enqueueProductResponsibilityPipeline,
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
@@ -1250,6 +1286,7 @@ export function createResponsibilityRoutes(context) {
       const policyId = Number(req.body?.policyId || 0);
       let privateSourceRecords = [];
       let policyDerivedResult = null;
+      let boundSourceIdentity = null;
       if (policyId > 0) {
         const user = resolveAuthUser(req, state);
         const guestId = normalizeGuestId(req.body?.guestId);
@@ -1265,6 +1302,7 @@ export function createResponsibilityRoutes(context) {
         if (!policy) {
           return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
         }
+        boundSourceIdentity = boundOfficialSourceIdentityForPolicy(policy);
         policyDerivedResult = (state.policyDerivedResults || []).find((row) => (
           Number(row?.policyId) === policyId
         )) || null;
@@ -1280,7 +1318,7 @@ export function createResponsibilityRoutes(context) {
       const result = await queryCustomerResponsibilitySummary({
         ...input,
         canonicalProductId: trim(req.body?.canonicalProductId),
-      }, { privateSourceRecords, policyDerivedResult });
+      }, { privateSourceRecords, policyDerivedResult, boundSourceIdentity });
       res.json(result);
     } catch (error) {
       sendError(res, error, 400);

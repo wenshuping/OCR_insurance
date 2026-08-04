@@ -6,6 +6,7 @@ import {
   buildWholeDocumentProductProfile,
   mergeDomainWorkerResults,
   runDomainEvidenceWorkers,
+  selectBoundOfficialSourceRecords,
 } from '../server/product-document-domain-workers.mjs';
 
 const product = {
@@ -95,6 +96,34 @@ test('same plan version attachments share a profile while different versions blo
   });
   assert.equal(conflict.versionConflict, true);
   assert.deepEqual(buildDomainWorkerPlan(conflict), []);
+});
+
+test('policy-bound source keeps its exact plan version and excludes historical versions', () => {
+  const records = ['1050-3', '1050-4', '1050-5'].flatMap((versionNo) => [1, 7].map((attachmentType) => ({
+    url: `https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1050&versionNo=${versionNo}&attachmentType=${attachmentType}`,
+    sourceDigest: `sha256:${versionNo}:${attachmentType}`,
+    fullText: fullTerms,
+  })));
+  const selected = selectBoundOfficialSourceRecords(records, {
+    sourceUrl: 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1050&versionNo=1050-4&attachmentType=1',
+  });
+
+  assert.equal(selected.length, 2);
+  assert.ok(selected.every((record) => record.url.includes('versionNo=1050-4')));
+  assert.equal(buildWholeDocumentProductProfile({ ...product, records: selected }).versionConflict, false);
+  assert.equal(buildWholeDocumentProductProfile({ ...product, records }).versionConflict, true);
+});
+
+test('bound digest never falls through to a different file at the same URL', () => {
+  const records = [{
+    url: 'https://official.example.test/terms.pdf',
+    sourceDigest: 'sha256:new-content',
+    fullText: fullTerms,
+  }];
+  assert.deepEqual(selectBoundOfficialSourceRecords(records, {
+    sourceDigest: 'sha256:policy-bound-content',
+    sourceUrl: records[0].url,
+  }), []);
 });
 
 test('domain workers run independently and failed domain does not remove base responsibilities', async () => {

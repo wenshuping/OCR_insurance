@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  boundOfficialSourceIdentityForPolicy,
   refreshExistingResponsibilityCardProjection,
   selectResponsibilityCardProjection,
 } from '../server/routes/responsibilities.routes.mjs';
@@ -42,6 +43,33 @@ test('responsibility query keeps a richer existing projection when rebuild has n
   }];
 
   assert.deepEqual(selectResponsibilityCardProjection(existing, rebuilt), existing);
+});
+
+test('policy refresh binds to the source used by current responsibilities instead of historical sources', () => {
+  const boundUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1050&versionNo=1050-4&attachmentType=1';
+  assert.deepEqual(boundOfficialSourceIdentityForPolicy({
+    responsibilities: [
+      { coverageType: '年金', sourceUrl: boundUrl },
+      { coverageType: '身故保险金', sourceUrl: boundUrl },
+    ],
+    sources: [
+      { url: boundUrl },
+      { url: boundUrl.replace('1050-4', '1050-7') },
+    ],
+  }), { sourceUrl: boundUrl });
+});
+
+test('policy refresh does not guess when current responsibilities bind different versions', () => {
+  assert.equal(boundOfficialSourceIdentityForPolicy({
+    responsibilities: [
+      { sourceUrl: 'https://official.test/terms?planCode=1050&versionNo=1050-4' },
+      { sourceUrl: 'https://official.test/terms?planCode=1050&versionNo=1050-7' },
+    ],
+    sources: [
+      { url: 'https://official.test/terms?planCode=1050&versionNo=1050-4' },
+      { url: 'https://official.test/terms?planCode=1050&versionNo=1050-7' },
+    ],
+  }), null);
 });
 
 test('existing legacy cards refresh official payment-period formulas before projection', () => {

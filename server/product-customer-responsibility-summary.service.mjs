@@ -30,6 +30,7 @@ import {
   buildWholeDocumentProductProfile,
   mergeDomainWorkerResults,
   runDomainEvidenceWorkers,
+  selectBoundOfficialSourceRecords,
   wholeDocumentTextFromRecord,
 } from './product-document-domain-workers.mjs';
 import {
@@ -1896,6 +1897,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   nowIso = () => new Date().toISOString(),
   logger = console,
   privateSourceRecords = [],
+  boundSourceIdentity = null,
   requireApprovedPipelineArtifact = false,
   enqueueProductResponsibilityPipeline,
 } = {}) {
@@ -1920,6 +1922,11 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     inputProduct,
   );
   let indicators = indicatorsForProduct(state.insuranceIndicatorRecords, inputProduct);
+  if (boundSourceIdentity && !scopedPrivateRecords.length) {
+    cards = selectBoundOfficialSourceRecords(cards, boundSourceIdentity);
+    records = selectBoundOfficialSourceRecords(records, boundSourceIdentity);
+    indicators = selectBoundOfficialSourceRecords(indicators, boundSourceIdentity);
+  }
   cards = enrichCardsWithOfficialRecords(cards, records);
   if (!cards.length && !records.length) {
     const existing = await findExistingCustomerResponsibilitySummary({
@@ -1969,10 +1976,16 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   if (productName !== inputProductName) {
     const resolvedProduct = { company, productName, productKey, canonicalProductId };
     const resolvedCards = loadProductResponsibilityCards(db, resolvedProduct);
-    const resolvedRecords = sourceRecordsForProduct(state.knowledgeRecords, resolvedProduct);
-    const resolvedIndicators = indicatorsForProduct(state.insuranceIndicatorRecords, resolvedProduct);
-    if (resolvedCards.length || resolvedRecords.length) {
-      cards = resolvedCards;
+    let resolvedRecords = sourceRecordsForProduct(state.knowledgeRecords, resolvedProduct);
+    let resolvedIndicators = indicatorsForProduct(state.insuranceIndicatorRecords, resolvedProduct);
+    let scopedResolvedCards = resolvedCards;
+    if (boundSourceIdentity && !scopedPrivateRecords.length) {
+      scopedResolvedCards = selectBoundOfficialSourceRecords(resolvedCards, boundSourceIdentity);
+      resolvedRecords = selectBoundOfficialSourceRecords(resolvedRecords, boundSourceIdentity);
+      resolvedIndicators = selectBoundOfficialSourceRecords(resolvedIndicators, boundSourceIdentity);
+    }
+    if (scopedResolvedCards.length || resolvedRecords.length) {
+      cards = scopedResolvedCards;
       records = resolvedRecords;
       indicators = resolvedIndicators;
       cards = enrichCardsWithOfficialRecords(cards, records);

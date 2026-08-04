@@ -104,6 +104,49 @@ function recordDigest(record = {}) {
   return text(record.sourceDigest || record.source_digest || record.responsibilitySourceDigest);
 }
 
+function planVersionIdentity(value = '') {
+  try {
+    const url = new URL(text(value));
+    const planCode = text(url.searchParams.get('planCode'));
+    const versionNo = text(url.searchParams.get('versionNo'));
+    return planCode && versionNo ? `${planCode}:${versionNo}` : '';
+  } catch {
+    return '';
+  }
+}
+
+export function selectBoundOfficialSourceRecords(records = [], identity = {}) {
+  const candidates = array(records);
+  const sourceDigest = text(identity?.sourceDigest);
+  if (sourceDigest) {
+    const digestMatches = candidates.filter((record) => recordDigest(record) === sourceDigest);
+    if (!digestMatches.length) return [];
+    const planVersions = unique(digestMatches.map((record) => planVersionIdentity(recordUrl(record))));
+    return planVersions.length === 1
+      ? candidates.filter((record) => planVersionIdentity(recordUrl(record)) === planVersions[0])
+      : digestMatches;
+  }
+
+  const sourceUrl = text(identity?.sourceUrl);
+  if (sourceUrl) {
+    const exactMatches = candidates.filter((record) => recordUrl(record) === sourceUrl);
+    if (exactMatches.length) {
+      const planVersion = planVersionIdentity(sourceUrl);
+      return planVersion
+        ? candidates.filter((record) => planVersionIdentity(recordUrl(record)) === planVersion)
+        : exactMatches;
+    }
+  }
+
+  const planVersion = text(identity?.planCode) && text(identity?.versionNo)
+    ? `${text(identity.planCode)}:${text(identity.versionNo)}`
+    : planVersionIdentity(sourceUrl);
+  if (planVersion) {
+    return candidates.filter((record) => planVersionIdentity(recordUrl(record)) === planVersion);
+  }
+  return sourceUrl ? [] : candidates;
+}
+
 export function wholeDocumentTextFromRecord(record = {}) {
   const payload = typeof record.payload === 'string'
     ? (() => { try { return JSON.parse(record.payload); } catch { return {}; } })()

@@ -172,6 +172,52 @@ function baseState() {
   };
 }
 
+test('customer summary scopes historical official records to the policy-bound version', async () => {
+  const boundUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1050&versionNo=1050-4&attachmentType=1';
+  const historicalUrl = boundUrl.replace('1050-4', '1050-7');
+  const pageText = [
+    '平安金牛年金保险（万能型）条款',
+    '第五条 保险责任',
+    '年金 本主险合同生效满5年后，被保险人仍生存，按约定领取年金。',
+    '身故保险金 被保险人身故，按身故当时保单账户价值给付。',
+    '第六条 责任免除',
+    '第十条 最低保证利率 本主险合同最低保证利率为年利率1.5%。',
+  ].join('\n');
+  let modelCalls = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [boundUrl, historicalUrl].map((url) => ({
+        company: '中国平安',
+        productName: '平安金牛年金保险（万能型）',
+        title: '平安金牛年金保险（万能型）条款',
+        url,
+        pageText,
+        fullText: pageText,
+        official: true,
+      })),
+      insuranceIndicatorRecords: [],
+    },
+    db: dbWithCards([]),
+    input: { company: '中国平安', name: '平安金牛年金保险（万能型）', plannerMode: 'off' },
+    boundSourceIdentity: { sourceUrl: boundUrl },
+    findSummary: async () => null,
+    persistSummary: async (row) => row,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return structuredLifeSummary({
+        productCategory: 'annuity',
+        categoryLabel: '年金保险（万能型）',
+        headline: '提供年金领取和身故保障。',
+        contentBlocks: validCustomerSummaryBlocks(),
+      });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(modelCalls, 1);
+  assert.deepEqual(result.summary.sourceUrls, [boundUrl]);
+});
+
 test('public customer summary waits for an approved responsibility pipeline artifact', async () => {
   let modelCalls = 0;
   const queued = [];
