@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { indicatorCalculationPayloadFields } from '../src/indicator-calculation.mjs';
 import { deriveIndicatorProductKeys } from '../server/policy-derived-results.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import {
   markAffectedDerivedRowsStale,
   recordIndicatorRefreshBatch,
@@ -13,7 +14,7 @@ import {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-06-29-basic-indicator-from-responsibility-card';
 const REVIEWED_IMPORT_VERSION = '2026-06-23-reviewed-responsibility-artifact-import';
 
@@ -669,8 +670,9 @@ export function buildBasicIndicatorsFromResponsibilityCards({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = buildBasicIndicatorsFromResponsibilityCards({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     sampleLimit: Number(readArg('sample-limit', 20)) || 20,
     allowFallback: !hasFlag('no-fallback'),

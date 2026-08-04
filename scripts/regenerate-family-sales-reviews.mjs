@@ -7,6 +7,7 @@ import {
   shouldSkipFamilySalesReviewInput,
 } from './regenerate-family-sales-reviews.shared.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { createCashflowStore, createCashValueStore } from '../server/cashflow-store.mjs';
 import { allocateId, normalizeGuestId } from '../server/policy-ocr.domain.mjs';
 import { familyOwnerMatches, listFamilyMembers } from '../server/family-profile.domain.mjs';
@@ -24,7 +25,7 @@ function usage() {
     'Usage: node scripts/regenerate-family-sales-reviews.mjs [--dry-run] [--family-id=ID]',
     '',
     'Env:',
-    '  POLICY_OCR_APP_DB_PATH  SQLite database path. Defaults to .runtime/local/policy-ocr.sqlite.',
+    '  POLICY_OCR_APP_DB_PATH  SQLite database path. Development resolves to the configured SSD target.',
     '',
     'Examples:',
     '  npm run family-sales-reviews:regenerate -- --dry-run',
@@ -146,7 +147,7 @@ async function main() {
   }
 
   await loadRuntimeEnv(projectRoot);
-  const dbPath = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime/local/policy-ocr.sqlite');
+  const dbPath = resolvePolicyOcrWriteDatabasePath({ projectRoot });
   const store = await createSqliteStateStore({ dbPath });
   try {
     const state = await store.load();

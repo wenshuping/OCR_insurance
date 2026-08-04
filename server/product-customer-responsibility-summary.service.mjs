@@ -26,6 +26,7 @@ import {
   buildSpecialProductDatabaseSummary,
 } from './unified-special-product-responsibility.mjs';
 import {
+  productIdentityKey,
   responsibilityCompanyIdentity,
   sameResponsibilityProduct,
 } from './product-responsibility-identity.mjs';
@@ -36,7 +37,7 @@ import {
   responsibilityGenerationGovernanceDigest,
 } from './responsibility-generation-governance.service.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v25-planner-routing';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v26-field-evidence-display';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -377,14 +378,24 @@ function normalizeIndicatorRow(row = {}) {
 }
 
 function productMatches(row, { company, productName, productKey, canonicalProductId }) {
-  if (productKey && text(row.productKey) === productKey) return true;
-  const rowCanonicalProductId = text(row.canonicalProductId);
-  if (canonicalProductId && rowCanonicalProductId) return rowCanonicalProductId === canonicalProductId;
+  const requestedIdentity = { company, productName, productKey, canonicalProductId };
+  const rowIdentity = {
+    ...row,
+    productName: productNameFrom(row),
+  };
+  const rowKey = productIdentityKey(rowIdentity);
+  const generatedLegacyKey = productKeyFor(company, productName);
+  const requestedKey = (canonicalProductId || (productKey && productKey !== generatedLegacyKey))
+    ? productIdentityKey(requestedIdentity)
+    : '';
+  if (requestedKey) {
+    return Boolean(rowKey && requestedKey && rowKey === requestedKey);
+  }
   return responsibilityCompanyIdentity(companyFrom(row)) === responsibilityCompanyIdentity(company)
     && productNameMatchesQuery(productNameFrom(row), productName);
 }
 
-function loadProductResponsibilityCards(db, { company, productName, productKey }) {
+function loadProductResponsibilityCards(db, { company, productName, productKey, canonicalProductId = '' }) {
   if (!db || typeof db.prepare !== 'function') return [];
   try {
     const normalizedProductKey = text(productKey);
@@ -396,7 +407,12 @@ function loadProductResponsibilityCards(db, { company, productName, productKey }
         WHERE product_key = ?
         ORDER BY title ASC, id ASC
       `).all(normalizedProductKey);
-      if (productKeyRows.length) return productKeyRows.map((row) => normalizeCardRow(row));
+      if (productKeyRows.length) {
+        const keyedCards = productKeyRows
+          .map((row) => normalizeCardRow(row))
+          .filter((row) => productMatches(row, { company, productName, productKey, canonicalProductId }));
+        if (keyedCards.length || canonicalProductId) return keyedCards;
+      }
     }
     if (normalizedCompany && normalizedProductName) {
       const exactRows = db.prepare(`
@@ -405,7 +421,11 @@ function loadProductResponsibilityCards(db, { company, productName, productKey }
         WHERE company = ? AND product_name = ?
         ORDER BY title ASC, id ASC
       `).all(normalizedCompany, normalizedProductName);
-      if (exactRows.length) return exactRows.map((row) => normalizeCardRow(row));
+      const exactCards = exactRows
+        .map((row) => normalizeCardRow(row))
+        .filter((row) => productMatches(row, { company, productName, productKey, canonicalProductId }));
+      if (exactCards.length) return exactCards;
+      if (canonicalProductId) return [];
       // Company aliases and abbreviated product names are common in the
       // catalog. Scan only the small metadata projection first, then fetch
       // payloads for the few matching company/product pairs.
@@ -1161,6 +1181,8 @@ function safeCustomerSummary(row = {}) {
   return {
     company: text(summary.company),
     productName: text(summary.productName),
+    ...(text(summary.evidenceMode) ? { evidenceMode: text(summary.evidenceMode) } : {}),
+    ...(text(summary.persistenceStatus) ? { persistenceStatus: text(summary.persistenceStatus) } : {}),
     headline: text(summary.headline),
     mainResponsibilities: normalizeArray(summary.mainResponsibilities).map((item) => {
       const sourceRefs = sourceRefIdsFromValue(item?.sourceRefs);
@@ -1214,17 +1236,20 @@ export function buildCustomerResponsibilitySummaryFromCards({
   canonicalProductId = '',
   sourceRecords = [],
   requireSourceDigest = false,
+  responsibilityCards = null,
 } = {}) {
   const normalizedCompany = text(company);
   const normalizedProductName = text(productName);
   if (!normalizedCompany || !normalizedProductName) return null;
   const productKey = productKeyFor(normalizedCompany, normalizedProductName, text(canonicalProductId));
-  const cards = loadProductResponsibilityCards(db, {
-    company: normalizedCompany,
-    productName: normalizedProductName,
-    productKey,
-    canonicalProductId: text(canonicalProductId),
-  });
+  const cards = Array.isArray(responsibilityCards)
+    ? responsibilityCards
+    : loadProductResponsibilityCards(db, {
+        company: normalizedCompany,
+        productName: normalizedProductName,
+        productKey,
+        canonicalProductId: text(canonicalProductId),
+      });
   if (!cards.length) return null;
   const approvedArtifacts = loadApprovedResponsibilityArtifacts(db, {
     company: normalizedCompany,
@@ -1323,7 +1348,12 @@ export function buildCustomerResponsibilitySummaryFromCards({
     productName: text(indicator?.productName || indicator?.product_name) || evidenceProductName,
     productKey: text(indicator?.productKey || indicator?.product_key) || evidenceProductKey,
   })));
-  const specialSourceRecords = alignSourceRecordsToApprovedArtifactSourceDigests(sourceRecords, approvedArtifacts).map((record) => ({
+  const scopedSourceRecords = sourceRecordsForProduct(sourceRecords, {
+    company: evidenceCompany,
+    productName: evidenceProductName,
+    canonicalProductId: text(canonicalProductId),
+  });
+  const specialSourceRecords = alignSourceRecordsToApprovedArtifactSourceDigests(scopedSourceRecords, approvedArtifacts).map((record) => ({
     ...record,
     company: evidenceCompany,
     productName: evidenceProductName,
@@ -1343,6 +1373,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   });
   // Special-product renderers own their purpose wording and quantified fields.
   const summaryJson = ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
+    || special.evaluation?.fieldEvidenceDisplay?.productFunctions?.length
     ? special.summary
     : summary;
   return safeCustomerSummary({ summaryJson, payload: { officialResponsibilityText } });

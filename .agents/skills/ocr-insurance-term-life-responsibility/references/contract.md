@@ -109,6 +109,13 @@ Accept a responsibility only when its evidence contains:
 Keep separate official headings separate. Keep formula branches inside one
 responsibility when the source does not name a separate obligation.
 
+For a combined heading such as `身故或身体全残保险金` or
+`身故和身体全残保险金`, create one responsibility and one indicator
+decision. Store disease, accident, waiting-period, age, and payment-period
+variants as branches. Do not derive `疾病全残` from a disease-cause sentence.
+Conversely, retain two responsibilities when the source independently heads and
+defines `身故保险金` and `全残保险金`.
+
 Reject:
 
 - `保险责任`, `基本责任`, `可选责任`, `释义`, `责任免除`;

@@ -738,6 +738,16 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
     if (hasOwn(input, key)) data[key] = trim(input[key]);
   }
   if (hasCanonicalProductIdInput) data.canonicalProductId = trim(input.canonicalProductId);
+  if (hasOwn(input, 'paymentFrequency')) {
+    const paymentFrequency = trim(input.paymentFrequency);
+    if (!['', 'annual', 'monthly'].includes(paymentFrequency)) {
+      const error = new Error('交费频率格式不正确');
+      error.code = 'INVALID_PAYMENT_FREQUENCY';
+      error.status = 400;
+      throw error;
+    }
+    data.paymentFrequency = paymentFrequency;
+  }
   if (hasOwn(input, 'benefitFrequency')) {
     const benefitFrequency = trim(input.benefitFrequency);
     if (!['', 'annual', 'monthly'].includes(benefitFrequency)) {
@@ -747,6 +757,32 @@ function normalizePolicyUpdateData(value, existingPolicy = {}) {
       throw error;
     }
     data.benefitFrequency = benefitFrequency;
+  }
+  if (hasOwn(input, 'monthlyConversionFactor')) {
+    const rawFactor = trim(input.monthlyConversionFactor);
+    const factor = rawFactor ? Number(rawFactor) : '';
+    if (factor !== '' && (!Number.isFinite(factor) || factor <= 0)) {
+      const error = new Error('月领折算系数格式不正确');
+      error.code = 'INVALID_MONTHLY_CONVERSION_FACTOR';
+      error.status = 400;
+      throw error;
+    }
+    data.monthlyConversionFactor = factor;
+  }
+  for (const [key, label, code] of [
+    ['effectiveInsuranceAmount', '有效保险金额', 'INVALID_EFFECTIVE_INSURANCE_AMOUNT'],
+    ['accumulatedDividendInsuredAmount', '累计红利保险金额', 'INVALID_ACCUMULATED_DIVIDEND_INSURED_AMOUNT'],
+  ]) {
+    if (!hasOwn(input, key)) continue;
+    const rawAmount = trim(input[key]);
+    const amount = rawAmount ? Number(rawAmount) : '';
+    if (amount !== '' && (!Number.isFinite(amount) || amount < 0)) {
+      const error = new Error(`${label}格式不正确`);
+      error.code = code;
+      error.status = 400;
+      throw error;
+    }
+    data[key] = amount;
   }
   if (hasOwn(input, 'beneficiary')) data.beneficiary = normalizeBeneficiary(input.beneficiary);
   if (hasOwn(input, 'beneficiaryRelation') || hasOwn(input, 'beneficiaryRelationLabel')) {
@@ -2290,12 +2326,55 @@ function markPolicyReportFailed(policy, error) {
   policy.updatedAt = new Date().toISOString();
 }
 
-function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, afterApply, performanceLogger, requestMetrics = {} }) {
+const DEFAULT_POLICY_REPORT_GENERATION_TIMEOUT_MS = 180_000;
+
+async function analyzePolicyReportWithTimeout(analyzer, input, timeoutMs) {
+  const configuredTimeout = Number(timeoutMs);
+  const effectiveTimeout = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+    ? configuredTimeout
+    : DEFAULT_POLICY_REPORT_GENERATION_TIMEOUT_MS;
+  let timeoutId;
+  try {
+    return await Promise.race([
+      analyzer(input),
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => {
+          const error = new Error('保险责任生成超时，请稍后点击刷新重试');
+          error.code = 'POLICY_REPORT_GENERATION_TIMEOUT';
+          reject(error);
+        }, effectiveTimeout);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function startPolicyReportGeneration({
+  state,
+  policy,
+  scan,
+  analyzer,
+  persist,
+  beforeAnalyze,
+  afterApply,
+  analysisOptions = {},
+  generationTimeoutMs,
+  onFailure,
+  onSettled,
+  performanceLogger,
+  requestMetrics = {},
+}) {
   if (!policy || policy.reportStatus === 'ready') return;
   void (async () => {
     const analysisStartedAt = nowMs();
     try {
-      const analysis = await analyzer({ scan });
+      if (typeof beforeAnalyze === 'function') await beforeAnalyze({ policy, scan });
+      const analysis = await analyzePolicyReportWithTimeout(
+        analyzer,
+        { scan, ...analysisOptions },
+        generationTimeoutMs,
+      );
       if (!applyAnalysisToPolicy(policy, analysis)) {
         throw new Error('报告生成结果为空');
       }
@@ -2311,7 +2390,8 @@ function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, a
         policyId: policy.id,
       });
     } catch (error) {
-      markPolicyReportFailed(policy, error);
+      if (typeof onFailure === 'function') onFailure({ policy, error });
+      else markPolicyReportFailed(policy, error);
       await persist();
       logPerformance(performanceLogger, 'policy.report.background.failed', {
         route: 'background',
@@ -2320,8 +2400,46 @@ function startPolicyReportGeneration({ state, policy, scan, analyzer, persist, a
         outputOcrChars: String(scan?.ocrText || '').length,
         policyId: policy.id,
       });
+    } finally {
+      if (typeof onSettled === 'function') onSettled({ policy });
     }
   })();
+}
+
+function buildPolicyResponsibilityReference(policy) {
+  const byTitle = new Map();
+  const merge = (row = {}, fallbackTitle = '') => {
+    const coverageType = String(
+      row.coverageType || row.liability || row.title || row.name || fallbackTitle || '',
+    ).trim();
+    if (!coverageType) return;
+    const current = byTitle.get(coverageType) || {
+      coverageType,
+      scenario: '',
+      payout: '',
+      formulaText: '',
+      basis: '',
+      requiredInputs: [],
+    };
+    current.scenario ||= String(row.scenario || row.triggerCondition || row.description || '').trim();
+    current.payout ||= String(row.payout || row.benefitExplanation || row.formulaText || '').trim();
+    current.formulaText ||= String(row.formulaText || row.normalizedFormula || '').trim();
+    current.basis ||= String(row.basis || '').trim();
+    current.requiredInputs = [...new Set([
+      ...current.requiredInputs,
+      ...(Array.isArray(row.requiredInputs) ? row.requiredInputs.map((item) => String(item || '').trim()) : []),
+    ].filter(Boolean))];
+    byTitle.set(coverageType, current);
+  };
+
+  for (const row of Array.isArray(policy?.responsibilities) ? policy.responsibilities : []) merge(row);
+  for (const indicator of Array.isArray(policy?.coverageIndicators) ? policy.coverageIndicators : []) merge(indicator);
+  for (const card of Array.isArray(policy?.responsibilityCards) ? policy.responsibilityCards : []) {
+    const cardTitle = String(card?.title || card?.liability || '').trim();
+    merge(card, cardTitle);
+    for (const indicator of Array.isArray(card?.indicators) ? card.indicators : []) merge(indicator, cardTitle);
+  }
+  return [...byTitle.values()].slice(0, 60);
 }
 
 function buildPolicyReportScan(policy) {
@@ -2346,6 +2464,7 @@ function buildPolicyReportScan(policy) {
       amount: policy?.amount || 0,
       firstPremium: policy?.firstPremium || 0,
       plans: Array.isArray(policy?.plans) ? policy.plans : [],
+      responsibilities: buildPolicyResponsibilityReference(policy),
     },
   };
 }
@@ -2534,7 +2653,8 @@ export function createPolicyOcrApp(options = {}) {
         knowledgeRecords: state.knowledgeRecords || [],
         loadKnowledgeRecords: options.loadKnowledgeRecords,
         resolveFeishuKnowledgeRecords,
-        preferLocalKnowledgeAnswer: true,
+        preferLocalKnowledgeAnswer: input.preferLocalKnowledgeAnswer !== false,
+        maxAttempts: input.maxAttempts ?? (input.preferLocalKnowledgeAnswer === false ? 1 : 2),
       }));
   const assistantAnalyzer =
     options.assistantAnalyzer ||
@@ -2728,7 +2848,7 @@ export function createPolicyOcrApp(options = {}) {
   }
 
   function loadCurrentPolicyIndicators(policy) {
-    if (!cashflowDb || ownsCashflowDb) return [];
+    if (!cashflowDb || ownsCashflowDb) return null;
     const productNames = policyProductNamesForIndicatorLookup(policy);
     if (!productNames.length) return [];
     try {
@@ -2740,7 +2860,7 @@ export function createPolicyOcrApp(options = {}) {
         try { return JSON.parse(row.payload || ''); } catch { return null; }
       }).filter(Boolean);
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -2753,7 +2873,7 @@ export function createPolicyOcrApp(options = {}) {
 
     try {
       const current = loadCurrentPolicyIndicators(policy);
-      if (!current.length) return existing;
+      if (!Array.isArray(current) || !current.length) return existing;
       if (!existing.length) return current;
 
       const byId = new Map(current.filter((row) => row?.id).map((row) => [String(row.id), row]));
@@ -2795,6 +2915,19 @@ export function createPolicyOcrApp(options = {}) {
     }
 
     return { cashflowEntries, scenarioEntries, totalCashflow };
+  }
+
+  function computeCurrentPolicyCashflow(policy, knowledgeRecords = state.knowledgeRecords) {
+    const derivedResult = state.policyDerivedResults.find((row) => Number(row?.policyId) === Number(policy?.id)) || null;
+    const policyForCashflow = derivedResult ? mergePolicyDerivedResult(policy, derivedResult) : policy;
+    const policyIndicators = selectedCoverageIndicators(
+      hydrateCashflowIndicatorsFromCurrentProductIndex(policyForCashflow, policyForCashflow?.coverageIndicators),
+    );
+    return computePolicyCashflow(
+      policyForCashflow,
+      findProductCashflowTemplate(policyForCashflow, knowledgeRecords),
+      policyIndicators,
+    );
   }
 
   /**
@@ -2870,6 +3003,7 @@ export function createPolicyOcrApp(options = {}) {
     resolveOcrServiceUrl,
     resolveOcrProviderForScenario,
     computeAndStoreCashflow,
+    computeCurrentPolicyCashflow,
     computePolicyResponsibilityCalculations,
     hydrateCashflowIndicatorsFromCurrentProductIndex,
     loadCurrentPolicyIndicators,
@@ -2965,6 +3099,7 @@ export function createPolicyOcrApp(options = {}) {
     policyOwner,
     clearPolicyReportForRegeneration,
     startPolicyReportGeneration,
+    policyReportGenerationTimeoutMs: options.policyReportGenerationTimeoutMs,
     buildPolicyReportScan,
     assertUserCanSavePolicy,
     assertUserReportRefreshAllowed,

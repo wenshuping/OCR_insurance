@@ -34,6 +34,10 @@ an owner, payment profile, model route, or contract topology.
    contract all pass.
 3. Build and lock the responsibility-title inventory exactly once per
    `sourceDigest`. Reuse the locked inventory for every downstream domain Skill.
+   An event cause or condition is not a second responsibility: when one official
+   heading owns “身故或/和身体全残保险金”, keep disease, accident, waiting-period,
+   age, and payment-period variants as branches under that one responsibility
+   and one indicator decision. Do not emit a separate “疾病全残” indicator.
 4. Create one bounded evidence packet per locked responsibility. Include its
    complete section and only directly applicable shared clauses, definitions,
    tables, topology evidence, and continuation ranges.
@@ -97,6 +101,21 @@ Preserve topology and product functions at product scope. Examples:
   settlement and fees remain `universal_account` product functions;
 - endowment plus accident extra payment: maturity/death obligations owned by
   `endowment`, independently headed accident extras owned by `accident`.
+
+## Responsibility alias boundary
+
+- Merge neither by wording similarity nor by product name. Independent official
+  headings with independent obligations remain independent responsibilities.
+- Treat `疾病全残` or `疾病全残保险金` as a legacy alias only when exact official
+  evidence proves it belongs to the same combined death/full-disability heading.
+- Collapse the alias only for the same non-empty `sourceDigest`, or when both
+  digests are absent and the normalized official `sourceUrl` is identical.
+- Different non-empty digests are `version_conflict`; preserve both versions.
+- Accident disability, traffic disability, disease waiver, premium waiver, and
+  separately headed total-disability benefits are not aliases.
+- Persist cause variants in `branches`/`operands` and verify that the artifact,
+  card, nested indicators, and indicator table retain one stable responsibility
+  and indicator identity after materialization.
 
 ## Model routing
 

@@ -12,10 +12,18 @@ import {
   buildResponsibilityCardsForPolicy,
   indicatorCheckForResponsibilityCard,
 } from '../server/responsibility-card-standardizer.mjs';
+import {
+  assertNotLegacyPolicyOcrDatabasePath,
+  resolvePolicyOcrWriteDatabasePath,
+} from '../server/policy-ocr-database-target.mjs';
+import {
+  assertImportExecutionGate,
+  collectImportExecution,
+} from './import-execution-guard.mjs';
+import { loadStrictAlignmentProduct } from './responsibility-strict-alignment.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
 const VERSION = '2026-06-23-reviewed-responsibility-artifact-import';
 
 function productKeyFor(company, productName) {
@@ -37,6 +45,11 @@ function hasFlag(name) {
 function text(value) {
   if (value === null || value === undefined) return '';
   return String(value).trim();
+}
+
+function preserveText(value) {
+  if (value === null || value === undefined) return '';
+  return String(value);
 }
 
 function normalizedSelectionStatus(value) {
@@ -119,11 +132,11 @@ function responsibilityLiability(responsibility = {}) {
 }
 
 function sourceExcerptFor(responsibility = {}) {
-  const direct = text(responsibility.sourceExcerpt);
-  if (direct) return direct;
+  const direct = preserveText(responsibility.sourceExcerpt);
+  if (direct.trim()) return direct;
   return rows(responsibility.evidenceSegments)
-    .map((segment) => text(segment?.sourceExcerpt || segment?.text || segment?.excerpt))
-    .filter(Boolean)
+    .map((segment) => preserveText(segment?.sourceExcerpt || segment?.exactText || segment?.text || segment?.excerpt))
+    .filter((value) => value.trim())
     .join('\n');
 }
 
@@ -251,6 +264,14 @@ function formulaFor(responsibility = {}, check = {}) {
 
 function structuredFormulaFields(responsibility = {}, check = {}) {
   const normalizedFormula = text(check.normalizedFormula || responsibility.normalizedFormula);
+  const basisDefinition = check.basisDefinition && typeof check.basisDefinition === 'object' && !Array.isArray(check.basisDefinition)
+    ? check.basisDefinition
+    : (responsibility.basisDefinition && typeof responsibility.basisDefinition === 'object' && !Array.isArray(responsibility.basisDefinition)
+      ? responsibility.basisDefinition
+      : null);
+  const requiredInputDetails = Array.isArray(check.requiredInputDetails)
+    ? check.requiredInputDetails
+    : (Array.isArray(responsibility.requiredInputDetails) ? responsibility.requiredInputDetails : null);
   const operands = Array.isArray(check.operands)
     ? check.operands
     : (Array.isArray(responsibility.operands) ? responsibility.operands : null);
@@ -262,6 +283,8 @@ function structuredFormulaFields(responsibility = {}, check = {}) {
   );
   return {
     ...(normalizedFormula ? { normalizedFormula } : {}),
+    ...(basisDefinition ? { basisDefinition: { ...basisDefinition } } : {}),
+    ...(requiredInputDetails ? { requiredInputDetails: requiredInputDetails.map((detail) => ({ ...detail })) } : {}),
     ...(operands ? { operands } : {}),
     ...(branches ? { branches } : {}),
     ...(branchSemanticContract ? { branchSemanticContract } : {}),
@@ -275,6 +298,9 @@ function structuredIndicatorFields(product = {}, responsibility = {}, check = {}
   const ruleRefs = Array.isArray(check.ruleRefs)
     ? check.ruleRefs
     : (Array.isArray(responsibility.ruleRefs) ? responsibility.ruleRefs : null);
+  const evidenceSegments = Array.isArray(check.evidenceSegments)
+    ? check.evidenceSegments
+    : (Array.isArray(responsibility.evidenceSegments) ? responsibility.evidenceSegments : null);
   return {
     ...(text(check.indicatorName) ? { indicatorName: text(check.indicatorName) } : {}),
     ...(text(responsibility.responsibilityId || check.responsibilityId) ? { responsibilityId: text(responsibility.responsibilityId || check.responsibilityId) } : {}),
@@ -286,7 +312,9 @@ function structuredIndicatorFields(product = {}, responsibility = {}, check = {}
     ...(text(check.coverageAggregation || responsibility.coverageAggregation) ? { coverageAggregation: text(check.coverageAggregation || responsibility.coverageAggregation) } : {}),
     ...(evidenceTokens ? { evidenceTokens: evidenceTokens.map(text).filter(Boolean) } : {}),
     ...(ruleRefs ? { ruleRefs: ruleRefs.map(text).filter(Boolean) } : {}),
+    ...(evidenceSegments ? { evidenceSegments: evidenceSegments.map((segment) => ({ ...segment })) } : {}),
     ...(text(responsibility.customerSummary || check.customerSummary) ? { customerSummary: text(responsibility.customerSummary || check.customerSummary) } : {}),
+    ...(text(responsibility.plainSummary || check.plainSummary || responsibility.card?.customerSummary) ? { plainSummary: text(responsibility.plainSummary || check.plainSummary || responsibility.card?.customerSummary) } : {}),
     ...(rows(responsibility.importantLimits).length ? { importantLimits: rows(responsibility.importantLimits).map(text).filter(Boolean) } : {}),
     ...(check.provenance && typeof check.provenance === 'object' && !Array.isArray(check.provenance) ? { provenance: { ...check.provenance } } : {}),
     ...(text(check.sourceDigest || responsibility.sourceDigest || product.sourceDigest || product.productIdentity?.sourceDigest) ? { sourceDigest: text(check.sourceDigest || responsibility.sourceDigest || product.sourceDigest || product.productIdentity?.sourceDigest) } : {}),
@@ -303,12 +331,19 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
   const productName = text(product.productName);
   const liability = responsibilityLiability(responsibility);
   const sourceRecord = findSourceRecord(product, responsibility);
-  const check = {
-    ...findInternalCheck(product, responsibility),
-    ...(checkOverride || {}),
-  };
+  // Unified approved indicators are already position-specific. Falling back to
+  // the first internal check by liability would leak sparse fields from a
+  // sibling indicator (for example ruleRefs/rule_proton_limit).
+  const check = checkOverride
+    ? { ...checkOverride }
+    : findInternalCheck(product, responsibility);
   const sourceUrl = text(check.sourceUrl || responsibility.sourceUrl || sourceRecord.sourceUrl || product.productIdentity?.sourceUrl);
-  const sourceExcerpt = text(check.sourceExcerpt || responsibility.sourceExcerpt);
+  const indicatorExcerpt = rows(check.evidenceSegments).length
+    ? sourceExcerptFor({ evidenceSegments: check.evidenceSegments })
+    : sourceExcerptFor(check);
+  const sourceExcerpt = indicatorExcerpt.trim()
+    ? indicatorExcerpt
+    : preserveText(responsibility.sourceExcerpt);
   const sourceRecordId = text(responsibility.sourceRecordId || sourceRecord.sourceRecordId);
   const sourceTitle = text(responsibility.sourceTitle || sourceRecord.sourceTitle || sourceRecord.title);
   const responsibilityKey = [
@@ -349,6 +384,7 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     sourceExcerpt,
     sourceEvidenceLevel: sourceUrl ? 'official_excerpt' : 'missing_source_url',
     responsibilityArtifactId: text(product.artifactId),
+    semanticProjectionSource: 'approved_artifact',
     responsibilityRepairVersion: text(product.repairAudit?.version || product.publication?.repairVersion),
     reviewVersion: VERSION,
     updatedAt: now,
@@ -659,10 +695,11 @@ function materializedRowsForProduct(db, product = {}, indicators = [], now) {
 
 export function importReviewedResponsibilityArtifacts({
   artifacts = [],
-  dbPath = DEFAULT_DB_PATH,
+  dbPath = resolvePolicyOcrWriteDatabasePath({ projectRoot }),
   write = false,
   sampleLimit = 10,
   now = new Date().toISOString(),
+  execution = null,
 } = {}) {
   const productEntries = artifacts.flatMap((artifact) => readArtifactProducts(artifact));
   const samples = [];
@@ -760,8 +797,10 @@ export function importReviewedResponsibilityArtifacts({
   let materializeResult = null;
   const indicatorPruneResults = [];
   const artifactWriteResults = [];
+  const strictAlignmentResults = [];
   if (write && indicators.length) {
-    const db = new DatabaseSync(path.resolve(dbPath));
+    const writeDbPath = assertNotLegacyPolicyOcrDatabasePath({ projectRoot, dbPath });
+    const db = new DatabaseSync(writeDbPath);
     try {
       ensureSingleProductWriteTables(db);
       const insertIndicator = db.prepare(`
@@ -885,6 +924,9 @@ export function importReviewedResponsibilityArtifacts({
         db.exec('ROLLBACK');
         throw error;
       }
+      for (const product of productsForMaterialize.values()) {
+        strictAlignmentResults.push(loadStrictAlignmentProduct(db, product));
+      }
     } finally {
       db.close();
     }
@@ -913,8 +955,14 @@ export function importReviewedResponsibilityArtifacts({
     prunedIndicators: indicatorPruneResults.reduce((sum, result) => sum + Number(result.deletedIndicators || 0), 0),
     indicatorPruneResults: indicatorPruneResults.slice(0, sampleLimit),
     artifactWriteResults,
+    strictAlignment: {
+      evaluatedProducts: strictAlignmentResults.length,
+      strictAlignedProducts: strictAlignmentResults.filter((result) => result.strictAligned).length,
+      products: strictAlignmentResults,
+    },
     pruneResults: [],
     samples,
+    ...(execution ? { execution } : {}),
   };
 }
 
@@ -923,11 +971,34 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const artifacts = artifactArg
     ? artifactArg.split(',').map((item) => item.trim()).filter(Boolean)
     : process.argv.slice(2).filter((arg) => !arg.startsWith('--'));
+  const write = hasFlag('write');
+  const isolatedClone = hasFlag('isolated-clone');
+  const requestedDbPath = readArg('db-path', '');
+  const executionGatePath = readArg('execution-gate', '');
+  if (isolatedClone && !requestedDbPath) {
+    throw new Error('--isolated-clone requires --db-path');
+  }
+  const dbPath = isolatedClone
+    ? path.resolve(requestedDbPath)
+    : resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath });
+  const execution = collectImportExecution({
+    repoRoot: projectRoot,
+    scriptPath: process.argv[1],
+    dbPath,
+    artifacts,
+    sampleLimit: Number(readArg('sample-limit', 10)) || 10,
+    write,
+    isolatedClone,
+    gatePath: executionGatePath,
+    cwd: process.cwd(),
+  });
+  if (write) assertImportExecutionGate({ gatePath: executionGatePath, execution });
   const result = importReviewedResponsibilityArtifacts({
     artifacts,
-    dbPath: readArg('db-path', DEFAULT_DB_PATH),
-    write: hasFlag('write'),
+    dbPath,
+    write,
     sampleLimit: Number(readArg('sample-limit', 10)) || 10,
+    execution,
   });
   console.log(JSON.stringify(result, null, 2));
   if (!result.ok) process.exitCode = 1;

@@ -7,8 +7,10 @@ import {
 } from 'lucide-react';
 import type { CustomerResponsibilitySummary } from '../api/contracts/responsibility';
 import type { CashflowEntry, ScenarioEntry } from '../api/contracts/cashflow';
+import type { ResponsibilityCalculation } from '../api/contracts/policy';
+import type { CoverageIndicator } from '../api/contracts/responsibility';
 import { formatCurrency } from './formatters';
-import { hasQuantifiedCalculationSignal } from '../indicator-calculation.mjs';
+import { hasQuantifiedCalculationSignal, resolveIndicatorAmountFromCalculation } from '../indicator-calculation.mjs';
 import {
   mergeCalculatedResponsibilityTitles,
   responsibilityTitlesMatch,
@@ -20,6 +22,29 @@ function cleanStrings(values: string[] | undefined) {
 
 function cleanText(value: unknown) {
   return String(value ?? '').trim();
+}
+
+function cleanPdfDecorationText(value: unknown) {
+  return String(value ?? '')
+    .replace(/[\uE000-\uF8FF]/gu, '')
+    .split(/\r?\n/gu)
+    .map((line) => line.replace(/[ \t]+/gu, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function productFunctionItems(value: unknown) {
+  return cleanPdfDecorationText(value)
+    .split(/\n+/gu)
+    .map((line) => {
+      const separator = line.indexOf('：');
+      if (separator < 0) return { label: '条款说明', detail: line };
+      const label = line.slice(0, separator).trim();
+      let detail = line.slice(separator + 1).trim();
+      if (detail.startsWith(`${label}：`)) detail = detail.slice(label.length + 1).trim();
+      return { label, detail };
+    })
+    .filter((item) => item.label || item.detail);
 }
 
 function hostFromUrl(url: string) {
@@ -36,19 +61,37 @@ export function CustomerResponsibilitySummaryCard({
   scenarioEntries = [],
   baseAmount = 0,
   firstPremium = 0,
+  paymentFrequency = '',
+  paymentPeriod = '',
+  coveragePeriod = '',
+  benefitFrequency = '',
+  monthlyConversionFactor = '',
+  effectiveInsuranceAmount = '',
+  accumulatedDividendInsuredAmount = '',
+  coverageIndicators = [],
+  responsibilityCalculations = [],
 }: {
   summary: CustomerResponsibilitySummary;
   cashflowEntries?: CashflowEntry[];
   scenarioEntries?: ScenarioEntry[];
   baseAmount?: string | number;
   firstPremium?: string | number;
+  paymentFrequency?: string;
+  paymentPeriod?: string;
+  coveragePeriod?: string;
+  benefitFrequency?: string;
+  monthlyConversionFactor?: string | number;
+  effectiveInsuranceAmount?: string | number;
+  accumulatedDividendInsuredAmount?: string | number;
+  coverageIndicators?: CoverageIndicator[];
+  responsibilityCalculations?: ResponsibilityCalculation[];
 }) {
   const blocks = (Array.isArray(summary.contentBlocks) ? summary.contentBlocks : [])
     .map((block) => ({
       blockKey: cleanText(block?.blockKey),
       title: cleanText(block?.title),
       enabled: block?.enabled !== false,
-      content: cleanText(block?.content),
+      content: cleanPdfDecorationText(block?.content),
       order: Number.isFinite(Number(block?.order)) ? Number(block.order) : 0,
       sourceRefs: cleanStrings(block?.sourceRefs),
     }))
@@ -114,8 +157,36 @@ export function CustomerResponsibilitySummaryCard({
         <div className="mt-4 space-y-3">
           {blocks.map((block) => (
             <section key={block.blockKey || block.title} className="rounded-[16px] bg-slate-50 px-3 py-3 ring-1 ring-slate-100">
-              {block.title ? <h4 className="text-xs font-black text-slate-950">{block.title}</h4> : null}
-              {block.content ? <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{block.content}</p> : null}
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                {block.title ? <h4 className="text-xs font-black text-slate-950">{block.title}</h4> : null}
+                {block.blockKey === 'productFunctions' ? (
+                  <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700 ring-1 ring-blue-100">条款权益</span>
+                ) : null}
+              </div>
+              {block.content && block.blockKey === 'productFunctions' ? (
+                <div className="mt-3 grid gap-2.5 md:grid-cols-2">
+                  {productFunctionItems(block.content).map((item, index) => {
+                    const compactValue = /^\d+(?:\.\d+)?%$/u.test(item.detail);
+                    const longDescription = item.detail.length > 100;
+                    return (
+                      <article
+                        key={`${item.label}-${index}`}
+                        className={`min-w-0 rounded-[14px] border border-blue-100 bg-white px-3.5 py-3 shadow-[0_10px_24px_-22px_rgba(37,99,235,0.55)] ${longDescription ? 'md:col-span-2' : ''}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="h-2 w-2 shrink-0 rounded-full bg-blue-500" aria-hidden="true" />
+                          <h5 className="break-words text-[11px] font-black tracking-wide text-slate-500">{item.label}</h5>
+                        </div>
+                        <p className={`mt-2 break-words [overflow-wrap:anywhere] ${compactValue ? 'text-lg font-black text-blue-700' : 'text-xs font-semibold leading-6 text-slate-700'}`}>
+                          {item.detail}
+                        </p>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : block.content ? (
+                <p className="mt-2 whitespace-pre-wrap break-words text-xs font-semibold leading-5 text-slate-600">{block.content}</p>
+              ) : null}
               {block.sourceRefs.length ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {block.sourceRefs.map((sourceRef) => (
@@ -157,6 +228,41 @@ export function CustomerResponsibilitySummaryCard({
             const calculatedScenario = scenarioEntries.find((entry) => (
               responsibilityTitlesMatch(item.title, entry.scenario) && Number(entry.amount) > 0
             ));
+            const hasMinimumScenarioEstimate = calculatedScenario?.isMinimumEstimate === true;
+            const rawCalculatedResponsibility = responsibilityCalculations.find((entry) => (
+              responsibilityTitlesMatch(item.title, entry.liability)
+            ));
+            const matchedIndicators = coverageIndicators
+              .filter((indicator) => responsibilityTitlesMatch(item.title, indicator?.liability || indicator?.coverageType))
+              .sort((left, right) => (
+                Number(right?.branches?.length || 0) - Number(left?.branches?.length || 0)
+              ));
+            const matchedIndicator = matchedIndicators[0];
+            const formulaCalculation = hasQuantifiedIndicator && Number(baseAmount) > 0
+              ? resolveIndicatorAmountFromCalculation({
+                ...(matchedIndicator || {}),
+                liability: item.title,
+                formulaText: matchedIndicator?.formulaText || item.howItPays,
+                basis: matchedIndicator?.basis || item.howItPays,
+                sourceUrl: matchedIndicator?.sourceUrl,
+                sourceExcerpt: matchedIndicator?.sourceExcerpt,
+                calculationEligible: matchedIndicator?.calculationEligible ?? false,
+              }, {
+                baseAmount: Number(baseAmount),
+                firstPremium: Number(firstPremium) || 0,
+                paymentFrequency,
+                paymentPeriod,
+                coveragePeriod,
+                benefitFrequency,
+                monthlyConversionFactor,
+                effectiveInsuranceAmount,
+                accumulatedDividendInsuredAmount,
+              })
+              : null;
+            const calculatedResponsibility = rawCalculatedResponsibility?.isPending
+              && (formulaCalculation?.resolved || formulaCalculation?.partial)
+              ? null
+              : rawCalculatedResponsibility;
             return (
               <article key={`${item.title}-${index}`} className="rounded-[16px] border border-slate-100 bg-slate-50 p-3">
                 <div className="flex items-start gap-3">
@@ -207,9 +313,89 @@ export function CustomerResponsibilitySummaryCard({
                         ))}
                       </div>
                     ) : calculatedScenario ? (
-                      <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">
-                        <p className="font-black">已按本保单当前条件计算：{formatCurrency(calculatedScenario.amount)}</p>
-                        <p className="mt-1 text-[11px] text-cyan-700">{calculatedScenario.calculationText}</p>
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        hasMinimumScenarioEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">{hasMinimumScenarioEstimate ? '含不确定因素，按最低值统计' : `已按本保单当前条件计算：${formatCurrency(calculatedScenario.amount)}`}</p>
+                        {hasMinimumScenarioEstimate ? <p className="mt-1">最低可确认金额：{formatCurrency(calculatedScenario.amount)}</p> : null}
+                        <p className={`mt-1 text-[11px] ${hasMinimumScenarioEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>{calculatedScenario.calculationText}</p>
+                        {cleanText(calculatedScenario.uncertaintyNote) ? <p className={`mt-1 text-[11px] ${hasMinimumScenarioEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>备注：{cleanText(calculatedScenario.uncertaintyNote)}</p> : null}
+                      </div>
+                    ) : calculatedResponsibility ? (
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        calculatedResponsibility.isPending
+                          ? 'bg-blue-50 text-blue-800 ring-blue-100'
+                          : calculatedResponsibility.isMinimumEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">
+                          {calculatedResponsibility.isPending
+                            ? (calculatedResponsibility.hasBranchScenarios
+                              ? (calculatedResponsibility.scenarioKind === 'scheduled_benefit'
+                                ? '已按本保单数据列出领取阶段测算，未合并统计'
+                                : calculatedResponsibility.scenarioKind === 'policy_parameter'
+                                  ? (cleanText(calculatedResponsibility.uncertaintyNote) || '保单字段未匹配官方给付条件，未计入统计')
+                                : '已按本保单数据列出条款分支测算，未计入统计')
+                              : (cleanText(calculatedResponsibility.uncertaintyNote) || '需补充计算条件，未计算、未计入统计'))
+                            : calculatedResponsibility.isMinimumEstimate
+                            ? `最低可确认金额：${formatCurrency(calculatedResponsibility.amount)}`
+                            : `已按本保单计算：${formatCurrency(calculatedResponsibility.amount)}`}
+                        </p>
+                        <p className={`mt-1 whitespace-pre-wrap text-[11px] ${
+                          calculatedResponsibility.isPending
+                            ? 'text-blue-700'
+                            : calculatedResponsibility.isMinimumEstimate
+                              ? 'text-amber-700'
+                              : 'text-cyan-700'
+                        }`}>
+                          {calculatedResponsibility.calculationText}
+                        </p>
+                        {cleanText(calculatedResponsibility.uncertaintyNote) ? (
+                          <p className={`mt-1 text-[11px] ${
+                            calculatedResponsibility.isPending
+                              ? 'text-blue-700'
+                              : calculatedResponsibility.isMinimumEstimate
+                                ? 'text-amber-700'
+                                : 'text-cyan-700'
+                          }`}>
+                            备注：{cleanText(calculatedResponsibility.uncertaintyNote)}
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : formulaCalculation?.resolved || formulaCalculation?.partial ? (
+                      <div className={`mt-2 rounded-xl px-3 py-2 text-xs font-bold leading-5 ring-1 ${
+                        formulaCalculation.partial && !formulaCalculation.isMinimumEstimate
+                          ? 'bg-blue-50 text-blue-800 ring-blue-100'
+                          : formulaCalculation.isMinimumEstimate
+                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                          : 'bg-cyan-50 text-cyan-800 ring-cyan-100'
+                      }`}>
+                        <p className="font-black">
+                          {formulaCalculation.partial && !formulaCalculation.isMinimumEstimate
+                            ? (formulaCalculation.hasBranchScenarios
+                              ? (formulaCalculation.scenarioKind === 'policy_parameter'
+                                ? (cleanText(formulaCalculation.uncertaintyNote) || '保单字段未匹配官方给付条件，未计入统计')
+                                : '已按本保单数据列出领取阶段测算，未合并统计')
+                              : (cleanText(formulaCalculation.uncertaintyNote) || '需补充计算条件，未计算、未计入统计'))
+                            : formulaCalculation.isMinimumEstimate
+                            ? `最低可确认金额：${formatCurrency(Number(formulaCalculation.minimumAmount || 0))}`
+                            : `已按本保单计算：${formatCurrency(Number(formulaCalculation.amount || 0))}`}
+                        </p>
+                        <p className={`mt-1 text-[11px] ${
+                          formulaCalculation.partial && !formulaCalculation.isMinimumEstimate
+                            ? 'text-blue-700'
+                            : formulaCalculation.isMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'
+                        }`}>
+                          {formulaCalculation.calculationText}
+                        </p>
+                        {formulaCalculation.isMinimumEstimate ? (
+                          <p className="mt-1 text-[11px] text-amber-700">备注：已代入本保单基本保险金额，未计入待补充的累积红利保险金额。</p>
+                        ) : formulaCalculation.partial && cleanText(formulaCalculation.uncertaintyNote) ? (
+                          <p className="mt-1 text-[11px] text-blue-700">备注：{cleanText(formulaCalculation.uncertaintyNote)}</p>
+                        ) : null}
                       </div>
                     ) : item.calculationStatus ? (
                       <p className="mt-2 break-words text-[11px] font-black leading-5 text-slate-400">

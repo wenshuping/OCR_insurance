@@ -4,10 +4,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { indicatorCalculationPayloadFields } from '../src/indicator-calculation.mjs';
 import { deriveIndicatorProductKeys } from '../server/policy-derived-results.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-06-14-knowledge-responsibility-indicator-backfill';
 
 function trim(value) {
@@ -1601,6 +1602,7 @@ export function formulaFor(liability, sectionText) {
   }
   if (/保险金额/u.test(text)
     && /(?:按|按照)[^。；，,]{0,32}保险金额[^。；，,]{0,24}给付|保险金额[^。；，,]{0,8}[×xX*]\s*100\s*[％%]/u.test(text)
+    && !/现金价值|较高者|较高值|最大者|较大者|较大值|两者|三者|两项|三项|比较项|之和/u.test(text)
     && !/医疗|门诊|住院|费用|津贴|补贴/u.test(liability)) {
     return {
       value: 100,
@@ -2289,8 +2291,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .map((item) => trim(item))
     .filter(Boolean);
   const knowledgeIds = parseIdList(readArg('knowledge-ids', ''));
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = backfillKnowledgeResponsibilityIndicators({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     sampleLimit: Number(readArg('sample-limit', 20)) || 20,
     minKnowledgeId: Number(readArg('min-knowledge-id', 0)) || 0,

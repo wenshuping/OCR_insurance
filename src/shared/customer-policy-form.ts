@@ -289,7 +289,12 @@ export function policyToForm(policy: Policy): PolicyFormData {
     insuredBirthday: policy.insuredBirthday || '',
     date: policy.date || '',
     paymentPeriod: policy.paymentPeriod || '',
+    paymentFrequency: policy.paymentFrequency || '',
     coveragePeriod: policy.coveragePeriod || '',
+    benefitFrequency: policy.benefitFrequency || '',
+    monthlyConversionFactor: policy.monthlyConversionFactor === undefined || policy.monthlyConversionFactor === null ? '' : String(policy.monthlyConversionFactor),
+    effectiveInsuranceAmount: policy.effectiveInsuranceAmount === undefined || policy.effectiveInsuranceAmount === null ? '' : String(policy.effectiveInsuranceAmount),
+    accumulatedDividendInsuredAmount: policy.accumulatedDividendInsuredAmount === undefined || policy.accumulatedDividendInsuredAmount === null ? '' : String(policy.accumulatedDividendInsuredAmount),
     amount: policy.amount ? String(policy.amount) : '',
     firstPremium: policy.firstPremium ? String(policy.firstPremium) : '',
     plans: normalizePolicyPlanList(policy.plans, policy.company),
@@ -357,6 +362,9 @@ export function buildPolicyUpdateData(policy: Policy, data: PolicyFormData): Pol
 export function scanToForm(scan: PolicyScanResult): PolicyFormData {
   const data = scan.data || {};
   const familyData = data as Partial<PolicyFormData>;
+  const paymentPeriod = String(data.paymentPeriod || '');
+  const paymentFrequency = String(data.paymentFrequency || '')
+    || (/月交|月缴|月付/u.test(paymentPeriod) ? 'monthly' : /年交|年缴|年付/u.test(paymentPeriod) ? 'annual' : '');
   return sharePolicyPersonInfo({
     company: String(data.company || ''),
     name: String(data.name || ''),
@@ -372,8 +380,13 @@ export function scanToForm(scan: PolicyScanResult): PolicyFormData {
     insuredIdNumber: String(data.insuredIdNumber || ''),
     insuredBirthday: String(data.insuredBirthday || ''),
     date: String(data.date || ''),
-    paymentPeriod: String(data.paymentPeriod || ''),
+    paymentPeriod,
+    paymentFrequency,
     coveragePeriod: String(data.coveragePeriod || ''),
+    benefitFrequency: String(data.benefitFrequency || ''),
+    monthlyConversionFactor: data.monthlyConversionFactor === undefined || data.monthlyConversionFactor === null ? '' : String(data.monthlyConversionFactor),
+    effectiveInsuranceAmount: data.effectiveInsuranceAmount === undefined || data.effectiveInsuranceAmount === null ? '' : String(data.effectiveInsuranceAmount),
+    accumulatedDividendInsuredAmount: data.accumulatedDividendInsuredAmount === undefined || data.accumulatedDividendInsuredAmount === null ? '' : String(data.accumulatedDividendInsuredAmount),
     amount: data.amount ? String(data.amount) : '',
     firstPremium: data.firstPremium ? String(data.firstPremium) : '',
     plans: normalizePolicyPlanList(data.plans, String(data.company || ''), { assignRolesByRecognizedOrder: true }),

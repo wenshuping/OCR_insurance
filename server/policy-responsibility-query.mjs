@@ -36,6 +36,7 @@ function normalizePolicyForResponsibilityQuery(scan) {
     coveragePeriod: text(data.coveragePeriod),
     amount: numberOrUndefined(data.amount),
     firstPremium: numberOrUndefined(data.firstPremium),
+    responsibilities: Array.isArray(data.responsibilities) ? data.responsibilities : [],
   };
 }
 

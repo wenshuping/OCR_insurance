@@ -151,6 +151,65 @@ test('findPolicyCoverageIndicators preserves competing standard maturity source 
   assert.deepEqual(indicators.map((item) => item.id), ['version_a', 'version_b']);
 });
 
+test('findPolicyCoverageIndicators removes a legacy disease-disability alias when the same official responsibility has a canonical indicator', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/whole-life.pdf';
+  const sourceExcerpt = [
+    '身故或身体全残保险金',
+    '被保险人于合同生效之日起180日内因疾病原因身故或身体全残，',
+    '本公司按本保险实际交纳的保险费给付身故或身体全残保险金。',
+  ].join('');
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '测试终身寿险',
+  }, [{
+    id: 'legacy_disease_disability',
+    company: '新华保险',
+    productName: '测试终身寿险',
+    coverageType: '人寿保障',
+    liability: '疾病全残',
+    formulaText: '疾病全残 = 现金价值',
+    sourceUrl,
+    sourceExcerpt,
+  }, {
+    id: 'canonical_death_disability',
+    company: '新华保险',
+    productName: '测试终身寿险',
+    coverageType: '人寿保障',
+    liability: '身故或身体全残保险金',
+    formulaText: '身故或身体全残保险金 = max(已交保险费, 现金价值, 基本保险金额)',
+    sourceUrl,
+    sourceExcerpt,
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['canonical_death_disability']);
+});
+
+test('findPolicyCoverageIndicators preserves disease-disability rows from a different source version', () => {
+  const sourceExcerpt = '身故或身体全残保险金 被保险人因疾病身故或身体全残时，按合同约定给付保险金。';
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '测试终身寿险',
+  }, [{
+    id: 'legacy_other_version',
+    company: '新华保险',
+    productName: '测试终身寿险',
+    coverageType: '人寿保障',
+    liability: '疾病全残',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/version-a.pdf',
+    sourceExcerpt,
+  }, {
+    id: 'canonical_current_version',
+    company: '新华保险',
+    productName: '测试终身寿险',
+    coverageType: '人寿保障',
+    liability: '身故或身体全残保险金',
+    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/version-b.pdf',
+    sourceExcerpt,
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['legacy_other_version', 'canonical_current_version']);
+});
+
 test('policy optional responsibility state overrides a legacy indicator that omitted its optional scope', () => {
   const indicators = findPolicyCoverageIndicators({
     company: '新华保险',
@@ -416,7 +475,7 @@ test('official terms wording does not mark unrecognized optional responsibility 
   assert.equal(selectedCoverageIndicators(attached.coverageIndicators).some((item) => item.id === 'ind_optional'), false);
 });
 
-test('generic optional section displays concrete benefit names from clauses', () => {
+test('generic optional section displays one selectable package instead of one choice per child benefit', () => {
   const productName = '新华人寿保险股份有限公司附加学生平安A1款意外伤害医疗保险';
   const policy = {
     company: '新华保险',
@@ -439,11 +498,7 @@ test('generic optional section displays concrete benefit names from clauses', ()
 
   const reviewItems = buildOptionalResponsibilityReview(policy, [], knowledgeRecords, []);
 
-  assert.deepEqual(
-    reviewItems.map((item) => item.liability),
-    ['狂犬病疫苗接种医疗费用保险金', '微创美容缝合医疗费用保险金'],
-  );
-  assert.equal(reviewItems.some((item) => item.liability === '可选责任'), false);
+  assert.deepEqual(reviewItems.map((item) => item.liability), ['可选责任']);
 });
 
 test('manual optional selection preserves quantified product indicators', () => {

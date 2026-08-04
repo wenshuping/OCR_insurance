@@ -6,9 +6,10 @@ import os
 import json
 import sqlite3
 import datetime
+from policy_ocr_database_target import resolve_policy_ocr_write_database
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DB_PATH = os.path.join(PROJECT_ROOT, ".runtime", "policy-ocr.sqlite")
+DB_PATH = resolve_policy_ocr_write_database(PROJECT_ROOT)
 
 MISSING_INDICATORS = [
     # ── 高频遗漏 ──

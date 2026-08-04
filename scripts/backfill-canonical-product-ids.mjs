@@ -2,8 +2,12 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { fileURLToPath } from 'node:url';
 
 import { canonicalProductIdFromOfficialProduct } from '../server/canonical-product-id.mjs';
+import { assertNotLegacyPolicyOcrDatabasePath } from '../server/policy-ocr-database-target.mjs';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 function parseJson(value) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -201,6 +205,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const dbPath = readArg('db');
   if (!dbPath) printUsageAndExit();
   const dryRun = !hasFlag('write');
-  const summary = backfillDatabase(path.resolve(dbPath), { dryRun });
+  const targetDbPath = dryRun
+    ? path.resolve(dbPath)
+    : assertNotLegacyPolicyOcrDatabasePath({ projectRoot, dbPath });
+  const summary = backfillDatabase(targetDbPath, { dryRun });
   console.log(JSON.stringify(summary, null, 2));
 }

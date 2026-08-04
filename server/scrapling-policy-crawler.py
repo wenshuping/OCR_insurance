@@ -930,6 +930,10 @@ RESPONSIBILITY_POSITIVE_RE = re.compile(
     r"|豁免保险费"
 )
 RESPONSIBILITY_NEGATIVE_RE = re.compile(r"(?:不承担|不给付|不予给付|除外责任|责任免除).{0,80}(?:保险责任|保险金|医疗费用|津贴|保险费)")
+FORMULA_PARAMETER_DEFINITION_RE = re.compile(
+    r"(?:系数|比例|比率|免赔额|责任限额|给付天数|给付日数|等待期).{0,32}"
+    r"(?:数值|为|是|按|不超过|最高|上限|\d+(?:\.\d+)?\s*(?:[%％]|倍|天|日)?)"
+)
 MAX_EXCERPT_CHARS = 9000
 MAX_PDF_BYTES = 12_000_000
 MAX_ZIP_BYTES = 80_000_000
@@ -1308,7 +1312,7 @@ def focused_responsibility_excerpt(text: str) -> str:
             item = sentence.strip()
             if not item:
                 continue
-            if any(keyword in item for keyword in RESPONSIBILITY_KEYWORDS):
+            if any(keyword in item for keyword in RESPONSIBILITY_KEYWORDS) or FORMULA_PARAMETER_DEFINITION_RE.search(item):
                 kept.append(item)
         output = "\n".join(kept).strip()
         candidate = output[:MAX_EXCERPT_CHARS] if output else excerpt[:MAX_EXCERPT_CHARS]

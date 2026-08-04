@@ -4,9 +4,12 @@ import {
 } from './policy-ocr.domain.mjs';
 import { isPolicyOfficialSourceUrl } from './c-policy-analysis.service.mjs';
 import { findKnowledgeRecordsForPolicy, normalizeKnowledgeRecord } from './policy-knowledge.service.mjs';
-import { buildResponsibilityCardsForPolicy } from './responsibility-card-standardizer.mjs';
+import {
+  buildResponsibilityCardsForPolicy,
+  mergeResponsibilityCardIndicators,
+} from './responsibility-card-standardizer.mjs';
 
-export const RESPONSIBILITY_PROJECTION_VERSION = '2026-08-03-standard-maturity-deduped';
+export const RESPONSIBILITY_PROJECTION_VERSION = '2026-08-04-standard-maturity-payout-frequency';
 
 export function isCurrentResponsibilityProjection(derived = {}) {
   return String(derived?.responsibilityProjectionVersion || '').trim() === RESPONSIBILITY_PROJECTION_VERSION;
@@ -145,6 +148,10 @@ export function buildPolicyDerivedResult({
     knowledgeRecords: responsibilityCardKnowledgeRecords,
     optionalResponsibilityRecords: attached.optionalResponsibilities,
   });
+  const projectedCoverageIndicators = mergeResponsibilityCardIndicators(
+    attached.coverageIndicators,
+    responsibilityCards,
+  );
   const versionByKey = new Map((Array.isArray(productIndicatorVersions) ? productIndicatorVersions : []).map((row) => [
     String(row.productKey || row.product_key || '').trim(),
     Number(row.version || 0) || 0,
@@ -154,7 +161,7 @@ export function buildPolicyDerivedResult({
   return {
     policyId: Number(policy?.id || 0),
     productKeys,
-    coverageIndicators: Array.isArray(attached.coverageIndicators) ? attached.coverageIndicators : [],
+    coverageIndicators: projectedCoverageIndicators,
     optionalResponsibilities: Array.isArray(attached.optionalResponsibilities) ? attached.optionalResponsibilities : [],
     responsibilityCards,
     indicatorVersions,

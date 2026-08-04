@@ -11,15 +11,20 @@ const OPTIONAL_WORDING_PATTERN =
   /可选(?:保险)?责任|可选部分|可选保障|可选择的保险责任项目|必选部分和可选部分|基本部分和可选部分|基本(?:保险)?责任和可选(?:保险)?责任|可由.{0,30}决定是否投保|可选择投保/u;
 const OPTIONAL_NEGATIVE_PATTERN =
   /不含可选(?:保险)?责任|未选择投保可选(?:保险)?责任|未投保可选(?:保险)?责任|不投保可选(?:保险)?责任|不包含.{0,30}可选(?:保险)?责任/u;
-const SECTION_PREFIX_PATTERN = String.raw`(?:^|[。；;:：]\s*|(?:\d+[.．、]\s*)+|第\s*[一二三四五六七八九十\d]+\s*条\s*)`;
-const OPTIONAL_SECTION_PATTERN = new RegExp(`${SECTION_PREFIX_PATTERN}可选(?:保险)?责任\\s*([一二三四五六七八九十\\d]*)`, 'gu');
+const SECTION_PREFIX_PATTERN = String.raw`(?:^|[。；;:：]\s*|\d+(?:\s*[.．]\s*\d+)+\s*|(?:\d+[.．、]\s*)+|第\s*[一二三四五六七八九十\d]+\s*条\s*)`;
+const OPTIONAL_SECTION_PATTERN = new RegExp(`${SECTION_PREFIX_PATTERN}可选(?:保险)?责任\\s*([一二三四五六七八九十\\d]*)(?!的)`, 'gu');
 const OPTIONAL_SECTION_BOUNDARY_PATTERN = new RegExp(
-  `${SECTION_PREFIX_PATTERN}(?:可选(?:保险)?责任\\s*[一二三四五六七八九十\\d]*|基本(?:保险)?责任|责任免除|释义)`,
+  `${SECTION_PREFIX_PATTERN}(?:可选(?:保险)?责任\\s*[一二三四五六七八九十\\d]*(?!的)|基本(?:保险)?责任|责任免除|释义)`,
   'u',
 );
 
 export function normalizeLookupText(value) {
   return String(value || '').normalize('NFKC').replace(/\s+/gu, '').trim();
+}
+
+export function isOptionalResponsibilityParameterLabel(value) {
+  const text = normalizeLookupText(value);
+  return /^(?:(?:该项|本项)(?:责任的?)?|责任的|可选责任的?)?(?:基本保险金额|基本保险金|基本保额|保险金额)$/u.test(text);
 }
 
 function escapeRegExp(value) {
@@ -214,21 +219,11 @@ function extractOptionalSections(text = '') {
   const specific = matches.filter((section) => section.liability !== '可选责任');
   if (!specific.length && OPTIONAL_NEGATIVE_PATTERN.test(source)) return [];
   if (specific.length) return specific;
-  return matches.slice(0, 1).flatMap(expandGenericOptionalSection);
-}
-
-function expandGenericOptionalSection(section = {}) {
-  if (normalizeLookupText(section.liability) !== '可选责任') return [section];
-  const names = splitBenefitClauses(section.sourceExcerpt)
-    .map(extractLiability)
-    .map((name) => String(name || '').trim())
-    .filter(Boolean)
-    .filter((name, index, list) => list.indexOf(name) === index);
-  if (!names.length) return [section];
-  return names.map((liability) => ({
-    ...section,
-    liability,
-  }));
+  // An unnumbered `可选责任` heading is one selectable package. Its
+  // numbered benefits are child indicators, not independently selectable
+  // responsibilities. Independently selectable packages are expressed as
+  // `可选责任一/二/...` and are already handled by `specific` above.
+  return matches.slice(0, 1);
 }
 
 function responsibilityKey(record = {}) {
@@ -252,11 +247,16 @@ function indicatorLinkedTo(record, indicator = {}, options = {}) {
   const productName = normalizeLookupText(record.productName);
   const indicatorProductName = normalizeLookupText(indicator.productName);
   if (productName && indicatorProductName && productName !== indicatorProductName) return false;
+  if (normalizeLookupText(indicator.responsibilityScope) === 'basic') return false;
   const indicatorOptionalResponsibilityId = String(indicator?.optionalResponsibilityId || '').trim();
   if (indicatorOptionalResponsibilityId) {
     if (indicatorOptionalResponsibilityId === String(record.id || '').trim()) return true;
     if (!options.allowGenericIdRepair) return false;
     const liability = normalizeLookupText(record.liability);
+    if (liability === '可选责任') {
+      const indicatorLiability = normalizeLookupText(indicator.liability || indicator.coverageType);
+      return Boolean(indicatorLiability) && normalizeLookupText(record.sourceExcerpt).includes(indicatorLiability);
+    }
     const text = normalizeLookupText([indicator.coverageType, indicator.liability, indicator.sourceExcerpt].join(' '));
     return liability && liability !== '可选责任' && liability.length >= 2 && text.includes(liability);
   }
@@ -318,6 +318,7 @@ export function normalizeOptionalResponsibilityRecord(record = {}) {
     ),
     quantificationReason: String(record.quantificationReason || '').trim(),
     indicatorIds,
+    customerSummary: String(record.customerSummary || '').trim().slice(0, 500),
     sourceExcerpt: String(record.sourceExcerpt || '').trim().slice(0, 4000),
     sourceRecordId: String(record.sourceRecordId || '').trim(),
     sourceUrl: String(record.sourceUrl || '').trim(),
@@ -357,6 +358,7 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
       const linkedIndicators = (Array.isArray(indicators) ? indicators : []).filter((indicator) =>
         indicatorLinkedTo(base, indicator, { allowGenericIdRepair: hasGenericExistingForLinkedIndicator(indicator) })
       );
+      const linkedIndicatorIds = linkedIndicators.map((indicator) => String(indicator.id || '').trim()).filter(Boolean);
       const quantifiedIds = linkedIndicators.filter(indicatorIsQuantified).map((indicator) => String(indicator.id || '').trim()).filter(Boolean);
       const existingBySameId = existingById.get(base.id);
       const existingBySameKey = existingByKey.get(responsibilityKey(base));
@@ -377,7 +379,7 @@ export function buildOptionalResponsibilityRecords({ policy = {}, knowledgeRecor
         sourceRecordId: base.sourceRecordId || existing?.sourceRecordId || '',
         sourceUrl: base.sourceUrl || existing?.sourceUrl || '',
         sourceTitle: base.sourceTitle || existing?.sourceTitle || '',
-        indicatorIds: quantifiedIds.length ? quantifiedIds : existing?.indicatorIds || [],
+        indicatorIds: linkedIndicatorIds.length ? linkedIndicatorIds : existing?.indicatorIds || [],
         quantificationStatus: status,
         quantificationReason: status === 'pending_review'
           ? existing?.quantificationReason || '缺少可计算结构化指标'

@@ -2,10 +2,11 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { indicatorCalculationPayloadFields, normalizeIndicatorCalculation } from '../src/indicator-calculation.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const VERSION = '2026-06-21-indicator-computability';
 
 function readArg(name, fallback = '') {
@@ -181,8 +182,9 @@ export function auditIndicatorComputability({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = auditIndicatorComputability({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     writeCalculationKeys: hasFlag('write-calculation-keys'),
     sampleLimit: Number(readArg('sample-limit', 5)) || 5,
     coverageType: readArg('coverage-type', ''),

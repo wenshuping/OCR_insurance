@@ -4,10 +4,11 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const BUNDLED_PYTHON = '/Users/wenshuping/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3';
 const VERSION = '2026-06-26-official-pdf-text-refill-target-scope';
 
@@ -499,8 +500,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .split(',')
     .map((item) => trim(item))
     .filter(Boolean);
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = await refillNoIndicatorOfficialPdfText({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     companies,
     limit: Number(readArg('limit', 0)) || 0,

@@ -56,18 +56,11 @@ function optionalResponsibilityEvidenceLabel(evidence?: string) {
 }
 
 function optionalResponsibilityDisplayName(item: OptionalResponsibility) {
-  const liability = String(item.liability || item.coverageType || '').trim();
-  if (liability && liability !== '可选责任') return liability;
-  const excerpt = String(item.sourceExcerpt || '').replace(/\s+/g, ' ').trim();
-  const numberedHeading = excerpt.match(/[（(]\d+[）)]\s*([一-龥A-Za-z0-9（）()]{2,36}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u);
-  if (numberedHeading?.[1]) return numberedHeading[1].trim();
-  const inlineHeading = excerpt.match(/可选(?:保险)?责任\s*[一二三四五六七八九十\d]*\s*[:：]?\s*([一-龥A-Za-z0-9（）()]{2,36}?(?:保险金(?!额)|豁免保险费|豁免|年金|津贴))/u);
-  if (inlineHeading?.[1]) return inlineHeading[1].trim();
-  return liability || '可选责任';
+  return String(item.liability || item.title || item.coverageType || '可选责任').trim() || '可选责任';
 }
 
 function optionalResponsibilityContentText(item: OptionalResponsibility) {
-  return String(item.sourceExcerpt || '')
+  return String(item.customerSummary || item.sourceExcerpt || '')
     .replace(/\s+/gu, ' ')
     .trim();
 }
@@ -286,6 +279,8 @@ export function OptionalResponsibilityReview({
   indicators = [],
   firstPremium = 0,
   paymentPeriod = '',
+  effectiveInsuranceAmount = '',
+  accumulatedDividendInsuredAmount = '',
   disabled = false,
   saving = false,
   compact = false,
@@ -298,6 +293,8 @@ export function OptionalResponsibilityReview({
   baseAmount?: string | number;
   firstPremium?: string | number;
   paymentPeriod?: string;
+  effectiveInsuranceAmount?: string | number;
+  accumulatedDividendInsuredAmount?: string | number;
   disabled?: boolean;
   saving?: boolean;
   compact?: boolean;
@@ -414,11 +411,11 @@ export function OptionalResponsibilityReview({
               {status === 'selected' && linkedIndicators.length ? (
                 <div className="mt-2 rounded-xl bg-blue-50 px-3 py-2 ring-1 ring-blue-100">
                   <p className="text-[11px] font-black text-blue-700">量化指标（{linkedIndicators.length}项）</p>
-                  <div className="mt-1.5 space-y-1">
+                <div className="mt-1.5 space-y-1">
                     {linkedIndicators.map((indicator) => {
                       const calculation = status === 'selected'
                         && coverageAmount > 0
-                        ? resolveIndicatorAmountFromCalculation(indicator, { baseAmount: coverageAmount, firstPremium, paymentYears })
+                        ? resolveIndicatorAmountFromCalculation(indicator, { baseAmount: coverageAmount, firstPremium, paymentYears, effectiveInsuranceAmount, accumulatedDividendInsuredAmount })
                         : null;
                       const calculationText = String(calculation?.calculationText || '')
                         .replace(/基本责任保险金额|基本保险金额|基本保险金|基本保额/gu, '可选责任保险金额');

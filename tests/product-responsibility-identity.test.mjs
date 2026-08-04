@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import {
   listEquivalentResponsibilityProductRows,
+  productIdentityMatches,
   responsibilityProductIdentity,
   sameResponsibilityProduct,
 } from '../server/product-responsibility-identity.mjs';
@@ -39,7 +40,21 @@ test('keeps product versions separate', () => {
   }), false);
 });
 
-test('finds exact equivalent legacy rows without matching another version', () => {
+test('uses product keys before names and rejects a conflicting keyed product', () => {
+  const sameKeyDifferentName = productIdentityMatches(
+    { canonicalProductId: 'product-a', company: '甲', productName: '旧名称' },
+    { canonicalProductId: 'product-a', company: '乙', productName: '新名称' },
+  );
+  const conflictingKeySameName = productIdentityMatches(
+    { canonicalProductId: 'product-a', company: '甲', productName: '同名产品' },
+    { canonicalProductId: 'product-b', company: '甲', productName: '同名产品' },
+  );
+
+  assert.equal(sameKeyDifferentName, true);
+  assert.equal(conflictingKeySameName, false);
+});
+
+test('finds every legacy alias row that an approved artifact must replace', () => {
   const db = new DatabaseSync(':memory:');
   try {
     db.exec(`

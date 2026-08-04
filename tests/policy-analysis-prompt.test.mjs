@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { analyzeInsurancePolicyResponsibilities } from '../server/c-policy-analysis.service.mjs';
+import {
+  analyzeInsurancePolicyResponsibilities,
+  mergeResponsibilityConditionBranches,
+  mergeResponsibilityAnalysisWorkerRows,
+  responsibilityAnalysisWorkerPlan,
+  validateResponsibilityPreviewRows,
+} from '../server/c-policy-analysis.service.mjs';
 
 function withPolicyAnalysisEnv(fn, { smartSearchEnabled = false } = {}) {
   const previous = {
@@ -91,6 +97,356 @@ function isSkillRouterPrompt(prompt = '') {
 function isResponsibilityPrompt(prompt = '') {
   return /请只输出保险责任 coverageTable/u.test(prompt);
 }
+
+test('fresh PDF analysis treats local responsibilities and indicators as a recall reference', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    const prompts = [];
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      prompts.push(prompt);
+      return createChatResponse({
+        coverageTable: [{
+          coverageType: '养老年金',
+          scenario: '达到合同约定领取日',
+          payout: '基本保险金额×月领折算系数',
+          formulaText: '基本保险金额×月领折算系数',
+          requiredInputs: ['monthlyConversionFactor'],
+          sourceExcerpt: '每月领取金额为基本保险金额乘以月领折算系数。',
+        }],
+      });
+    };
+
+    await analyzeInsurancePolicyResponsibilities({
+      policy: {
+        company: '测试人寿',
+        name: '测试养老年金保险',
+        responsibilities: [{
+          coverageType: '养老年金',
+          scenario: '旧领取条件',
+          payout: '旧给付规则',
+          formulaText: '基本保险金额×月领折算系数',
+          requiredInputs: ['monthlyConversionFactor'],
+        }],
+      },
+      knowledgeRecords: [{
+        company: '测试人寿',
+        productName: '测试养老年金保险',
+        title: '测试养老年金保险条款',
+        url: 'https://official.test/annuity.pdf',
+        pageText: '每月领取金额为基本保险金额乘以月领折算系数。',
+        official: true,
+        sourceType: 'pdf',
+      }],
+      fetchImpl,
+    });
+
+    const primaryPrompt = prompts.find((prompt) => isResponsibilityPrompt(prompt));
+    assert.match(primaryPrompt, /本地库已有责任与指标/u);
+    assert.match(primaryPrompt, /养老年金/u);
+    assert.match(primaryPrompt, /基本保险金额×月领折算系数/u);
+    assert.match(primaryPrompt, /只能作为召回参考/u);
+    assert.match(primaryPrompt, /产品资料（后端搜索获得）/u);
+  });
+});
+
+test('responsibility worker plan uses configurable counts by insurance category', () => {
+  const emptyEnv = {};
+  assert.deepEqual(
+    responsibilityAnalysisWorkerPlan({ policy: { name: '安心定期寿险' }, env: emptyEnv }),
+    {
+      productCategory: 'term_life',
+      categoryLabel: '定期寿险',
+      featureTags: [],
+      modelTier: 'flash',
+      workerCount: 2,
+      detailRoles: ['calculation'],
+    },
+  );
+
+  for (const name of ['少儿重大疾病保险', '附加住院医疗保险', '综合意外伤害保险', '长期护理保险']) {
+    const plan = responsibilityAnalysisWorkerPlan({ policy: { name }, env: emptyEnv });
+    assert.equal(plan.workerCount, 4, name);
+    assert.deepEqual(plan.detailRoles, ['facts', 'calculation', 'topology'], name);
+  }
+
+  const medical = responsibilityAnalysisWorkerPlan({
+    policy: { name: '附加住院医疗保险' },
+    env: {
+      POLICY_ANALYSIS_WORKERS_COMPLEX: '2',
+      POLICY_ANALYSIS_WORKERS_MEDICAL: '3',
+    },
+  });
+  assert.equal(medical.workerCount, 3);
+  assert.deepEqual(medical.detailRoles, ['facts', 'calculation']);
+
+  const simple = responsibilityAnalysisWorkerPlan({
+    policy: { name: '安心定期寿险' },
+    env: { POLICY_ANALYSIS_WORKERS_SIMPLE: '1' },
+  });
+  assert.equal(simple.workerCount, 1);
+  assert.deepEqual(simple.detailRoles, []);
+
+  assert.equal(responsibilityAnalysisWorkerPlan({
+    policy: { name: '少儿重大疾病保险' },
+    env: { POLICY_ANALYSIS_WORKERS_CRITICAL_ILLNESS: '99' },
+  }).workerCount, 4);
+});
+
+test('responsibility worker merge enriches locked titles and ignores invented responsibilities', () => {
+  const merged = mergeResponsibilityAnalysisWorkerRows([
+    { coverageType: '重大疾病保险金', payout: '按合同约定给付' },
+  ], [{
+    role: 'calculation',
+    rows: [{
+      coverageType: '重大疾病保险金',
+      formulaText: '基本保险金额×100%',
+      requiredInputs: ['basic_sum_insured'],
+    }, {
+      coverageType: '等待期',
+      formulaText: '不承担责任',
+    }],
+  }, {
+    role: 'facts',
+    rows: [{
+      coverageType: '重大疾病保险金',
+      triggerCondition: '初次确诊合同约定的重大疾病',
+    }],
+  }]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].coverageType, '重大疾病保险金');
+  assert.equal(merged[0].formulaText, '基本保险金额×100%');
+  assert.deepEqual(merged[0].requiredInputs, ['basic_sum_insured']);
+  assert.equal(merged[0].triggerCondition, '初次确诊合同约定的重大疾病');
+});
+
+test('responsibility worker merge keeps duplicate-title condition rows aligned by source order', () => {
+  const merged = mergeResponsibilityAnalysisWorkerRows([
+    { coverageType: '身故保险金', scenario: '等待期内' },
+    { coverageType: '身故保险金', scenario: '等待期后' },
+  ], [{
+    role: 'calculation',
+    rows: [
+      { coverageType: '身故保险金', payout: '给付实际交纳的保险费' },
+      { coverageType: '身故保险金', payout: '给付年度有效保额' },
+    ],
+  }]);
+
+  assert.equal(merged[0].payout, '给付实际交纳的保险费');
+  assert.equal(merged[1].payout, '给付年度有效保额');
+});
+
+test('same responsibility conditions merge into one customer row instead of duplicate cards', () => {
+  const merged = mergeResponsibilityConditionBranches([
+    {
+      coverageType: '身故保险金',
+      scenario: '90日内非意外身故',
+      payout: '给付实际交纳的保险费',
+      note: '合同终止',
+      formulaText: '实际交纳的保险费',
+      requiredInputs: ['totalPaidPremium'],
+    },
+    {
+      coverageType: '身故保险金',
+      scenario: '意外身故或90日后非意外身故',
+      payout: '给付身故时的年度有效保额',
+      note: '合同终止',
+      formulaText: '基本保险金额÷10000×年度有效保额基数',
+      requiredInputs: ['basicAmount', 'policyScheduleTable'],
+    },
+    {
+      coverageType: '身体全残保险金',
+      scenario: '达到条款约定的身体全残状态',
+      payout: '按条款约定给付',
+      note: '合同终止',
+    },
+  ]);
+
+  assert.equal(merged.length, 2);
+  assert.match(merged[0].scenario, /情形1：90日内非意外身故/u);
+  assert.match(merged[0].scenario, /情形2：意外身故或90日后非意外身故/u);
+  assert.deepEqual(merged[0].requiredInputs, ['totalPaidPremium', 'basicAmount', 'policyScheduleTable']);
+  assert.equal(validateResponsibilityPreviewRows(merged).ok, true);
+});
+
+test('DeepSeek v4 runtime uses one primary plus configured specialist workers', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    process.env.DEEPSEEK_MODEL = 'deepseek-v4-flash';
+    const run = async ({ productName, responsibilityTitle, expectedWorkerCount }) => {
+      const prompts = [];
+      const fetchImpl = async (_url, options = {}) => {
+        const prompt = requestPrompt(options);
+        prompts.push(prompt);
+        if (isSkillRouterPrompt(prompt)) {
+          return createChatResponse({
+            documentType: 'responsibility_page',
+            skills: ['responsibility_extraction', 'indicator_quantification'],
+            confidence: 0.99,
+          });
+        }
+        if (/专项复核worker/u.test(prompt)) {
+          return createChatResponse({
+            coverageTable: [{
+              coverageType: responsibilityTitle,
+              triggerCondition: `达到${responsibilityTitle}约定条件`,
+              formulaText: '基本保险金额×100%',
+              requiredInputs: ['basic_sum_insured'],
+              responsibilityScope: 'base',
+            }],
+          });
+        }
+        return createChatResponse({
+          coverageTable: [{
+            coverageType: responsibilityTitle,
+            scenario: `发生${responsibilityTitle}保险事故`,
+            payout: '按合同约定给付',
+            sourceExcerpt: `${responsibilityTitle}按合同约定给付。`,
+          }],
+        });
+      };
+
+      const result = await analyzeInsurancePolicyResponsibilities({
+        policy: { company: '中国平安保险', name: productName },
+        knowledgeRecords: [{
+          company: '中国平安保险',
+          productName,
+          title: `${productName}条款`,
+          url: 'https://life.pingan.com/products/worker-test-terms.pdf',
+          pageText: `保险责任 ${responsibilityTitle} 按合同约定给付。`,
+          official: true,
+          sourceType: 'pdf',
+        }],
+        fetchImpl,
+      });
+
+      assert.equal(result.modelOutput.workerPlan.workerCount, expectedWorkerCount);
+      assert.equal(result.modelOutput.workers.length, expectedWorkerCount - 1);
+      assert.ok(result.modelOutput.workers.every((worker) => worker.status === 'passed'));
+      assert.equal(prompts.length, expectedWorkerCount + 1);
+      assert.equal(result.coverageTable.length, 1);
+      return result;
+    };
+
+    const simple = await run({
+      productName: '平安安心定期寿险',
+      responsibilityTitle: '身故或全残保险金',
+      expectedWorkerCount: 2,
+    });
+    assert.equal(simple.coverageTable[0].formulaText, '基本保险金额×100%');
+
+    const complex = await run({
+      productName: '平安少儿重大疾病保险',
+      responsibilityTitle: '重大疾病保险金',
+      expectedWorkerCount: 4,
+    });
+    assert.equal(complex.coverageTable[0].triggerCondition, '达到重大疾病保险金约定条件');
+  });
+});
+
+test('an empty specialist response does not discard the primary responsibility result', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    process.env.DEEPSEEK_MODEL = 'deepseek-v4-flash';
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: ['responsibility_extraction', 'indicator_quantification'],
+          confidence: 0.99,
+        });
+      }
+      if (/专项复核worker/u.test(prompt)) return createChatResponse('');
+      return createChatResponse({
+        coverageTable: [{
+          coverageType: '身故保险金',
+          scenario: '被保险人身故',
+          payout: '按合同约定给付',
+          sourceExcerpt: '身故保险金按合同约定给付。',
+        }],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: { company: '中国平安保险', name: '平安安心定期寿险' },
+      knowledgeRecords: [{
+        company: '中国平安保险',
+        productName: '平安安心定期寿险',
+        title: '平安安心定期寿险条款',
+        url: 'https://life.pingan.com/products/worker-empty-terms.pdf',
+        pageText: '保险责任 身故保险金 按合同约定给付。',
+        official: true,
+        sourceType: 'pdf',
+      }],
+      fetchImpl,
+    });
+
+    assert.equal(result.coverageTable.length, 1);
+    assert.equal(result.coverageTable[0].coverageType, '身故保险金');
+    assert.equal(result.modelOutput.workers[0].status, 'failed');
+    assert.equal(result.modelOutput.workers[0].errorCode, 'POLICY_ANALYSIS_EMPTY');
+  });
+});
+
+test('responsibility validation returns failure reasons to the model for at most five attempts', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    process.env.DEEPSEEK_MODEL = 'deepseek-v4-flash';
+    let repairCalls = 0;
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: ['responsibility_extraction', 'indicator_quantification'],
+          confidence: 0.99,
+        });
+      }
+      if (/保险责任校验修复worker/u.test(prompt)) {
+        repairCalls += 1;
+        assert.match(prompt, /NON_RESPONSIBILITY_TITLE/u);
+        return createChatResponse({
+          coverageTable: [{
+            coverageType: repairCalls === 4 ? '身故保险金' : '等待期',
+            scenario: '被保险人身故',
+            payout: '按合同约定给付',
+            note: '具体以合同为准',
+          }],
+        });
+      }
+      if (/专项复核worker/u.test(prompt)) {
+        return createChatResponse({ coverageTable: [] });
+      }
+      return createChatResponse({
+        coverageTable: [{
+          coverageType: '等待期',
+          scenario: '合同生效后等待90日',
+          payout: '等待期内不承担保险责任',
+          note: '等待期不是保险责任',
+        }],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: { company: '中国平安保险', name: '平安安心定期寿险' },
+      knowledgeRecords: [{
+        company: '中国平安保险',
+        productName: '平安安心定期寿险',
+        title: '平安安心定期寿险条款',
+        url: 'https://life.pingan.com/products/validation-repair-terms.pdf',
+        pageText: '保险责任 身故保险金 被保险人身故，按合同约定给付。等待期为90日。',
+        official: true,
+        sourceType: 'pdf',
+      }],
+      fetchImpl,
+    });
+
+    assert.equal(repairCalls, 4);
+    assert.equal(result.modelOutput.responsibilityValidation.status, 'passed');
+    assert.equal(result.modelOutput.responsibilityValidation.maxAttempts, 5);
+    assert.equal(result.modelOutput.responsibilityValidation.attempts.length, 5);
+    assert.equal(result.modelOutput.responsibilityValidation.repairWorkers.length, 4);
+    assert.equal(result.coverageTable[0].coverageType, '身故保险金');
+  });
+});
 
 test('policy analysis searches the current New China disclosure page when the old entry misses the product', async () => {
   await withPolicyAnalysisEnv(
@@ -349,14 +705,74 @@ test('policy analysis uses DeepSeek skill router to compile the next responsibil
     assert.match(prompts[0], /policy_analysis_skill_router/u);
     assert.match(prompts[1], /uploaded_ocr_fallback/u);
     assert.match(prompts[1], /indicator_quantification/u);
+    assert.match(prompts[1], /critical_illness_domain/u);
     assert.match(prompts[1], /优先基于上传OCR逐条拆分保险责任/u);
     assert.equal(result.modelOutput.skillPlan.selectedBy, 'deepseek');
     assert.deepEqual(result.modelOutput.skillPlan.skills, [
       'responsibility_extraction',
       'indicator_quantification',
       'uploaded_ocr_fallback',
+      'critical_illness_domain',
     ]);
     assert.equal(result.coverageTable[0].coverageType, '重大疾病保险金');
+  });
+});
+
+test('policy analysis always adds the deterministic product domain skill', async () => {
+  await withPolicyAnalysisEnv(async () => {
+    const prompts = [];
+    const fetchImpl = async (_url, options = {}) => {
+      const prompt = requestPrompt(options);
+      prompts.push(prompt);
+      if (isSkillRouterPrompt(prompt)) {
+        return createChatResponse({
+          documentType: 'responsibility_page',
+          skills: [
+            'responsibility_extraction',
+            'indicator_quantification',
+            'official_rag_grounding',
+          ],
+          promptDirectives: [],
+          reason: '官方责任条款可用',
+        });
+      }
+      return createChatResponse({
+        coverageTable: [{
+          coverageType: '身故保险金',
+          scenario: '被保险人身故',
+          payout: '按账户价值与基本保险金额的较大者给付',
+          formulaText: '身故保险金 = max(账户价值, 基本保险金额)',
+          basis: '账户价值、基本保险金额',
+          requiredInputs: ['accountValue', 'basicSumInsured'],
+          sourceExcerpt: '身故保险金为账户价值与基本保险金额的较大者。',
+        }],
+      });
+    };
+
+    const result = await analyzeInsurancePolicyResponsibilities({
+      policy: {
+        company: '中国平安',
+        name: '平安招财宝终身寿险（万能型）',
+      },
+      knowledgeRecords: [{
+        company: '中国平安',
+        productName: '平安招财宝终身寿险（万能型）',
+        title: '平安招财宝终身寿险（万能型）条款',
+        url: 'https://life.pingan.com/test.pdf',
+        pageText: '最低保证利率为年利率1.75%。结算利率按月公布。趸交保险费扣除初始费用后进入保单账户。部分领取后账户价值相应减少。身故保险金为账户价值与基本保险金额的较大者。',
+        official: true,
+        evidenceLevel: 'insurer_official',
+      }],
+      fetchImpl,
+    });
+
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1], /universal_account_domain/u);
+    assert.match(prompts[1], /最低保证利率/u);
+    assert.match(prompts[1], /初始费用/u);
+    assert.match(prompts[1], /部分领取/u);
+    assert.equal(result.modelOutput.skillPlan.selectedBy, 'deepseek');
+    assert.ok(result.modelOutput.skillPlan.skills.includes('universal_account_domain'));
   });
 });
 

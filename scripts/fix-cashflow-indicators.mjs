@@ -2,11 +2,15 @@
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
-const DB_PATH = args[0] || process.env.DB_PATH || path.join(projectRoot, '.runtime/policy-ocr.sqlite');
+const DB_PATH = resolvePolicyOcrWriteDatabasePath({
+  projectRoot,
+  requestedPath: args[0] || process.env.DB_PATH || '',
+});
 const DRY_RUN = process.argv.includes('--dry-run');
 
 function fixChangxingDiseaseDeath(db) {

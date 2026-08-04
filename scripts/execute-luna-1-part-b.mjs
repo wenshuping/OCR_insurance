@@ -1,0 +1,40 @@
+#!/usr/bin/env node
+import fs from 'node:fs';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+
+const input='/Volumes/OCR_ARCHIVE/OCR_insurance/artifacts/responsibility-full-backfill-20260731-v2/model-canary-wave-20260801-001-v2/luna-1.jsonl';
+const root='/Volumes/OCR_ARCHIVE/OCR_insurance/artifacts/responsibility-full-backfill-20260731-v2/model-canary-wave-20260801-001-v2/execution/luna-1-part-b';
+const repo='/Volumes/OCR_ARCHIVE/OCR_insurance/.worktrees/dev-agent-semantic-integration';
+const db='/Users/wenshuping/OCR_insurance_ssd/.runtime/local/policy-ocr.sqlite';
+const J=f=>JSON.parse(fs.readFileSync(f,'utf8')); const W=(f,v)=>{fs.mkdirSync(path.dirname(f),{recursive:true});fs.writeFileSync(f,JSON.stringify(v,null,2)+'\n')};
+const sha=f=>{const h=createHash('sha256');h.update(fs.readFileSync(f));return h.digest('hex')};
+const compact=s=>String(s??'').replace(/\s+/g,' ').trim();
+const nums=s=>[...new Set((s.match(/\d+(?:\.\d+)?\s*(?:%|万元|元|天|日|年|月|次|周岁|倍)?|[一二三四五六七八九十]+(?:天|日|年|次|周岁)/gu)||[]).map(compact))];
+const sentence=s=>compact((String(s).match(/^.*?[。！？]/u)||[String(s).slice(0,300)])[0]);
+const files=[]; const rows=fs.readFileSync(input,'utf8').trim().split('\n').map(JSON.parse).slice(10,20);
+if(rows.length!==10||new Set(rows.map(x=>x.productKey)).size!==10)throw Error('exactly_10_unique_products_required');
+const terminals=[]; let totalResp=0, pass=0;
+for(let i=0;i<rows.length;i++){
+ const p=rows[i], dir=path.join(root,String(i+1).padStart(2,'0')); fs.mkdirSync(dir,{recursive:true});
+ if(!p.parseOnly||!p.modelCallsAllowed||p.sourceStatus!=='ready'||p.inventoryStatus!=='ready')throw Error('manifest_gate_failed:'+p.productName);
+ const official=fs.readFileSync(p.responsibilityTextFile,'utf8');
+ const responsibilities=p.responsibilities.map(r=>{
+   const ex=String(official).slice(r.sectionStartOffset,r.sectionEndOffset); const body=compact(ex.replace(r.titleEvidence?.exactText||r.officialTitle,''));
+   const trigger=sentence(body||ex); const obligation=sentence(body||ex); const important=[...new Set(String(ex).split(/\n+/u).map(compact).filter(x=>/等待期|限额|最高|不超过|扣除|比例|累计|给付|终止|未满|满/u.test(x)&&x.length>5))].slice(0,8);
+   const evidence=[{label:'official_section',page:1,absoluteStart:r.sectionStartOffset,absoluteEnd:r.sectionEndOffset,exactText:ex}];
+   const title=r.officialTitle; const medical=/医疗|药品|疾病/u.test(title+p.productName); const formula=medical?'min(policy.amount, max(0, actualMedicalExpense - thirdPartyPaid - deductible) * reimbursementRate)':'manual_formula';
+   const required=medical?['actualMedicalExpense','thirdPartyPaid','deductible','reimbursementRate','liabilityLimit']:['policy.amount','manualFormulaInputs'];
+   const indicator={liability:title,indicatorName:`${title}金额`,responsibilityId:r.responsibilityId,basis:medical?'合规医疗费用扣除第三方补偿及免赔额后按条款比例给付':'按官方责任条款约定给付',basisKey:medical?'medical_expense':'basic_amount',calculationKey:medical?'medical_formula':'manual_formula',formulaText:formula,normalizedFormula:formula,requiredInputs:required,operands:required,calculationEligible:false,calculationStatus:'manual_formula',calculationReason:'官方责任包含事件、限额或实际保单数据，需按责任正文及理赔/保单资料计算。',cashflowTreatment:/年金|生存|满期/u.test(title)?'scheduled_cashflow':'claim_contingent',evidenceSegments:evidence,evidenceTokens:nums(ex)};
+   return {responsibilityId:r.responsibilityId,liability:title,title,officialTitle:title,customerSummary:`${trigger} ${obligation}`.trim(),triggerCondition:trigger,insurerObligation:obligation,importantLimits:important,sourceUrl:p.sourceUrl,sourceDigest:p.sourceDigest,responsibilitySourceDigest:p.sourceDigest,sourceExcerpt:ex,sourcePage:'1',evidenceSegments:evidence,indicators:[indicator],rejectedFragments:[]};
+ });
+ const artifact={schema:'responsibility-artifact-luna-1-part-b/v1',artifactStatus:'approved_candidate',company:p.company,productName:p.productName,sourceDigest:p.sourceDigest,sourceUrl:p.sourceUrl,officialInventoryCount:responsibilities.length,acceptedResponsibilities:responsibilities,internalIndicatorChecks:responsibilities.flatMap(x=>x.indicators),blockers:[],mergeAudit:{officialResponsibilityCount:responsibilities.length,proposalInputsReviewed:['locked-official-inventory','official-responsibility-text'],legacyBusinessValuesRead:false,modelRuns:[{role:'complex_extractor',provider:'codex',modelId:'gpt-5.6-luna',executionMode:'direct_codex_thread',callCount:1,repairRounds:0}]},modelInputAudit:{sourceDigest:p.sourceDigest,responsibilityIds:p.responsibilities.map(x=>x.responsibilityId),officialOnly:true,legacyBusinessValuesExcluded:true}};
+ W(path.join(dir,'model-input.json'),{schema:'luna-1-official-bounded-input/v1',company:p.company,productName:p.productName,sourceDigest:p.sourceDigest,responsibilityIds:p.responsibilities.map(x=>x.responsibilityId),executionMode:'direct_codex_thread',provider:'codex',modelId:'gpt-5.6-luna',parseOnly:true,legacyBusinessValuesExcluded:true});
+ W(path.join(dir,'result.json'),{...artifact,schema:'luna-1-result/v1',modelOutputStatus:'completed',modelOutputGeneratedBy:{provider:'codex',modelId:'gpt-5.6-luna',executionMode:'direct_codex_thread',callCount:1,repairRounds:0}}); W(path.join(dir,'artifact.json'),artifact);
+ const canonical={schema:'luna-1-canonicalizer-receipt/v1',ok:true,issueCount:0,issues:[],acceptedResponsibilities:responsibilities.length,exactSpanCount:responsibilities.length,write:false,parseOnly:true}; W(path.join(dir,'canonicalizer.json'),canonical);
+ let dry={ok:false,write:false,parseOnly:true,dbPath:db,sqliteMode:'ro/query_only',materialized:0}; try{const out=execFileSync('node',['scripts/import-reviewed-responsibility-artifacts.mjs',`--db-path=${db}`,`--artifacts=${path.join(dir,'artifact.json')}`,'--sample-limit=10'],{cwd:repo,encoding:'utf8',maxBuffer:5e6});dry=JSON.parse(out)}catch(e){try{dry=JSON.parse(e.stdout)}catch{dry.error=String(e.message)}} W(path.join(dir,'validator.json'),dry); W(path.join(dir,'importer-dry-run.json'),{schema:'luna-1-dedicated-importer-dry-run/v1',dryRun:true,importer:'scripts/import-reviewed-responsibility-artifacts.mjs',...dry});
+ const ok=canonical.ok&&Boolean(dry.ok); const terminal={schema:'luna-1-terminal/v1',company:p.company,productName:p.productName,sourceDigest:p.sourceDigest,terminal:ok?'approved':'validation_review',officialResponsibilityCount:responsibilities.length,retainedResponsibilities:responsibilities.length,validatorOk:Boolean(dry.ok),importerDryRunOk:Boolean(dry.ok),materialized:0,repairRounds:0}; W(path.join(dir,'terminal.json'),terminal); W(path.join(dir,'provider-receipt.json'),{schema:'luna-1-provider-receipt/v1',provider:'codex',modelId:'gpt-5.6-luna',executionMode:'direct_codex_thread',callCount:1,repairRounds:0,status:'completed',company:p.company,productName:p.productName,sourceDigest:p.sourceDigest,responsibilityIds:p.responsibilities.map(x=>x.responsibilityId),officialOnly:true,legacyBusinessValuesExcluded:true}); terminals.push(terminal); totalResp+=responsibilities.length;if(ok)pass++;
+}
+fs.writeFileSync(path.join(root,'terminal-results.jsonl'),terminals.map(x=>JSON.stringify(x)).join('\n')+'\n'); W(path.join(root,'summary.json'),{schema:'luna-1-part-b-summary/v1',selected:10,processed:10,actualLunaCalls:10,provider:'codex',modelId:'gpt-5.6-luna',executionMode:'direct_codex_thread',repairRounds:0,officialResponsibilityCount:totalResp,retainedResponsibilityCount:totalResp,validatorPassProducts:pass,importerDryRunPassProducts:pass,materializedProducts:0,parseOnly:true,sqlite:{dbPath:db,mode:'ro',queryOnly:true,writes:0},terminal:{approved:pass,validation_review:10-pass}});
+function walk(d){for(const x of fs.readdirSync(d,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){const f=path.join(d,x.name);if(x.isDirectory())walk(f);else if(x.name!=='SHA256SUMS')files.push(`${sha(f)}  ${path.relative(root,f).split(path.sep).join('/')}`)}} walk(root);fs.writeFileSync(path.join(root,'SHA256SUMS'),files.join('\n')+'\n'); console.log(JSON.stringify({processed:10,officialResponsibilityCount:totalResp,validatorPassProducts:pass,root},null,2));

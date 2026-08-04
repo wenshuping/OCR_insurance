@@ -11,8 +11,11 @@ import {
   evidenceVerificationFields,
 } from '../evidence-classification.service.mjs';
 import {
+  productIdentityMatches,
   responsibilityCompanyIdentity,
 } from '../product-responsibility-identity.mjs';
+import { loadProjectionKnowledgeRecordsForPolicy } from '../policy-knowledge-projection.mjs';
+import { standardizeResponsibilityIndicator } from '../responsibility-card-standardizer.mjs';
 
 function trim(value) {
   return String(value || '').trim();
@@ -81,6 +84,53 @@ function nowMs() {
 
 function elapsedMs(startedAt) {
   return Math.max(0, nowMs() - startedAt);
+}
+
+function responsibilityCardProjectionQuality(cards = []) {
+  return (Array.isArray(cards) ? cards : []).reduce((score, card) => {
+    const indicators = Array.isArray(card?.indicators) ? card.indicators : [];
+    const status = trim(card?.calculationStatus || card?.calculation_status);
+    const hasFormula = indicators.some((indicator) => trim(
+      indicator?.formulaText || indicator?.formula || indicator?.normalizedFormula,
+    ));
+    return score
+      + (trim(card?.title) ? 1 : 0)
+      + indicators.length * 4
+      + (hasFormula ? 3 : 0)
+      + (['calculable', 'needs_table', 'claim_contingent', 'waiver_only'].includes(status) ? 1 : 0);
+  }, 0);
+}
+
+export function selectResponsibilityCardProjection(existingCards = [], rebuiltCards = []) {
+  const existing = Array.isArray(existingCards) ? existingCards : [];
+  const rebuilt = Array.isArray(rebuiltCards) ? rebuiltCards : [];
+  if (!rebuilt.length) return existing;
+  return responsibilityCardProjectionQuality(rebuilt) > responsibilityCardProjectionQuality(existing)
+    ? rebuilt
+    : existing;
+}
+
+export function refreshExistingResponsibilityCardProjection(card = {}, policy = {}) {
+  const originalIndicators = Array.isArray(card?.indicators) ? card.indicators : [];
+  if (!originalIndicators.length) return card;
+  const indicators = originalIndicators.map((indicator) => standardizeResponsibilityIndicator(indicator, { policy }));
+  const primary = indicators.find((indicator) => compact(indicator?.liability) === compact(card?.title)) || indicators[0];
+  const policyParameterBranch = indicators.some((indicator) => (
+    trim(indicator?.branchSemanticContract) === 'official-policy-parameter-branches'
+      && trim(indicator?.cashflowTreatment) === 'scheduled_cashflow'
+  ));
+  const payoutSummary = trim(card?.payoutSummary);
+  const legacyPayoutSummary = !payoutSummary || /^(?:条款载明基准|以正式条款为准)$/u.test(payoutSummary);
+  return {
+    ...card,
+    indicators,
+    ...(legacyPayoutSummary && trim(primary?.formulaText) ? { payoutSummary: trim(primary.formulaText) } : {}),
+    ...(policyParameterBranch ? {
+      cashflowTreatment: 'scheduled_cashflow',
+      calculationStatus: 'calculable',
+      calculationReason: '',
+    } : {}),
+  };
 }
 
 export function createResponsibilityRoutes(context) {
@@ -153,6 +203,20 @@ export function createResponsibilityRoutes(context) {
       records: state?.knowledgeRecords || [],
       officialDomainProfiles: buildEffectiveOfficialDomainProfiles(state),
     }).records || [];
+  }
+
+  function projectionKnowledgeRecordsForPolicy(policyDraft) {
+    const filtered = filteredKnowledgeRecordsForPolicy(policyDraft);
+    const stateRecords = (state?.knowledgeRecords || []).filter((record) => (
+      productIdentityMatches(record, policyDraft)
+      && (trim(record?.url) || trim(record?.pageText) || trim(record?.snippet))
+    ));
+    return loadProjectionKnowledgeRecordsForPolicy({
+      db,
+      policy: policyDraft,
+      filteredRecords: filtered,
+      stateRecords,
+    });
   }
 
   function withFallbackCardSources(cards = [], policyDraft = {}) {
@@ -445,18 +509,22 @@ export function createResponsibilityRoutes(context) {
     }
   }
 
-  function hydrateExistingCardIndicators(cards = [], coverageIndicators = []) {
+  function hydrateExistingCardIndicators(cards = [], coverageIndicators = [], policyDraft = {}) {
     if (!Array.isArray(cards) || !cards.length) return [];
     const indicators = Array.isArray(coverageIndicators) ? coverageIndicators : [];
     return cards.map((card) => {
-      if (Array.isArray(card?.indicators) && card.indicators.length) return card;
+      if (Array.isArray(card?.indicators) && card.indicators.length) {
+        return refreshExistingResponsibilityCardProjection(card, policyDraft);
+      }
       const title = compact(card?.title);
       if (!title) return card;
       const matchedIndicators = indicators.filter((indicator) => {
         const liability = compact(indicator?.liability || indicator?.coverageType);
         return liability && (liability === title || liability.includes(title) || title.includes(liability));
       });
-      return matchedIndicators.length ? { ...card, indicators: matchedIndicators } : card;
+      return matchedIndicators.length
+        ? refreshExistingResponsibilityCardProjection({ ...card, indicators: matchedIndicators }, policyDraft)
+        : card;
     });
   }
 
@@ -486,11 +554,16 @@ export function createResponsibilityRoutes(context) {
   }
 
   function existingResponsibilityCardAnalysis(policyDraft = {}) {
+    const knowledgeRecords = projectionKnowledgeRecordsForPolicy(policyDraft);
+    const projectionCompany = trim(knowledgeRecords[0]?.company) || trim(policyDraft.company);
+    const projectionPolicy = projectionCompany === trim(policyDraft.company)
+      ? policyDraft
+      : { ...policyDraft, company: projectionCompany };
     const coverageIndicators = typeof findPolicyCoverageIndicators === 'function'
-      ? findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || [])
+      ? findPolicyCoverageIndicators(projectionPolicy, state?.insuranceIndicatorRecords || [])
       : [];
     const responsibilityCards = withFallbackCardSources(
-      hydrateExistingCardIndicators(loadExistingProductResponsibilityCards(policyDraft), coverageIndicators),
+      hydrateExistingCardIndicators(loadExistingProductResponsibilityCards(policyDraft), coverageIndicators, projectionPolicy),
       policyDraft,
     );
     if (!responsibilityCards.length) return null;
@@ -557,32 +630,36 @@ export function createResponsibilityRoutes(context) {
 
   function attachResponsibilityCards(analysis, policyDraft, optionalResponsibilityRecords = state?.optionalResponsibilityRecords) {
     if (!analysis || typeof analysis !== 'object') return analysis;
-    if (Array.isArray(analysis.responsibilityCards)) {
-      return {
-        ...analysis,
-        responsibilityCards: withFallbackCardSources(analysis.responsibilityCards, policyDraft),
-      };
-    }
+    const knowledgeRecords = projectionKnowledgeRecordsForPolicy(policyDraft);
+    const projectionCompany = trim(knowledgeRecords[0]?.company) || trim(policyDraft.company);
+    const projectionPolicy = projectionCompany === trim(policyDraft.company)
+      ? policyDraft
+      : { ...policyDraft, company: projectionCompany };
     const coverageIndicators = typeof findPolicyCoverageIndicators === 'function'
       ? findPolicyCoverageIndicators(policyDraft, state?.insuranceIndicatorRecords || [])
       : [];
+    const suppliedResponsibilityCards = Array.isArray(analysis.responsibilityCards)
+      && analysis.responsibilityCards.length > 0;
     const existingResponsibilityCards = hydrateExistingCardIndicators(
-      loadExistingProductResponsibilityCards(policyDraft),
+      suppliedResponsibilityCards
+        ? analysis.responsibilityCards
+        : loadExistingProductResponsibilityCards(policyDraft),
       coverageIndicators,
+      projectionPolicy,
     );
-    const rawResponsibilityCards = existingResponsibilityCards.length
-      ? existingResponsibilityCards
-      : (
-          typeof buildResponsibilityCardsForPolicy === 'function'
-            ? buildResponsibilityCardsForPolicy({
-                policy: policyDraft,
-                responsibilities: analysis.coverageTable,
-                coverageIndicators,
-                knowledgeRecords: filteredKnowledgeRecordsForPolicy(policyDraft),
-                optionalResponsibilityRecords: optionalResponsibilityRecords || [],
-              })
-            : []
-        );
+    const rebuiltResponsibilityCards = typeof buildResponsibilityCardsForPolicy === 'function'
+      ? buildResponsibilityCardsForPolicy({
+          policy: projectionPolicy,
+          responsibilities: analysis.coverageTable,
+          coverageIndicators,
+          knowledgeRecords,
+          optionalResponsibilityRecords: optionalResponsibilityRecords || [],
+        })
+      : [];
+    const rawResponsibilityCards = selectResponsibilityCardProjection(
+      existingResponsibilityCards,
+      rebuiltResponsibilityCards,
+    );
     const responsibilityCards = withFallbackCardSources(rawResponsibilityCards, policyDraft);
     const checkedCoverageTable = typeof responsibilityRowsFromCards === 'function'
       ? responsibilityRowsFromCards(responsibilityCards, { optionalResponsibilities: analysis.optionalResponsibilities || [] })
@@ -600,7 +677,9 @@ export function createResponsibilityRoutes(context) {
       }),
       coverageTable: effectiveCoverageTable,
       responsibilityCards,
-      rawAnalysis: existingResponsibilityCards.length
+      rawAnalysis: !suppliedResponsibilityCards
+        && rawResponsibilityCards === existingResponsibilityCards
+        && existingResponsibilityCards.length
         ? {
             ...(analysis.rawAnalysis && typeof analysis.rawAnalysis === 'object' ? analysis.rawAnalysis : {}),
             reusedExistingResponsibilityCards: true,
@@ -912,7 +991,7 @@ export function createResponsibilityRoutes(context) {
     const analysis = existingCardAnalysis || await assistantAnalyzer({ scan, preferLocalKnowledgeAnswer, allowExternalReferences });
     const officialDomainProfiles = buildEffectiveOfficialDomainProfiles(state);
     const isLocalResponsibilityText = analysis?.rawAnalysis?.generatedBy === 'local_knowledge_fast_path';
-    const analysisWithCards = allowExternalReferences || existingCardAnalysis || isLocalResponsibilityText
+    const analysisWithCards = allowExternalReferences
       ? analysis
       : attachResponsibilityCards(analysis, policy);
     const effectiveAnalysis = allowExternalReferences ? withExternalReviewWarning(analysisWithCards) : analysisWithCards;
@@ -1067,7 +1146,10 @@ export function createResponsibilityRoutes(context) {
     });
   });
 
-  async function queryCustomerResponsibilitySummary({ company, name, canonicalProductId }, { privateSourceRecords = [] } = {}) {
+  async function queryCustomerResponsibilitySummary(
+    { company, name, canonicalProductId },
+    { privateSourceRecords = [], policyDerivedResult = null } = {},
+  ) {
     const routeStartedAt = nowMs();
     const privateRecord = privateSourceRecords[0];
     const input = normalizeResponsibilityQueryInput(privateRecord ? {
@@ -1095,6 +1177,11 @@ export function createResponsibilityRoutes(context) {
         productName: input.name,
         canonicalProductId,
         sourceRecords: summaryState.knowledgeRecords,
+        requireSourceDigest: true,
+        responsibilityCards: policyDerivedResult?.status === 'ready'
+          && Array.isArray(policyDerivedResult.responsibilityCards)
+          ? policyDerivedResult.responsibilityCards
+          : null,
         requireSourceDigest: true,
       });
       if (cardSummary) {
@@ -1162,6 +1249,7 @@ export function createResponsibilityRoutes(context) {
       const input = normalizeResponsibilityQueryInput(req.body);
       const policyId = Number(req.body?.policyId || 0);
       let privateSourceRecords = [];
+      let policyDerivedResult = null;
       if (policyId > 0) {
         const user = resolveAuthUser(req, state);
         const guestId = normalizeGuestId(req.body?.guestId);
@@ -1177,6 +1265,9 @@ export function createResponsibilityRoutes(context) {
         if (!policy) {
           return res.status(404).json({ ok: false, code: 'POLICY_NOT_FOUND', message: '保单不存在' });
         }
+        policyDerivedResult = (state.policyDerivedResults || []).find((row) => (
+          Number(row?.policyId) === policyId
+        )) || null;
         const owner = user ? { userId: Number(user.id), guestId: '' } : { userId: null, guestId };
         privateSourceRecords = (state.knowledgeRecords || [])
           .filter((record) => isCustomerUploadRecord(record))
@@ -1189,7 +1280,7 @@ export function createResponsibilityRoutes(context) {
       const result = await queryCustomerResponsibilitySummary({
         ...input,
         canonicalProductId: trim(req.body?.canonicalProductId),
-      }, { privateSourceRecords });
+      }, { privateSourceRecords, policyDerivedResult });
       res.json(result);
     } catch (error) {
       sendError(res, error, 400);

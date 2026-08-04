@@ -1,0 +1,67 @@
+{
+  "fixtureId": "term-life-combined-death-total-disability-branches",
+  "title": "身故或身体全残同一责任下的原因分支",
+  "sourceText": "保险期间为十年。身故或身体全残保险金：被保险人因意外伤害身故或身体全残，我们按基本保险金额给付身故或身体全残保险金；被保险人因疾病身故或身体全残，我们按基本保险金额给付身故或身体全残保险金。本合同终止。",
+  "expected": {
+    "semanticFamily": "term_life",
+    "contractTopology": "standalone",
+    "focusedShape": "combined_death_total_disability_cause_branches",
+    "topology": {
+      "mainContractDependency": null,
+      "groupMembership": null,
+      "sumAssuredReference": {
+        "kind": "contract_amount"
+      },
+      "terminationLinkage": [
+        {
+          "event": "身故或身体全残保险金给付",
+          "effect": "contract_terminates"
+        }
+      ]
+    },
+    "responsibilities": [
+      {
+        "responsibilityId": "death_or_total_disability_benefit",
+        "liability": "身故或身体全残保险金",
+        "responsibilityKind": "benefit",
+        "coverageAggregation": "include",
+        "triggerCondition": "被保险人身故或身体全残",
+        "insurerObligation": "按基本保险金额给付身故或身体全残保险金",
+        "normalizedFormula": "piecewise(event_cause, term_sum_assured)",
+        "requiredInputs": [
+          "event_cause",
+          "term_sum_assured"
+        ],
+        "indicatorDecisionCount": 1,
+        "branches": [
+          {
+            "branchId": "accident_cause",
+            "conditionText": "被保险人因意外伤害身故或身体全残",
+            "formulaText": "按基本保险金额给付身故或身体全残保险金",
+            "basisKey": "basic_amount",
+            "requiredInputs": [
+              "term_sum_assured"
+            ]
+          },
+          {
+            "branchId": "disease_cause",
+            "conditionText": "被保险人因疾病身故或身体全残",
+            "formulaText": "按基本保险金额给付身故或身体全残保险金",
+            "basisKey": "basic_amount",
+            "requiredInputs": [
+              "term_sum_assured"
+            ]
+          }
+        ],
+        "operands": [],
+        "terminationEffects": [
+          "contract_terminates"
+        ],
+        "sourceExcerpt": "身故或身体全残保险金：被保险人因意外伤害身故或身体全残，我们按基本保险金额给付身故或身体全残保险金；被保险人因疾病身故或身体全残，我们按基本保险金额给付身故或身体全残保险金。本合同终止。"
+      }
+    ],
+    "rejectedFragments": [
+      "疾病全残"
+    ]
+  }
+}

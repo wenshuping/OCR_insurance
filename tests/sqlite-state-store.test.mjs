@@ -93,6 +93,22 @@ test('sqlite store can defer large knowledge indexes and load matching product r
       url: 'https://example.test/legal-terms',
     }),
   );
+  writer.db.prepare(`
+    INSERT INTO knowledge_records (id, company, product_name, url, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(
+    7,
+    '',
+    '',
+    'https://example.test/unscoped-terms',
+    JSON.stringify({
+      id: 7,
+      company: '新华保险',
+      productName: '已有保单',
+      url: 'https://example.test/unscoped-terms',
+      pageText: '不属于目标产品的大段资料',
+    }),
+  );
   writer.close();
 
   const store = await createSqliteStateStore({ dbPath, lazyKnowledgeRecords: true });
@@ -104,6 +120,18 @@ test('sqlite store can defer large knowledge indexes and load matching product r
   assert.deepEqual(records.map((row) => row.company), ['新华保险', '新华人寿保险股份有限公司']);
   const indexes = await store.loadResponsibilityIndexes({ company: '新华保险', productName: '已有保单' });
   assert.deepEqual(indexes.indicatorRecords.map((row) => row.liability), ['满期返还']);
+  await store.persistResponsibilityLookupArtifacts({
+    state,
+    knowledgeRecords: [{
+      id: 8,
+      company: '新华保险',
+      productName: '新发现保单',
+      url: 'https://example.test/new-terms',
+      pageText: '新发现的官方条款',
+    }],
+  });
+  assert.deepEqual(state.knowledgeRecords.map((row) => row.id), [8]);
+  assert.deepEqual(state.insuranceIndicatorRecords, []);
 });
 
 test('sqlite store loads only authorized family rows for Agent queries', async (t) => {

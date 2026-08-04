@@ -105,7 +105,7 @@ classifying formulas, cashflow treatment, or model-routing risk.
 
 ```bash
 node scripts/import-reviewed-responsibility-artifacts.mjs \
-  --db-path=.runtime/local/policy-ocr.sqlite \
+  --db-path="$POLICY_OCR_APP_DB_PATH" \
   --artifacts='<merged.jsonl>' \
   --sample-limit=5
 ```

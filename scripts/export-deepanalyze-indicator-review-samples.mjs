@@ -2,10 +2,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 const DEFAULT_OUTPUT_DIR = path.join(projectRoot, 'reports', 'deepanalyze-indicator-review');
 
 function trim(value) {

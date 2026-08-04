@@ -83,3 +83,39 @@ print(json.dumps(records, ensure_ascii=False))
   assert.equal(records[0].extractionMethod, 'macos_vision');
   assert.match(records[0].pageText, /重大疾病保险金/);
 });
+
+test('New China focused responsibility excerpt keeps a payout factor definition', (t) => {
+  if (!fs.existsSync(pythonPath)) {
+    t.skip(`Scrapling Python not found: ${pythonPath}`);
+    return;
+  }
+
+  const script = String.raw`
+import importlib.util
+import json
+
+spec = importlib.util.spec_from_file_location("scrapling_policy_crawler", ${JSON.stringify(crawlerPath)})
+crawler = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(crawler)
+
+text = (
+    "保险责任 在本合同保险期间内，我们承担下列保险责任："
+    "1.养老年金 被保险人生存，我们按确定的每年或每月领取金额给付养老年金。"
+    "按年领取的，每年领取金额为基本保险金额；按月领取的，每月领取金额为基本保险金额×月领折算系数。"
+    "上述月领折算系数的数值为0.085。"
+    "2.身故保险金 被保险人身故，我们按约定给付身故保险金。"
+    "责任免除 投保人故意伤害被保险人。"
+)
+print(json.dumps({"excerpt": crawler.focused_responsibility_excerpt(text)}, ensure_ascii=False))
+`;
+
+  const result = spawnSync(pythonPath, ['-c', script], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const payload = JSON.parse(result.stdout);
+  assert.match(payload.excerpt, /月领折算系数的数值为0\.085/u);
+});

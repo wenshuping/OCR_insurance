@@ -29,6 +29,15 @@ Use `$ocr-insurance-product-responsibility-pipeline` as the single entry point. 
   - Customer-facing output may show product summary, covered event/condition, benefit/payment explanation, limits, exclusions, and official source.
   - Do not show `indicatorCheckStatus`, `indicatorCheckIssues`, `basisKey`, `calculationKey`, `calculationEligible`, `calculationStatus`, `calculationReason`, `needs_table`, or phrases such as `指标核对`, `结构化指标`, `现金流测算`, `需表格`.
   - Internal verification reports may include those fields, but label them as internal and keep them out of policy responsibility copy shown to customers.
+- Use exact-version official insurer clauses/pages or regulator disclosures.
+- Keep `可选责任一/二` and similar labels as groups; create cards and indicators for their concrete child responsibilities.
+- Preserve product overview, responsibility text, card copy, and indicator metadata as separate outputs.
+- Never substitute premium for insured amount or simplify unsupported formula branches.
+- Existing database rows are comparison targets, not completeness evidence.
+- Back up SQLite before any write.
+- In development, use the SSD database configured by `.runtime/local/policy-ocr-env.json`; use production only when explicitly requested.
+- Keep customer-facing cards free of internal audit keys, model names, and implementation commentary.
+- Write Feishu only when explicitly requested and prove readback separately.
 
 ## Workflow
 
@@ -77,6 +86,21 @@ Use `$ocr-insurance-product-responsibility-pipeline` as the single entry point. 
    - Send missing pages, damaged tables, and unreadable OCR back to source
      repair, not to a stronger merge model.
    - Apply `$ocr-insurance-responsibility-merge` for the final artifact.
+
+   Inspect the existing product-scoped rows before proposing writes:
+
+```bash
+sqlite3 "$POLICY_OCR_APP_DB_PATH" "
+  select count(*) from product_responsibility_cards
+   where company='<公司>' and product_name='<产品>';
+  select id, url, length(json_extract(payload,'$.pageText'))
+    from knowledge_records
+   where company='<公司>' and product_name='<产品>';
+  select id, liability, coverage_type
+    from insurance_indicator_records
+   where company='<公司>' and product_name='<产品>';
+"
+```
 
 4. Decide responsibilities manually.
    - Create one responsibility per clean liability name, for example `身故保险金`, `满期保险金`, `生存保险金`, `住院医疗保险金`, `豁免保险费`.

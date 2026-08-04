@@ -26,6 +26,11 @@ import {
   X,
 } from 'lucide-react';
 import {
+  formulaVariablesFromIndicators,
+  normalizeIndicatorCalculation,
+  resolveIndicatorAmountForCurrentContext,
+} from '../../indicator-calculation.mjs';
+import {
   ApiError,
   CashValueRow,
   CashValueScanResult,
@@ -107,9 +112,6 @@ import type {
 import {
   policyValidityClassName,
 } from '../../policy-validity.mjs';
-import {
-  normalizeIndicatorCalculation,
-} from '../../indicator-calculation.mjs';
 import {
   areSameParticipantName,
   formatCoverageAmount,
@@ -336,7 +338,12 @@ const emptyForm: PolicyFormData = {
   insuredBirthday: '',
   date: '',
   paymentPeriod: '',
+  paymentFrequency: '',
   coveragePeriod: '',
+  benefitFrequency: '',
+  monthlyConversionFactor: '',
+  effectiveInsuranceAmount: '',
+  accumulatedDividendInsuredAmount: '',
   amount: '',
   firstPremium: '',
   plans: [],
@@ -482,15 +489,28 @@ function planOrPolicyAmount(policy: Policy, indicator: CoverageIndicator) {
   return Number(plan?.amount || policy.amount || 0) || 0;
 }
 
-function planOrPolicyPremiumParts(policy: Policy, indicator: CoverageIndicator) {
+function indicatorCalculationInputs(policy: Policy, indicator: CoverageIndicator) {
   const plan = findPlanForIndicator(policy, indicator);
-  const premium = Number(plan?.premium || policy.firstPremium || 0) || 0;
-  const years = parsePaymentYears(plan?.paymentPeriod || policy.paymentPeriod) || 1;
-  return { premium, years, total: premium * years };
-}
-
-function planOrPolicyTotalPremium(policy: Policy, indicator: CoverageIndicator) {
-  return planOrPolicyPremiumParts(policy, indicator).total;
+  const paymentPeriod = String(plan?.paymentPeriod || plan?.paymentMode || policy.paymentPeriod || '').trim();
+  const paymentFrequencyText = String(plan?.paymentMode || policy.paymentFrequency || '').trim();
+  const paymentFrequency = /月交|月缴|月付/u.test(paymentFrequencyText)
+    ? 'monthly'
+    : /年交|年缴|年付/u.test(paymentFrequencyText)
+      ? 'annual'
+      : paymentFrequencyText;
+  return {
+    baseAmount: planOrPolicyAmount(policy, indicator),
+    firstPremium: Number(plan?.premium || policy.firstPremium || 0) || 0,
+    paymentYears: parsePaymentYears(paymentPeriod),
+    paymentPeriod,
+    paymentFrequency,
+    coveragePeriod: String(plan?.coveragePeriod || policy.coveragePeriod || '').trim(),
+    benefitFrequency: policy.benefitFrequency,
+    monthlyConversionFactor: policy.monthlyConversionFactor,
+    effectiveInsuranceAmount: policy.effectiveInsuranceAmount,
+    accumulatedDividendInsuredAmount: policy.accumulatedDividendInsuredAmount,
+    formulaVariables: formulaVariablesFromIndicators(policy.coverageIndicators),
+  };
 }
 
 function normalizeIndicatorFormulaText(indicator: CoverageIndicator) {
@@ -508,65 +528,31 @@ function normalizeIndicatorFormulaText(indicator: CoverageIndicator) {
     const valueText = String(indicator.valueText ?? indicator.value ?? '').trim();
     return valueText ? `养老年金 = 保单账户价值 × ${valueText}%` : '养老年金 = 按保单账户价值约定比例领取';
   }
-  return String(indicator.formulaText || '').trim();
+  const formulaText = String(indicator.formulaText || '').trim();
+  if (normalizeIndicatorCalculation(indicator).basisKey === 'policy_anniversary_basic_amount') {
+    return formulaText.replace(/基本责任(?:的)?保险金额/u, '保单生效对应日基本责任保险金额');
+  }
+  return formulaText;
 }
 
 function resolveIndicatorAmount(indicator: CoverageIndicator, policy: Policy) {
   if (isNonPayoutCashflowIndicator(indicator)) return 0;
-  const calculation = normalizeIndicatorCalculation(indicator);
-  if (calculation.calculationKey !== 'unknown' && calculation.calculationEligible === false) return 0;
-  const text = normalizeOverviewText(indicatorCoreText(indicator));
-  const overviewText = normalizeOverviewText(indicatorOverviewText(indicator));
-  if (/实际交纳的保险费|已交保险费|所交保险费/u.test(text)) return planOrPolicyTotalPremium(policy, indicator);
-  const value = Number(indicator.value);
-  const unit = String(indicator.unit || '').trim();
-  const basis = normalizeOverviewText(indicator.basis);
-  if (!Number.isFinite(value) || value <= 0) {
-    if (/基本保险金额|基本保险金|基本保额/u.test(text) && /给付|领取|生存|年金/u.test(overviewText)) return planOrPolicyAmount(policy, indicator);
-    return 0;
-  }
-  if (/%/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
-    return planOrPolicyAmount(policy, indicator) * value / 100;
-  }
-  if (/倍/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
-    return planOrPolicyAmount(policy, indicator) * value;
-  }
-  if (/基本保险金额|基本保险金|基本保额|保险金额/u.test(basis) && /^公式$/u.test(unit)) return planOrPolicyAmount(policy, indicator);
-  return 0;
+  const result = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(policy, indicator));
+  return result.resolved ? result.amount : 0;
 }
 
 function formatIndicatorCalculation(indicator: CoverageIndicator, policy: Policy) {
-  const amount = resolveIndicatorAmount(indicator, policy);
-  const planAmount = planOrPolicyAmount(policy, indicator);
-  const premiumParts = planOrPolicyPremiumParts(policy, indicator);
-  const value = Number(indicator.value);
-  const valueText = String(indicator.valueText ?? indicator.value ?? '').trim();
-  const unit = String(indicator.unit || '').trim();
-  const basis = normalizeOverviewText(indicator.basis);
-  const text = normalizeOverviewText(indicatorCoreText(indicator));
   if (isNonPayoutCashflowIndicator(indicator)) return formatCoverageIndicator(indicator);
-  if (amount <= 0) return normalizeIndicatorFormulaText(indicator);
-  if (/实际交纳的保险费|已交保险费|所交保险费/u.test(text)) {
-    if (premiumParts.years > 1) return `年交保费 × 缴费年期 = ${formatNumberText(premiumParts.premium)} × ${formatNumberText(premiumParts.years)}`;
-    return `保费 = ${formatNumberText(premiumParts.total)}元`;
-  }
-  if (Number.isFinite(value) && value > 0 && /%/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
-    return `基本保额 × 比例 = ${formatNumberText(planAmount)} × ${valueText || value}%`;
-  }
-  if (Number.isFinite(value) && value > 0 && /倍/u.test(unit) && /基本保险金额|基本保险金|基本保额|保险金额/u.test(basis)) {
-    return `基本保额 × 倍数 = ${formatNumberText(planAmount)} × ${valueText || value}`;
-  }
-  if (/基本保险金额|基本保险金|基本保额/u.test(normalizeOverviewText(indicatorOverviewText(indicator)))) return `基本保额 = ${formatNumberText(planAmount)}元`;
-  const formulaText = normalizeIndicatorFormulaText(indicator);
-  if (formulaText) return formulaText;
-  return [valueText ? `${valueText}${unit}` : unit, indicator.basis].filter(Boolean).join(' / ');
+  const result = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(policy, indicator));
+  return result.calculationText || normalizeIndicatorFormulaText(indicator);
 }
 
 function formatCoverageIndicator(indicator: CoverageIndicator, policy?: Policy) {
   if (policy) {
-    const amount = resolveIndicatorAmount(indicator, policy);
+    const result = resolveIndicatorAmountForCurrentContext(indicator, indicatorCalculationInputs(policy, indicator));
     const formulaText = normalizeIndicatorFormulaText(indicator);
-    if (amount > 0) return `${formatNumberText(amount)}元`;
+    if (result.resolved) return `${formatNumberText(result.amount)}元`;
+    if (result.calculationText) return result.calculationText;
     if (formulaText) return formulaText;
   }
   const formulaText = String(indicator.formulaText || '').trim();
@@ -578,7 +564,10 @@ function formatCoverageIndicator(indicator: CoverageIndicator, policy?: Policy) 
 }
 
 function classifyCoverageLiability(row: Responsibility, policy: Policy) {
-  const text = `${row.coverageType || ''} ${row.scenario || ''} ${row.payout || ''} ${row.note || ''} ${policy.name || ''}`;
+  const text = `${row.coverageType || ''} ${row.scenario || ''} ${row.payout || ''} ${row.note || ''}`;
+  const hasDeath = /身故|死亡/u.test(text);
+  const hasTotalDisability = /全残|身体全残/u.test(text);
+  if (hasDeath && hasTotalDisability) return { coverageType: '人寿保障', liability: '身故/全残' };
   if (/重疾|重大疾病|重度疾病/u.test(text)) return { coverageType: '疾病保障', liability: '重疾(首次给付)' };
   if (/中症|中度疾病/u.test(text)) return { coverageType: '疾病保障', liability: '中症(首次给付)' };
   if (/轻症|轻度疾病/u.test(text)) return { coverageType: '疾病保障', liability: '轻症(首次给付)' };
@@ -592,8 +581,8 @@ function classifyCoverageLiability(row: Responsibility, policy: Policy) {
   if (/年金|养老金|教育金|生存金|生存保险金|满期保险金|满期生存保险金|祝寿金|祝贺金|关爱金/u.test(text)) {
     return { coverageType: '现金流', liability: resolveCashflowLiabilityFromText(text) };
   }
-  if (/全残|身体全残/u.test(text)) return { coverageType: '人寿保障', liability: /疾病/u.test(text) ? '疾病全残' : '身故/全残' };
-  if (/身故/u.test(text)) return { coverageType: '人寿保障', liability: /疾病/u.test(text) ? '疾病身故' : '身故/全残' };
+  if (hasTotalDisability) return { coverageType: '人寿保障', liability: '全残保险金' };
+  if (hasDeath) return { coverageType: '人寿保障', liability: '身故保险金' };
   return { coverageType: '人寿保障', liability: '身故/全残' };
 }
 
@@ -1147,6 +1136,7 @@ export function CustomerApp() {
 
   useEffect(() => {
     if (!policies.some(isPolicyReportGenerating)) return;
+    if (isPolicyReportGenerating(selectedPolicy)) return;
     const timer = window.setInterval(() => {
       refreshPolicies().catch((error) => {
         if (error instanceof ApiError && error.status === 401) {
@@ -1155,7 +1145,7 @@ export function CustomerApp() {
       });
     }, 4000);
     return () => window.clearInterval(timer);
-  }, [policies, token, guestId]);
+  }, [policies, selectedPolicy?.id, selectedPolicy?.reportStatus, token, guestId]);
 
   useEffect(() => {
     if (!isPolicyReportGenerating(selectedPolicy)) return;
@@ -3521,7 +3511,9 @@ export function CustomerApp() {
         setCashValuePolicyId(payload.policy.id);
         setCashValueDialogOpen(true);
       }
-      setMessage(isPolicyReportGenerating(payload.policy) ? '保单已保存，报告正在后台生成' : '保单已保存到我的保单');
+      setMessage(payload.ocrFallbackUsed
+        ? payload.ocrWarning || '图片识别暂不可用，已按手工填写的信息保存保单'
+        : isPolicyReportGenerating(payload.policy) ? '保单已保存，报告正在后台生成' : '保单已保存到我的保单');
     } catch (error) {
       reportClientPerformance('client.scan.error', {
         durationMs: clientElapsedMs(startedAt),
@@ -3848,7 +3840,7 @@ export function CustomerApp() {
   async function retryPolicyReport(policy: Policy) {
     if (retryingPolicyId) return;
     setRetryingPolicyId(policy.id);
-    setMessage('正在重新生成保险责任报告');
+    setMessage('正在重新读取官方条款，并结合本地责任库刷新保单详情');
     try {
       const payload = await regeneratePolicyReport({
         token: token || undefined,
@@ -3857,7 +3849,7 @@ export function CustomerApp() {
       });
       setSelectedPolicy(payload.policy);
       setPolicies((current) => current.map((row) => (Number(row.id) === Number(payload.policy.id) ? payload.policy : row)));
-      setMessage(payload.skipped ? '保险责任报告已存在' : '已开始重新生成报告');
+      setMessage('已开始重新解析官方条款，并结合本地责任和指标补充校验');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '重新生成报告失败');
     } finally {
@@ -4699,6 +4691,7 @@ export function CustomerApp() {
           message={message}
           onBack={() => setShowAnalysisReport(false)}
           onSave={handleSubmit}
+          onUpdateForm={updateForm}
           onUpdateOptionalResponsibility={updateAnalysisOptionalResponsibility}
         />
         {renderResponsibilityAssistant('bottom-24')}

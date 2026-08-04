@@ -61,12 +61,51 @@ export function responsibilityProductIdentity({ company = '', productName = '' }
   };
 }
 
-export function sameResponsibilityProduct(left = {}, right = {}) {
-  const leftIdentity = responsibilityProductIdentity(left);
-  const rightIdentity = responsibilityProductIdentity(right);
+export function productIdentityKey(row = {}) {
+  return text(
+    row.canonicalProductId
+      || row.canonical_product_id
+      || row.productKey
+      || row.product_key,
+  );
+}
+
+function legacyResponsibilityProductMatch(left = {}, right = {}) {
+  const leftIdentity = responsibilityProductIdentity({
+    company: left.company,
+    productName: left.productName || left.product_name || left.name,
+  });
+  const rightIdentity = responsibilityProductIdentity({
+    company: right.company,
+    productName: right.productName || right.product_name || right.name,
+  });
   return Boolean(leftIdentity && rightIdentity
     && leftIdentity.companyIdentity === rightIdentity.companyIdentity
     && leftIdentity.productNameIdentity === rightIdentity.productNameIdentity);
+}
+
+export function productIdentityMatches(left = {}, right = {}) {
+  const leftKey = productIdentityKey(left);
+  const rightKey = productIdentityKey(right);
+  // A populated key is authoritative. A legacy row without a key may still
+  // be resolved by its exact normalized company/product identity, but it can
+  // never override a conflicting populated key.
+  if (leftKey && rightKey) return leftKey === rightKey;
+  if (!leftKey && !rightKey) {
+    const leftCompany = text(left.company);
+    const leftName = text(left.productName || left.product_name || left.name);
+    const rightCompany = text(right.company);
+    const rightName = text(right.productName || right.product_name || right.name);
+    // Partial legacy responsibility rows are completed by their enclosing
+    // policy/card context; do not reject them solely because one side has no
+    // identity columns at all.
+    if (!(leftCompany && leftName && rightCompany && rightName)) return true;
+  }
+  return legacyResponsibilityProductMatch(left, right);
+}
+
+export function sameResponsibilityProduct(left = {}, right = {}) {
+  return productIdentityMatches(left, right);
 }
 
 export function listEquivalentResponsibilityProductRows(db, target = {}, { includeCustomerSummaries = true } = {}) {

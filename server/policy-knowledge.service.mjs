@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -686,7 +688,10 @@ function extractRelevantText(text = '', policy = {}) {
   return relevant.join('。').slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS);
 }
 
-function extractFocusedResponsibilityText(text = '') {
+const FORMULA_PARAMETER_DEFINITION_PATTERN = /(?:系数|比例|比率|免赔额|责任限额|给付天数|给付日数|等待期).{0,32}(?:数值|为|是|按|不超过|最高|上限|\d+(?:\.\d+)?\s*(?:[%％]|倍|天|日)?)/u;
+const CROSS_INSURANCE_FIELD_PATTERN = /(?:最低保证利率|结算利率|结算频率|结算方式|初始费用|保单管理费|账户管理费|风险保险费|部分领取|部分提取|退保手续费|免赔额|免赔|赔付比例|给付比例|报销比例|年度(?:累计)?(?:最高)?限额|责任限额|医院范围|定点医院|二级及以上医院|等待期|疾病分组|重大疾病组|给付次数|赔付次数|间隔期|豁免保险费|保费豁免|伤残等级|伤残给付比例|交通工具|航空意外|驾乘意外|有效保险金额|有效保额|月领折算系数|按月领取|按年领取|领取频率|满期保险金)/u;
+
+export function extractFocusedResponsibilityText(text = '') {
   const normalizedText = trimString(text).replace(/\s+/gu, ' ');
   if (!normalizedText) return '';
   const preferred = normalizedText.search(/保险责任\s*在本合同保险期间内/u);
@@ -727,11 +732,33 @@ function extractFocusedResponsibilityText(text = '') {
     '已交保险费',
     '现金价值',
   ];
-  const focused = sentences.filter((sentence) => keywords.some((keyword) => sentence.includes(keyword))).join('\n');
+  const focused = sentences.filter((sentence) => (
+    keywords.some((keyword) => sentence.includes(keyword))
+    || FORMULA_PARAMETER_DEFINITION_PATTERN.test(sentence)
+  )).join('\n');
   const candidate = focused || excerpt;
   const hasPositiveResponsibility = /(?:我们|本公司).{0,100}(?:承担|给付|赔付|赔偿|报销).{0,100}(?:保险责任|保险金|医疗费用|津贴|保险费)|(?:按|按照).{0,100}(?:给付|赔付|赔偿|报销).{0,100}(?:保险金|医疗费用|津贴|保险费)|(?:承担下列|承担以下|承担如下).{0,80}保险责任|被保险人.{0,220}(?:身故|全残|伤残|残疾|疾病|医疗|住院|意外伤害|烧伤|达到|生存).{0,220}(?:保险金|给付|赔付|赔偿|报销|豁免)|豁免保险费/u.test(candidate);
   if (!hasPositiveResponsibility) return '';
   return candidate.slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS);
+}
+
+export function extractCrossInsuranceFieldEvidenceText(text = '') {
+  const normalizedText = trimString(text)
+    .normalize('NFKC')
+    .replace(/\r/gu, '\n')
+    .replace(/[ \t]+/gu, ' ')
+    .replace(/\n{3,}/gu, '\n\n');
+  if (!normalizedText) return '';
+  const clauses = normalizedText
+    .split(/[。；;！？!?]+|(?<!\d)\.(?!\d)|\n+/u)
+    .map((item) => trimString(item))
+    .filter((item) => item.length >= 4 && item.length <= 900)
+    .filter((item) => CROSS_INSURANCE_FIELD_PATTERN.test(item))
+    .filter((item) => {
+      if (!/(?:目录|目次|阅读指南|阅读指引)/u.test(item)) return true;
+      return /(?:本合同|我们|本公司|按照|按日|按月|按年|为\s*\d|\d+(?:\.\d+)?\s*(?:[%％]|元|天|日|次|级|倍))/u.test(item);
+    });
+  return Array.from(new Set(clauses)).join('\n').slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS);
 }
 
 function decodePdfHexText(value = '') {
@@ -777,55 +804,116 @@ function extractPdfActualText(buffer) {
   return values.join('');
 }
 
-async function extractPdfTextWithPython(buffer) {
-  const raw = Buffer.from(buffer || []);
-  if (!raw.length) return '';
+function pdfExtractionPythonCandidates(overrides = []) {
+  const explicit = (Array.isArray(overrides) ? overrides : []).map(trimString).filter(Boolean);
+  if (explicit.length) return Array.from(new Set(explicit));
+  return Array.from(new Set([
+    process.env.POLICY_OCR_PDF_PYTHON_BIN,
+    process.env.POLICY_OCR_PYTHON,
+    process.env.OCR_RESPONSIBILITY_PIPELINE_PYTHON,
+    path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3'),
+    process.env.SCRAPLING_PYTHON_BIN,
+    DEFAULT_SCRAPLING_PYTHON_BIN,
+    'python3',
+  ].map(trimString).filter(Boolean)));
+}
+
+function runPdfExtractionPython(pythonBin, raw) {
   return new Promise((resolve) => {
+    let output = '';
+    let errorOutput = '';
+    let settled = false;
+    let overflow = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
     const child = spawn(
-      'python3',
+      pythonBin,
       [
         '-c',
         [
           'import base64, io, sys',
-          'try:',
-          '    from pypdf import PdfReader',
-          '    data = base64.b64decode(sys.stdin.read())',
-          '    reader = PdfReader(io.BytesIO(data))',
-          "    print('\\n'.join((page.extract_text() or '') for page in reader.pages))",
-          'except Exception:',
-          '    sys.exit(0)',
+          'from pypdf import PdfReader',
+          'data = base64.b64decode(sys.stdin.read())',
+          'reader = PdfReader(io.BytesIO(data))',
+          "print('\\n'.join((page.extract_text() or '') for page in reader.pages))",
         ].join('\n'),
       ],
-      { stdio: ['pipe', 'pipe', 'ignore'] },
+      { stdio: ['pipe', 'pipe', 'pipe'] },
     );
-    let output = '';
     const timeout = setTimeout(() => {
       child.kill('SIGTERM');
-      resolve('');
-    }, 8000);
+      finish({ ok: false, code: 'timeout', detail: '' });
+    }, Number(process.env.POLICY_OCR_PDF_EXTRACT_TIMEOUT_MS || 20_000));
     child.stdout.on('data', (chunk) => {
       output += String(chunk || '');
-      if (output.length > 20_000) child.kill('SIGTERM');
+      if (output.length > 500_000) {
+        overflow = true;
+        child.kill('SIGTERM');
+      }
     });
-    child.on('close', () => {
-      clearTimeout(timeout);
-      resolve(trimString(output));
+    child.stderr.on('data', (chunk) => {
+      errorOutput += String(chunk || '');
+      if (errorOutput.length > 8_000) errorOutput = errorOutput.slice(-8_000);
     });
-    child.on('error', () => {
-      clearTimeout(timeout);
-      resolve('');
+    child.on('error', (error) => finish({ ok: false, code: 'start_failed', detail: error?.code || error?.name || '' }));
+    child.on('close', (exitCode) => {
+      if (overflow) return finish({ ok: false, code: 'output_limit', detail: '' });
+      const extracted = trimString(output);
+      if (exitCode === 0 && extracted) return finish({ ok: true, code: 'extracted', text: extracted });
+      const dependencyMissing = /(?:DependencyError|cryptography[^\n]*(?:required|missing)|No module named ['"](?:pypdf|cryptography))/iu.test(errorOutput);
+      return finish({
+        ok: false,
+        code: dependencyMissing ? 'dependency_missing' : exitCode === 0 ? 'empty_text' : 'extract_failed',
+        detail: trimString(errorOutput).slice(-500),
+      });
     });
+    child.stdin.on('error', () => {});
     child.stdin.end(raw.toString('base64'));
   });
 }
 
-async function extractRelevantPdfText(buffer, policy = {}) {
-  const actualText = extractPdfActualText(buffer);
-  const rawText = actualText || (await extractPdfTextWithPython(buffer));
-  return extractFocusedResponsibilityText(rawText) || extractRelevantText(rawText, policy);
+export async function extractPdfTextWithPython(buffer, { pythonCandidates = [] } = {}) {
+  const raw = Buffer.from(buffer || []);
+  if (!raw.length) return { text: '', status: 'failed', code: 'empty_pdf', attempts: [] };
+  const attempts = [];
+  for (const pythonBin of pdfExtractionPythonCandidates(pythonCandidates)) {
+    const result = await runPdfExtractionPython(pythonBin, raw);
+    attempts.push({ pythonBin, code: result.code });
+    if (result.ok) {
+      return { text: result.text, status: 'extracted', code: '', pythonBin, attempts };
+    }
+  }
+  return {
+    text: '',
+    status: 'failed',
+    code: attempts.some((attempt) => attempt.code === 'dependency_missing')
+      ? 'pdf_decryption_dependency_missing'
+      : 'pdf_extraction_unavailable',
+    attempts,
+  };
 }
 
-async function fetchMaterialPageText({ url, policy, fetchImpl, signal } = {}) {
+async function extractPdfRawText(buffer, { pythonCandidates = [] } = {}) {
+  const actualText = extractPdfActualText(buffer);
+  if (actualText) return { text: actualText, status: 'extracted', code: '', pythonBin: 'embedded_actual_text', attempts: [] };
+  return extractPdfTextWithPython(buffer, { pythonCandidates });
+}
+
+function extractPolicyKnowledgeText(rawText = '', policy = {}) {
+  const responsibilityText = extractFocusedResponsibilityText(rawText) || extractRelevantText(rawText, policy);
+  const fieldEvidenceText = extractCrossInsuranceFieldEvidenceText(rawText);
+  if (!fieldEvidenceText) return responsibilityText.slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS);
+  if (!responsibilityText || responsibilityText === fieldEvidenceText) return fieldEvidenceText.slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS);
+  const fieldEvidence = fieldEvidenceText.slice(0, 5_000);
+  const responsibility = responsibilityText.slice(0, MAX_KNOWLEDGE_PAGE_TEXT_CHARS - fieldEvidence.length - 2);
+  return `${responsibility}\n\n${fieldEvidence}`;
+}
+
+async function fetchMaterialPageText({ url, policy, fetchImpl, signal, pythonCandidates = [] } = {}) {
   try {
     const response = await fetchImpl(url, {
       method: 'GET',
@@ -841,10 +929,22 @@ async function fetchMaterialPageText({ url, policy, fetchImpl, signal } = {}) {
     const contentLength = Number(response.headers?.get?.('content-length') || 0);
     if (sourceType === 'pdf' && (!contentLength || contentLength <= MAX_KNOWLEDGE_PDF_BYTES)) {
       const buffer = Buffer.from(await response.arrayBuffer());
+      const pdfValid = buffer.subarray(0, 5).toString('latin1') === '%PDF-';
+      if (!pdfValid || buffer.length > MAX_KNOWLEDGE_PDF_BYTES) {
+        return { pageText: '', rawText: '', sourceType, contentType, pdfValid: false, sourceDigest: '' };
+      }
+      const extraction = await extractPdfRawText(buffer, { pythonCandidates });
       return {
-        pageText: buffer.length <= MAX_KNOWLEDGE_PDF_BYTES ? await extractRelevantPdfText(buffer, policy) : '',
+        pageText: extractPolicyKnowledgeText(extraction.text, policy),
+        rawText: extraction.text,
         sourceType,
         contentType,
+        pdfValid: true,
+        sourceDigest: `sha256:${createHash('sha256').update(buffer).digest('hex')}`,
+        extractionStatus: extraction.status,
+        extractionCode: extraction.code,
+        extractionPython: extraction.pythonBin,
+        extractionAttempts: extraction.attempts,
       };
     }
     if (!/(application\/msword|officedocument)/iu.test(contentType)) {
@@ -864,7 +964,7 @@ async function fetchMaterialPageText({ url, policy, fetchImpl, signal } = {}) {
   }
 }
 
-function buildKnowledgeRecord({ policy, title, url, snippet = '', pageText = '', parser, officialDomainProfiles = [], sourceType = '', materialType = '' }) {
+function buildKnowledgeRecord({ policy, title, url, snippet = '', pageText = '', parser, officialDomainProfiles = [], sourceType = '', materialType = '', sourceDigest = '', sourceAcquisition } = {}) {
   const now = nowIso();
   return {
     company: trimString(policy.company),
@@ -880,11 +980,80 @@ function buildKnowledgeRecord({ policy, title, url, snippet = '', pageText = '',
     evidenceLevel: 'insurer_official',
     officialDomain: resolveOfficialDomain(url, officialDomainProfiles),
     parser: trimString(parser),
+    sourceDigest: trimString(sourceDigest),
+    sourceAcquisition: sourceAcquisition && typeof sourceAcquisition === 'object' && !Array.isArray(sourceAcquisition)
+      ? sourceAcquisition
+      : undefined,
     discoveredAt: now,
     lastFetchedAt: now,
     updatedAt: now,
     useCount: 0,
   };
+}
+
+function strictBoundPdfIdentityMatches(rawText = '', policy = {}) {
+  const productName = trimString(policy.name || policy.productName);
+  if (!productName) return false;
+  const expectedCodes = mergeProductIdentityCodes(
+    productIdentityCodesFromRecord(policy),
+    productIdentityCodesFromText(productName),
+  );
+  const sourceCodes = productIdentityCodesFromText(rawText);
+  if (expectedCodes.length && sourceCodes.length && !expectedCodes.some((code) => sourceCodes.includes(code))) return false;
+  const compact = (value) => trimString(value)
+    .normalize('NFKC')
+    .replace(/[^\p{Script=Han}\p{Letter}\p{Number}]/gu, '')
+    .toLowerCase();
+  const expectedName = compact(productName);
+  return Boolean(expectedName && compact(rawText).includes(expectedName));
+}
+
+async function parseBoundOfficialPdfKnowledge({ policy, officialDomainProfiles, fetchImpl, signal, pythonCandidates = [] } = {}) {
+  const sources = Array.isArray(policy?.boundSources) ? policy.boundSources : [];
+  const records = [];
+  const seenUrls = new Set();
+  for (const source of sources) {
+    const url = trimString(source?.url || source?.sourceUrl || source?.officialUrl);
+    if (!url || seenUrls.has(url) || source?.official === false) continue;
+    seenUrls.add(url);
+    if (!isOfficialUrl(url, policy, officialDomainProfiles)) continue;
+    const fetched = await fetchMaterialPageText({ url, policy, fetchImpl, signal, pythonCandidates });
+    if (fetched.sourceType !== 'pdf' || fetched.pdfValid !== true) continue;
+    if (fetched.extractionStatus === 'failed') {
+      const error = new Error('已取得当前保单绑定的官方 PDF，但当前运行环境无法解密或提取正文，请检查 PDF Python 运行时及 cryptography 依赖。');
+      error.code = 'POLICY_OFFICIAL_PDF_EXTRACTION_UNAVAILABLE';
+      error.status = 503;
+      error.extractionCode = fetched.extractionCode;
+      error.extractionAttempts = fetched.extractionAttempts;
+      throw error;
+    }
+    if (!fetched.rawText || !fetched.pageText) {
+      const error = new Error('已取得当前保单绑定的官方 PDF，但未提取到可核验正文，需要 OCR 或人工来源审核。');
+      error.code = 'POLICY_OFFICIAL_PDF_TEXT_EMPTY';
+      error.status = 422;
+      throw error;
+    }
+    if (!strictBoundPdfIdentityMatches(fetched.rawText, policy)) continue;
+    records.push(buildKnowledgeRecord({
+      policy,
+      title: trimString(source?.title) || `${trimString(policy.name || policy.productName)}保险条款`,
+      url,
+      snippet: '当前保单已绑定的保险公司官方条款 PDF',
+      pageText: fetched.pageText,
+      sourceType: 'pdf',
+      materialType: 'terms',
+      parser: 'bound_official_pdf',
+      officialDomainProfiles,
+      sourceDigest: fetched.sourceDigest,
+      sourceAcquisition: {
+        strategy: 'bound_official_pdf',
+        identityVerified: true,
+        pdfMagicVerified: true,
+        extractionRuntime: fetched.extractionPython ? path.basename(fetched.extractionPython) : '',
+      },
+    }));
+  }
+  return records;
 }
 
 function runScraplingPolicyCrawler({ policy, officialDomainProfiles = [], timeoutMs = 45_000 } = {}) {
@@ -1970,6 +2139,10 @@ export function normalizeKnowledgeRecord(record = {}, { officialDomainProfiles =
     contentType: trimString(record.contentType),
     pdfLocalPath: trimString(record.pdfLocalPath),
     pdfSha256: trimString(record.pdfSha256),
+    sourceDigest: trimString(record.sourceDigest || record.source_digest || record.pdfSha256),
+    sourceAcquisition: record.sourceAcquisition && typeof record.sourceAcquisition === 'object' && !Array.isArray(record.sourceAcquisition)
+      ? record.sourceAcquisition
+      : undefined,
     pdfBytes: Number(record.pdfBytes || 0) || 0,
     pdfOriginalUrl: trimString(record.pdfOriginalUrl),
     pdfArchivedAt: trimString(record.pdfArchivedAt),
@@ -2484,10 +2657,11 @@ export function buildKnowledgeSearchArtifacts({
   return { context, sources, records: matched };
 }
 
-export async function crawlOfficialKnowledge({ policy = {}, officialDomainProfiles = [], fetchImpl = fetch, timeoutMs = 25_000 } = {}) {
+export async function crawlOfficialKnowledge({ policy = {}, officialDomainProfiles = [], fetchImpl = fetch, timeoutMs = 25_000, pdfPythonCandidates = [] } = {}) {
   const normalizedPolicy = {
     company: trimString(policy.company),
     name: trimString(policy.name || policy.productName),
+    boundSources: Array.isArray(policy.boundSources) ? policy.boundSources : [],
   };
   if (!normalizedPolicy.company || !normalizedPolicy.name) {
     const error = new Error('请填写保险公司和产品名称');
@@ -2495,15 +2669,23 @@ export async function crawlOfficialKnowledge({ policy = {}, officialDomainProfil
     error.status = 400;
     throw error;
   }
-  const scraplingRecords = await runScraplingPolicyCrawler({
-    policy: normalizedPolicy,
-    officialDomainProfiles,
-    timeoutMs: Math.max(timeoutMs, 45_000),
-  });
-  if (scraplingRecords.length) return scraplingRecords;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
+    const boundRecords = await parseBoundOfficialPdfKnowledge({
+      policy: normalizedPolicy,
+      officialDomainProfiles,
+      fetchImpl,
+      signal: controller.signal,
+      pythonCandidates: pdfPythonCandidates,
+    });
+    if (boundRecords.length) return boundRecords;
+    const scraplingRecords = await runScraplingPolicyCrawler({
+      policy: normalizedPolicy,
+      officialDomainProfiles,
+      timeoutMs: Math.max(timeoutMs, 45_000),
+    });
+    if (scraplingRecords.length) return scraplingRecords;
     const parsers = [
       () => parseNewChinaKnowledge({ policy: normalizedPolicy, officialDomainProfiles, fetchImpl, signal: controller.signal }),
       () => parseGenericOfficialKnowledge({ policy: normalizedPolicy, officialDomainProfiles, fetchImpl, signal: controller.signal }),

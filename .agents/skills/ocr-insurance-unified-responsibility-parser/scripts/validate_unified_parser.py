@@ -52,7 +52,12 @@ STATUSES = {
     "manual_review",
 }
 ROUTES = {"deepseek-standard", "luna-complex"}
+DISEASE_TOTAL_DISABILITY_ALIAS_RE = re.compile(r"^疾病(?:导致)?(?:身体)?全残(?:保险金)?$")
+COMBINED_DEATH_TOTAL_DISABILITY_RE = re.compile(
+    r"身故(?:和|或|及|、)?(?:身体)?全残(?:保险金)?"
+)
 REQUIRED_FIXTURES = {
+    "combined-death-disability-cause-branches",
     "rider-inpatient-medical",
     "rider-accident-medical",
     "student-plan-mixed-components",
@@ -244,6 +249,30 @@ def validate_fixtures(fixtures_dir: Path) -> dict[str, Any]:
                         f"{responsibility_location}.formula.{field}: expected list"
                     )
 
+        combined_responsibilities = [
+            responsibility
+            for responsibility in inventory
+            if COMBINED_DEATH_TOTAL_DISABILITY_RE.search(
+                str(responsibility.get("officialTitle") or "")
+            )
+        ]
+        disease_aliases = [
+            responsibility
+            for responsibility in inventory
+            if DISEASE_TOTAL_DISABILITY_ALIAS_RE.fullmatch(
+                str(responsibility.get("officialTitle") or "").strip()
+            )
+        ]
+        if combined_responsibilities and any(
+            COMBINED_DEATH_TOTAL_DISABILITY_RE.search(
+                str((alias.get("evidencePacket") or {}).get("exactText") or "")
+            )
+            for alias in disease_aliases
+        ):
+            raise ValidationError(
+                f"{location}: cause branch duplicated as responsibility"
+            )
+
         expected = fixture.get("expected")
         if not isinstance(expected, dict):
             raise ValidationError(f"{location}.expected: expected object")
@@ -267,6 +296,27 @@ def validate_fixtures(fixtures_dir: Path) -> dict[str, Any]:
                 )
         elif expected.get("ownerConflict"):
             raise ValidationError(f"{location}: unexpected ownerConflict flag")
+
+        if expected.get("triggerBranchesShareOneResponsibility") is True:
+            if len(inventory) != 1 or len(combined_responsibilities) != 1:
+                raise ValidationError(
+                    f"{location}: combined death/disability trigger branches need one responsibility"
+                )
+            if expected.get("indicatorDecisionCount") != 1:
+                raise ValidationError(
+                    f"{location}: combined death/disability responsibility needs one indicator"
+                )
+            branch_conditions = [
+                str(branch.get("conditionText") or "")
+                for branch in inventory[0]["formula"]["branches"]
+                if isinstance(branch, dict)
+            ]
+            if not any("疾病" in condition for condition in branch_conditions) or not any(
+                "意外" in condition for condition in branch_conditions
+            ):
+                raise ValidationError(
+                    f"{location}: disease and accident causes must remain branches"
+                )
 
         if route == "deepseek-standard":
             if not actual_owners.issubset({"term_life", "annuity"}):

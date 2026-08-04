@@ -2,11 +2,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildPolicyDerivedResult } from '../server/policy-derived-results.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 import { createSqliteStateStore } from '../server/sqlite-state-store.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -76,8 +77,9 @@ export async function backfillPolicyDerivedResults({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = await backfillPolicyDerivedResults({
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     sampleLimit: Number(readArg('sample-limit', 20)) || 20,
   });

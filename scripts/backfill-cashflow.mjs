@@ -3,15 +3,23 @@
 // Usage: node scripts/backfill-cashflow.mjs [--dry-run]
 
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { computePolicyCashflow, computeScenarioEntries } from '../server/cashflow-compute.mjs';
 import { findProductCashflowTemplate } from '../server/cashflow-template.mjs';
 import { createCashflowStore } from '../server/cashflow-store.mjs';
 import { findPolicyCoverageIndicators } from '../server/policy-ocr.domain.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const DRY_RUN = process.argv.includes('--dry-run');
-const DB_PATH = process.argv.find(a => !a.startsWith('--') && a !== process.argv[0] && !a.endsWith('.mjs'))
-  || path.resolve('.runtime/local/policy-ocr.sqlite');
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const requestedDbPath = process.argv.find(
+  (arg) => !arg.startsWith('--') && arg !== process.argv[0] && !arg.endsWith('.mjs'),
+) || '';
+const DB_PATH = resolvePolicyOcrWriteDatabasePath({
+  projectRoot,
+  requestedPath: requestedDbPath,
+});
 
 console.log(`Backfill cashflow: ${DB_PATH} ${DRY_RUN ? '(DRY RUN)' : ''}`);
 

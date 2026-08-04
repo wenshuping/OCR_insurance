@@ -8,10 +8,11 @@ import {
   buildResponsibilityCardsForPolicy,
   indicatorCheckForResponsibilityCard,
 } from '../server/responsibility-card-standardizer.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
-const DEFAULT_DB_PATH = process.env.POLICY_OCR_APP_DB_PATH || path.join(projectRoot, '.runtime', 'local', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 
 function readArg(name, fallback = '') {
   const prefix = `--${name}=`;
@@ -367,7 +368,12 @@ export function materializeProductResponsibilityCards({
           productName: product.productName,
           name: product.productName,
         },
-        responsibilities: authoritativeOnly ? authoritativeResponsibilities : undefined,
+        responsibilities: authoritativeOnly
+          ? authoritativeResponsibilities.map((responsibility) => ({
+            ...responsibility,
+            liability: text(responsibility.card?.title || responsibility.liability || responsibility.title),
+          }))
+          : undefined,
         knowledgeRecords,
         coverageIndicators,
         optionalResponsibilityRecords: authoritativeOnly ? [] : optionalResponsibilityRecords,
@@ -468,8 +474,9 @@ export function materializeProductResponsibilityCards({
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const requestedDbPath = readArg('db-path', DEFAULT_DB_PATH);
   const result = materializeProductResponsibilityCards({
-    dbPath: readArg('db-path', DEFAULT_DB_PATH),
+    dbPath: resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: requestedDbPath }),
     write: hasFlag('write'),
     company: readArg('company', ''),
     productName: readArg('product', readArg('product-name', '')),

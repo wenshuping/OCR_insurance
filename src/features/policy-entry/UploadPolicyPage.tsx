@@ -1035,8 +1035,22 @@ export function UploadPolicyPage(props: {
 
           <TextField label="投保时间" value={formData.date} onChange={(value) => onUpdateForm('date', value)} type="date" required />
 
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
             <PaymentPeriodField label="缴费期间" value={formData.paymentPeriod} onChange={(value) => onUpdateForm('paymentPeriod', value)} placeholder="如 10年交 或 趸交" required />
+            <SelectField
+              label="交费频率"
+              value={String(formData.paymentFrequency || '')}
+              onChange={(value) => onUpdateForm('paymentFrequency', value)}
+              options={[{ value: 'annual', label: '年交' }, { value: 'monthly', label: '月交' }]}
+              placeholder="请选择"
+            />
+            <SelectField
+              label="领取频率（年/月领）"
+              value={String(formData.benefitFrequency || '')}
+              onChange={(value) => onUpdateForm('benefitFrequency', value)}
+              options={[{ value: 'annual', label: '年领' }, { value: 'monthly', label: '月领' }]}
+              placeholder="无年/月领时不选"
+            />
             <CoveragePeriodField label="保障期间" value={formData.coveragePeriod} onChange={(value) => onUpdateForm('coveragePeriod', value)} placeholder="如 终身、30年、至70岁" required />
           </div>
 
@@ -1057,6 +1071,8 @@ export function UploadPolicyPage(props: {
             baseAmount={formData.amount}
             firstPremium={formData.firstPremium}
             paymentPeriod={formData.paymentPeriod}
+            effectiveInsuranceAmount={formData.effectiveInsuranceAmount}
+            accumulatedDividendInsuredAmount={formData.accumulatedDividendInsuredAmount}
             disabled={loading}
             compact
             title="主险可选责任确认"
@@ -1112,6 +1128,7 @@ export function AnalysisReportPage(props: {
   message: string;
   onBack: () => void;
   onSave: () => void;
+  onUpdateForm: (key: keyof PolicyFormData, value: PolicyFormData[keyof PolicyFormData]) => void;
   onUpdateOptionalResponsibility: (
     id: string,
     status: OptionalResponsibility['selectionStatus'],
@@ -1119,7 +1136,7 @@ export function AnalysisReportPage(props: {
   ) => void;
 }) {
   const reportRef = useRef<HTMLElement | null>(null);
-  const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateOptionalResponsibility } = props;
+  const { analysis, canSave, formData, loading, message, onBack, onSave, onUpdateForm, onUpdateOptionalResponsibility } = props;
   const responsibilities = Array.isArray(analysis.coverageTable) ? analysis.coverageTable : [];
   const responsibilityCards = Array.isArray(analysis.responsibilityCards) ? analysis.responsibilityCards : [];
   const optionalResponsibilities = Array.isArray(analysis.optionalResponsibilities) ? analysis.optionalResponsibilities : [];
@@ -1130,6 +1147,9 @@ export function AnalysisReportPage(props: {
   const exportControlText = getReportExportControlText();
   const exportControlTitle = getReportExportControlTitle();
   const hasReportText = Boolean(analysis.report?.trim());
+  const hasBenefitFrequencyChoice = [...responsibilities, ...responsibilityCards].some((row) => (
+    /按年领取.{0,80}按月领取|按月领取.{0,80}按年领取/u.test(JSON.stringify(row))
+  ));
 
   return (
     <div className="min-h-screen bg-[#F4F8FC] pb-32">
@@ -1139,8 +1159,8 @@ export function AnalysisReportPage(props: {
         </button>
         <div className="text-center">
           <h1 className="text-lg font-black text-slate-950">保险责任</h1>
-          <p className="mt-0.5 text-[11px] font-medium text-slate-400">阅读确认后保存保单</p>
-        </div>
+        <p className="mt-0.5 text-[11px] font-medium text-slate-400">阅读确认后保存保单</p>
+      </div>
         <button
           type="button"
           onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
@@ -1151,6 +1171,20 @@ export function AnalysisReportPage(props: {
           <Download size={19} />
         </button>
       </header>
+      {hasBenefitFrequencyChoice ? (
+        <section className="mx-auto mt-4 max-w-5xl px-4">
+          <div className="rounded-2xl border border-blue-100 bg-blue-50 px-4 py-3">
+            <SelectField
+              label="领取频率（年金等责任适用）"
+              value={String(formData.benefitFrequency || '')}
+              onChange={(value) => onUpdateForm('benefitFrequency', value)}
+              options={[{ value: 'annual', label: '年领' }, { value: 'monthly', label: '月领' }]}
+              placeholder="未指定：按官方分支最低值统计"
+            />
+            <p className="mt-1 text-xs font-semibold leading-5 text-blue-700">仅影响条款明确存在年领/月领分支的责任；不改变缴费期间。</p>
+          </div>
+        </section>
+      ) : null}
 
       <main ref={reportRef} className="print-policy-report space-y-4 p-4">
         <section className="print-only">
@@ -1211,6 +1245,8 @@ export function AnalysisReportPage(props: {
           baseAmount={formData.amount}
           firstPremium={formData.firstPremium}
           paymentPeriod={formData.paymentPeriod}
+          effectiveInsuranceAmount={formData.effectiveInsuranceAmount}
+          accumulatedDividendInsuredAmount={formData.accumulatedDividendInsuredAmount}
           disabled={loading}
           onChange={onUpdateOptionalResponsibility}
         />
@@ -1240,6 +1276,12 @@ export function AnalysisReportPage(props: {
               optionalResponsibilities={optionalResponsibilities}
               baseAmount={formData.amount}
               firstPremium={formData.firstPremium}
+              paymentPeriod={formData.paymentPeriod}
+              paymentFrequency={formData.paymentFrequency}
+              benefitFrequency={formData.benefitFrequency}
+              monthlyConversionFactor={formData.monthlyConversionFactor}
+              effectiveInsuranceAmount={formData.effectiveInsuranceAmount}
+              accumulatedDividendInsuredAmount={formData.accumulatedDividendInsuredAmount}
             />
           ) : responsibilities.map((row, index) => (
             <article key={`${row.coverageType}-${index}`} className="rounded-[22px] border border-[#D9E6F4] bg-white p-4 shadow-[0_18px_34px_-30px_rgba(15,23,42,0.16)]">

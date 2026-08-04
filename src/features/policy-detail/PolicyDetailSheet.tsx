@@ -137,10 +137,13 @@ export function PolicyDetailSheet({
   const exportTitle = buildPolicyReportTitle(policy);
   const reportGenerating = isPolicyReportGenerating(policy);
   const reportFailed = isPolicyReportFailed(policy);
+  const hasReportContent = Boolean(
+    policy.report?.trim()
+      || policy.responsibilities?.length
+      || policy.responsibilityCards?.length,
+  );
   const reportReadyWithoutContent = !reportGenerating && !reportFailed && !(
-    policy.report?.trim() ||
-      policy.responsibilities?.length ||
-      policy.responsibilityCards?.length
+    hasReportContent
   );
   const optionalResponsibilities = Array.isArray(policy.optionalResponsibilities) ? policy.optionalResponsibilities : [];
   const riderResponsibilityGroups = useMemo(() => planResponsibilityCards(policy), [policy]);
@@ -157,6 +160,12 @@ export function PolicyDetailSheet({
     let cancelled = false;
     const company = String(policy.company || '').trim();
     const name = String(policy.name || '').trim();
+    if (reportGenerating) {
+      setCustomerSummaryLoading(false);
+      return () => {
+        cancelled = true;
+      };
+    }
     setCustomerSummary(null);
     setCustomerSummarySource('');
     setCustomerSummaryMessage('');
@@ -197,18 +206,39 @@ export function PolicyDetailSheet({
 
   return (
     <div className="fixed inset-0 z-40 flex flex-col bg-slate-50">
-      <header className="no-print sticky top-0 z-10 flex items-center justify-between border-b border-slate-100 bg-white px-4 py-4">
-        <button onClick={onClose} className="-ml-2 rounded-full p-2 text-slate-700 active:bg-slate-100" type="button">
+      <header className="no-print sticky top-0 z-10 flex items-center justify-between gap-1 border-b border-slate-100 bg-white px-3 py-4 sm:gap-2 sm:px-4">
+        <button onClick={onClose} className="-ml-2 shrink-0 rounded-full p-2 text-slate-700 active:bg-slate-100" type="button">
           <ChevronLeft size={24} />
         </button>
-        <h1 className="text-lg font-bold">保单详情</h1>
-        <div className="flex items-center gap-2">
+        <h1 className="min-w-0 flex-1 text-center text-lg font-bold max-[359px]:sr-only">保单详情</h1>
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+          <button
+            type="button"
+            onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100 sm:h-10 sm:w-10"
+            aria-label={exportControlTitle}
+            title={exportControlTitle}
+          >
+            <Download size={19} />
+          </button>
+          {onRetryReport ? (
+            <button
+              type="button"
+              onClick={() => void onRetryReport(policy)}
+              disabled={retrying || updating || deleting}
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-blue-50 text-blue-600 active:bg-blue-100 disabled:bg-slate-100 disabled:text-slate-300 sm:h-10 sm:w-10"
+              aria-label="刷新保单详情"
+              title="重新解析官方条款并结合本地责任库刷新"
+            >
+              <RefreshCw size={18} className={retrying || reportGenerating ? 'animate-spin' : ''} />
+            </button>
+          ) : null}
           {onUpdatePolicy ? (
             <button
               type="button"
               onClick={() => setEditing(true)}
               disabled={updating || deleting}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-100 text-slate-600 active:bg-slate-200 disabled:text-slate-300"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-slate-100 text-slate-600 active:bg-slate-200 disabled:text-slate-300 sm:h-10 sm:w-10"
               aria-label="修改保单"
               title="修改保单"
             >
@@ -220,25 +250,13 @@ export function PolicyDetailSheet({
               type="button"
               onClick={() => setConfirmingDelete(true)}
               disabled={updating || deleting}
-              className="flex h-10 w-10 items-center justify-center rounded-full bg-red-50 text-red-600 active:bg-red-100 disabled:text-red-200"
+              className="flex h-9 w-9 items-center justify-center rounded-full bg-red-50 text-red-600 active:bg-red-100 disabled:text-red-200 sm:h-10 sm:w-10"
               aria-label="删除保单"
               title="删除保单"
             >
               <Trash2 size={18} />
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={() => void downloadReportPdf(reportRef.current, exportTitle)}
-            disabled={reportGenerating}
-            className={`flex h-10 w-10 items-center justify-center rounded-full active:bg-blue-100 ${
-              reportGenerating ? 'bg-slate-100 text-slate-300' : 'bg-blue-50 text-blue-600'
-            }`}
-            aria-label={exportControlTitle}
-            title={exportControlTitle}
-          >
-            <Download size={19} />
-          </button>
         </div>
       </header>
       <main ref={reportRef} className="print-policy-report flex-1 overflow-y-auto p-4 pb-10">
@@ -461,6 +479,8 @@ export function PolicyDetailSheet({
               baseAmount={policy.amount}
               firstPremium={policy.firstPremium}
               paymentPeriod={policy.paymentPeriod}
+              effectiveInsuranceAmount={policy.effectiveInsuranceAmount}
+              accumulatedDividendInsuredAmount={policy.accumulatedDividendInsuredAmount}
               disabled={updating || deleting}
               saving={updating}
               onChange={onUpdateOptionalResponsibility
@@ -489,6 +509,16 @@ export function PolicyDetailSheet({
               summary={customerSummary}
               baseAmount={policy.amount}
               firstPremium={policy.firstPremium}
+              paymentFrequency={policy.paymentFrequency}
+              paymentPeriod={policy.paymentPeriod}
+              coveragePeriod={policy.coveragePeriod}
+              benefitFrequency={policy.benefitFrequency}
+              monthlyConversionFactor={policy.monthlyConversionFactor}
+              effectiveInsuranceAmount={policy.effectiveInsuranceAmount}
+              accumulatedDividendInsuredAmount={policy.accumulatedDividendInsuredAmount}
+              coverageIndicators={policy.coverageIndicators}
+              scenarioEntries={policy.scenarioEntries}
+              responsibilityCalculations={policy.responsibilityCalculations}
             />
           ) : (
             <article className="rounded-[22px] border border-dashed border-[#D9E6F4] bg-white p-4 text-sm leading-6 text-slate-500">
@@ -510,6 +540,11 @@ export function PolicyDetailSheet({
                     baseAmount={plan.amount}
                     firstPremium={plan.premium}
                     paymentPeriod={plan.paymentPeriod}
+                    paymentFrequency={plan.paymentMode || policy.paymentFrequency}
+                    benefitFrequency={policy.benefitFrequency}
+                    monthlyConversionFactor={policy.monthlyConversionFactor}
+                    effectiveInsuranceAmount={policy.effectiveInsuranceAmount}
+                    accumulatedDividendInsuredAmount={policy.accumulatedDividendInsuredAmount}
                   />
                 </section>
               ))}
@@ -575,7 +610,7 @@ function PolicyEditDialog({
     q: '',
   });
   const updateDraft = (key: keyof PolicyFormData, value: string) => {
-    const nextValue = key === 'amount' || key === 'firstPremium' ? sanitizeAmount(value) : value;
+    const nextValue = key === 'amount' || key === 'firstPremium' || key === 'monthlyConversionFactor' || key === 'effectiveInsuranceAmount' || key === 'accumulatedDividendInsuredAmount' ? sanitizeAmount(value) : value;
     const shouldSyncMainPlan = key === 'amount' || key === 'firstPremium' || key === 'coveragePeriod' || key === 'paymentPeriod';
     setDraft((current) => ({
       ...current,
@@ -903,6 +938,37 @@ function PolicyEditDialog({
             <PaymentPeriodField label="缴费期间" value={draft.paymentPeriod} onChange={(value) => updateDraft('paymentPeriod', value)} placeholder="如 10年交 或 趸交" />
             <TextField label="首期保费 (元)" value={draft.firstPremium} onChange={(value) => updateDraft('firstPremium', value)} inputMode="decimal" placeholder="0.00" />
           </div>
+          <div className="grid grid-cols-2 gap-3">
+            <SelectField
+              label="交费频率"
+              value={String(draft.paymentFrequency || '')}
+              onChange={(value) => updateDraft('paymentFrequency', value)}
+              options={[{ value: 'annual', label: '年交' }, { value: 'monthly', label: '月交' }]}
+              placeholder="请选择"
+            />
+            <SelectField
+              label="领取频率（年金适用）"
+              value={String(draft.benefitFrequency || '')}
+              onChange={(value) => updateDraft('benefitFrequency', value)}
+              options={[{ value: 'annual', label: '年领' }, { value: 'monthly', label: '月领' }]}
+              placeholder="未指定"
+            />
+          </div>
+          <div>
+            <TextField
+              label="月领折算系数（年金适用）"
+              value={String(draft.monthlyConversionFactor || '')}
+              onChange={(value) => updateDraft('monthlyConversionFactor', value)}
+              inputMode="decimal"
+              placeholder="按官方资料填写，如 0.085"
+            />
+            <p className="mt-1 text-[11px] font-semibold leading-5 text-slate-500">仅在条款明确按月领取且给出系数时使用；不要按产品名称或常识估算。</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <TextField label="有效保险金额（官方值）" value={String(draft.effectiveInsuranceAmount || '')} onChange={(value) => updateDraft('effectiveInsuranceAmount', value)} inputMode="decimal" placeholder="按保单年度表填写" />
+            <TextField label="累计红利保险金额（官方值）" value={String(draft.accumulatedDividendInsuredAmount || '')} onChange={(value) => updateDraft('accumulatedDividendInsuredAmount', value)} inputMode="decimal" placeholder="按官方红利表填写" />
+          </div>
+          <p className="text-[11px] font-semibold leading-5 text-slate-500">仅填写条款、保单或官方年度表明确给出的数值；缺少时系统显示最低可确认值，不把基本保险金额冒充有效保险金额。</p>
           <TextField label="保障额度 (元)" value={draft.amount} onChange={(value) => updateDraft('amount', value)} inputMode="decimal" placeholder="0.00" />
           <PolicyPlanEditor
             company={draft.company}

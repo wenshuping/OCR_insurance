@@ -3,6 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createPolicyOcrApp } from './app.mjs';
 import { createProductionAgentGatewayOptions } from './agent-gateway-runtime.service.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from './policy-ocr-database-target.mjs';
 import { createSqliteStateStore } from './sqlite-state-store.mjs';
 import { createAdvisorMemoryConfirmationService } from './advisor-memory-confirmation.service.mjs';
 import { createDingtalkIdentityRuntime } from './dingtalk-identity-runtime.mjs';
@@ -74,7 +75,10 @@ await loadEnvFile(path.resolve(__dirname, '.env'), { override: true });
 await loadEnvFile(path.resolve(__dirname, '.env.local'), { override: true });
 
 const statePath = process.env.POLICY_OCR_APP_STATE_PATH || '';
-const dbPath = process.env.POLICY_OCR_APP_DB_PATH || path.resolve(__dirname, '../.runtime/policy-ocr.sqlite');
+const dbPath = resolvePolicyOcrWriteDatabasePath({
+  projectRoot,
+  requestedPath: process.env.POLICY_OCR_APP_DB_PATH,
+});
 const port = Number(process.env.POLICY_OCR_APP_API_PORT || 4206);
 const host = process.env.POLICY_OCR_APP_HOST || '0.0.0.0';
 

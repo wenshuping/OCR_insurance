@@ -79,6 +79,10 @@ bundle/component termination linkage. Missing topology evidence is review, not
   obligation to pay or return an amount.
 - Keep death and total disability separate only when the official contract
   gives them independent headings and obligations.
+- When one official heading combines death and total disability, keep disease,
+  accident, waiting-period, age, and payment-period variants as branches under
+  one responsibility and one indicator. Never create a sibling `疾病全残`
+  indicator from a cause clause.
 - Keep accident/non-accident, age, payment-period, waiting-period, and
   policy-year outcomes as branches under the owning responsibility.
 - Keep a waiting-period premium return as

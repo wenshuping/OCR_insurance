@@ -92,6 +92,17 @@ npm run harness:audit
 
 The audit checks production-sensitive changed paths, required harness execution points, focused test mappings in `docs/harness-test-map.json`, Skill changes under `.agents/skills/`, read-only optional responsibility data quality in the development SQLite database, and scripts that default to the production SQLite path.
 
+### Product identity matching gate
+
+All product, responsibility, indicator, and official-source matching is governed by a key-first contract:
+
+1. Match `productKey` or `canonicalProductId` first. If either side has a key, a different key is an immediate non-match; never fall back to a product name.
+2. A legacy fallback is allowed only when both records lack a key, the company and product name are exact, and the same official `sourceDigest` is present on both sides.
+3. If no digest exists, the fallback must use the same official `sourceUrl`; if that is also unavailable, it must use the same explicit version (`productVersionId` or `publisherVersion`) together with the exact company and product name.
+4. Name-only, fuzzy-name, company-plus-name, or cross-version fallback is forbidden. A product name is display text, not an identity key.
+
+`npm run harness:audit` applies a changed-file gate to product/responsibility/indicator/source matching code. Suspicious name-only selectors fail unless the same legacy branch explicitly proves a missing key and carries strict source/version evidence. The executable contract and regression tests are in `scripts/product-identity-harness.mjs` and `tests/harness-audit.test.mjs`.
+
 ### Development source ownership
 
 The development stack has exactly one source-owner worktree. Once `npm run local:dev` has claimed it, `npm run harness:audit` fails from every other worktree. This prevents a change or test in one checkout from being reported as verified while the browser and API run another checkout.
@@ -204,6 +215,24 @@ DingTalk, HTTP routes, channel gateways, and frontend components may format tran
 Professional agent output must be preserved without lossy model regeneration. Message splitting, card conversion, and length limits must retain the complete professional result, including responsibility details, calculation information, qualifications, and source citations. A rendering fallback must not silently downgrade an existing responsibility card to incomplete free text.
 
 ### Context, fallback, and product matching rules
+
+#### Product identity precedence
+
+Every product-related lookup, responsibility projection, indicator match, source
+selection, and customer-summary read must resolve identity in this order:
+
+1. exact `productKey` or `canonicalProductId`;
+2. for legacy rows that have no product key, exact official `sourceDigest` or
+   `sourceUrl` plus the verified product/version identity;
+3. if neither key nor source identity exists, the match is blocked for review;
+   exact company plus product name alone is not an approved identity fallback.
+
+A name-only fuzzy match must never override a present key, cross a key conflict,
+or silently join different versions. A missing key is a data-quality gap that
+must remain visible to the audit; it is not permission to broaden the match.
+Every fallback path must have a focused regression for a same-name/different-key
+conflict and a legacy row with no key. Product-specific names and URLs must not
+be embedded in the matching implementation.
 
 - Every Hermes Agent Loop turn must receive a bounded, server-owned fact block before recent chat history. The block may contain only the current goal, controlled verified entities, pending controlled candidates, and source-separated conflicts; it must not copy model conclusions into verified facts.
 - The fact block is persisted in the existing SQLite conversation payload. Do not create scratch-file memory, a second conversation store, or client-supplied memory. Direct identifiers must be redacted and all fields bounded before entering the model context.

@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
 const DEFAULT_STATE_PATH = path.join(projectRoot, '.runtime', 'state.json');
-const DEFAULT_DB_PATH = path.join(projectRoot, '.runtime', 'policy-ocr.sqlite');
+const DEFAULT_DB_PATH = resolvePolicyOcrWriteDatabasePath({ projectRoot });
 
 function trim(value) {
   return String(value ?? '').trim();
@@ -218,7 +219,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     .filter(Boolean);
   const result = syncStateKnowledgeIndicatorsToSqlite({
     statePath: path.resolve(readArg('state-path', DEFAULT_STATE_PATH)),
-    dbPath: path.resolve(readArg('db-path', DEFAULT_DB_PATH)),
+    dbPath: resolvePolicyOcrWriteDatabasePath({
+      projectRoot,
+      requestedPath: readArg('db-path', DEFAULT_DB_PATH),
+    }),
     write: hasFlag('write'),
     companies,
   });

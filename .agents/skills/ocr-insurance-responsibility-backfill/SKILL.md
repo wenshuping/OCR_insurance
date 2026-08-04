@@ -61,7 +61,7 @@ For unattended development-database backfill, use the bundled pipeline runner. I
 PIPELINE_SKILL_DIR="$PWD/.agents/skills/ocr-insurance-product-responsibility-pipeline"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 python3 "$PIPELINE_SKILL_DIR/scripts/batch_deepseek_backfill.py" \
-  --db-path="$PWD/.runtime/local/policy-ocr.sqlite" \
+  --db-path="$POLICY_OCR_APP_DB_PATH" \
   --output-dir="$PWD/artifacts/responsibility-backfill-$STAMP" \
   --env-file="$PWD/.env.local" \
   --limit=20 \
@@ -102,7 +102,7 @@ only with `manualFormulaInputs`.
 1. Pin the development database and create a run directory.
 
 ```bash
-export POLICY_OCR_APP_DB_PATH="$PWD/.runtime/local/policy-ocr.sqlite"
+export POLICY_OCR_APP_DB_PATH="/Users/wenshuping/OCR_insurance_ssd/.runtime/local/policy-ocr.sqlite"
 export POLICY_OCR_APP_STATE_PATH="$PWD/.runtime/local/state.json"
 export STAMP="$(date +%Y%m%d-%H%M%S)"
 export RUN_DIR="$PWD/.runtime/responsibility-backfill-$STAMP"

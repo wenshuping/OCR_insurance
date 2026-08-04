@@ -17,7 +17,7 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v25-planner-routing';
+const currentSummaryVersion = 'customer-summary-v26-field-evidence-display';
 
 test('material enrichment dynamically adds grounded blocks and responsibilities from published chunks', async () => {
   let receivedPrompt = '';
@@ -107,6 +107,36 @@ test('material enrichment leaves the official summary unchanged without publishe
   });
   assert.equal(result, summary);
   assert.equal(modelCalls, 0);
+});
+
+test('policy-derived responsibility cards override stale product cards in customer summaries', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/annuity-terms.pdf';
+  const summary = buildCustomerResponsibilitySummaryFromCards({
+    company: '新华保险',
+    productName: '示例养老年金保险（分红型）',
+    responsibilityCards: [{
+      title: '养老年金',
+      plainSummary: '被保险人生存并到达领取日时给付。',
+      sourceUrl,
+      sourceTitle: '示例养老年金保险条款',
+      sourceExcerpt: '按年领取的，每年领取金额为基本保险金额；按月领取的，每月领取金额为基本保险金额×月领折算系数。',
+      indicators: [{
+        liability: '养老年金',
+        formulaText: '养老年金 = 基本保险金额 × 月领折算系数',
+        normalizedFormula: 'benefit_amount = basic_insured_amount * monthly_conversion_factor',
+        calculationStatus: 'calculable',
+        sourceUrl,
+        sourceTitle: '示例养老年金保险条款',
+        sourceExcerpt: '按月领取的，每月领取金额为基本保险金额×月领折算系数。',
+        official: true,
+      }],
+    }],
+  });
+
+  assert.ok(summary);
+  assert.equal(summary.mainResponsibilities[0].title, '养老年金');
+  assert.match(summary.mainResponsibilities[0].howItPays, /基本保险金额/u);
+  assert.doesNotMatch(summary.mainResponsibilities[0].calculationStatus, /needs_review|未匹配到通过核对/u);
 });
 
 function baseState() {
@@ -429,6 +459,64 @@ test('source-pinned database summary rejects mixed responsibility-card versions'
     productName,
     requireSourceDigest: true,
   }), null);
+});
+
+test('customer summary does not fall back to a conflicting product key', () => {
+  const summary = buildCustomerResponsibilitySummaryFromCards({
+    db: dbWithCards([baseCard()]),
+    company,
+    productName,
+    canonicalProductId: 'product-different-version',
+  });
+
+  assert.equal(summary, null);
+});
+
+test('customer summary renders official PDF field evidence as display-only when persistence is not aligned', () => {
+  const sourceUrl = 'https://official.example.test/universal-v1.pdf';
+  const summary = buildCustomerResponsibilitySummaryFromCards({
+    company,
+    productName: '示例万能终身寿险（万能型）',
+    responsibilityCards: [{
+      company,
+      productName: '示例万能终身寿险（万能型）',
+      title: '身故保险金',
+      plainSummary: '被保险人身故，按合同约定给付。',
+      sourceUrl,
+    }],
+    sourceRecords: [
+      {
+        company,
+        productName: '示例万能终身寿险（万能型）',
+        url: sourceUrl,
+        sourceType: 'pdf',
+        official: true,
+        evidenceLevel: 'insurer_official',
+        sourceDigest: 'sha256:display-v1',
+        sourceAcquisition: { strategy: 'bound_official_pdf', identityVerified: true, pdfMagicVerified: true },
+        pageText: '第十条 本合同设置万能账户。第十一条 最低保证利率为年利率2%。第十二条 结算利率按月公布。',
+      },
+      {
+        company,
+        productName: '其他万能终身寿险（万能型）',
+        url: 'https://official.example.test/other.pdf',
+        sourceType: 'pdf',
+        official: true,
+        evidenceLevel: 'insurer_official',
+        sourceDigest: 'sha256:other-v1',
+        pageText: '第十条 本合同设置万能账户。最低保证利率为年利率9%。',
+      },
+    ],
+  });
+
+  assert.equal(summary.evidenceMode, 'display-only');
+  assert.equal(summary.persistenceStatus, 'persistence-not-aligned');
+  const productFunctions = summary.contentBlocks.find((block) => block.blockKey === 'productFunctions');
+  assert.equal(productFunctions.enabled, true);
+  assert.match(productFunctions.content, /最低保证利率/u);
+  assert.match(productFunctions.content, /账户结算/u);
+  assert.doesNotMatch(productFunctions.content, /9%/u);
+  assert.equal(summary.mainResponsibilities[0].title, '身故保险金');
 });
 
 test('generateProductCustomerResponsibilitySummary returns an existing database summary without calling DeepSeek', async () => {

@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { buildOptionalResponsibilityId } from '../server/optional-responsibility-governance.mjs';
+import { resolvePolicyOcrWriteDatabasePath } from '../server/policy-ocr-database-target.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -20,8 +21,7 @@ const SOURCE_URL =
   'https://faos-static-prd.life.cic.cn/term-lib/cpsms/2025/11/19/12-3-%E4%B8%AD%E5%8D%8E%E5%81%A5%E4%B9%90%E8%87%BB%E5%80%8D2025%E9%87%8D%E5%A4%A7%E7%96%BE%E7%97%85%E4%BF%9D%E9%99%A9%E4%BA%A7%E5%93%81%E8%AF%B4%E6%98%8E%E4%B9%A6.pdf';
 const VERSION = '2026-05-31-zhonghua-jianle-zhenbei-2025';
 const DB_PATHS = [
-  path.join(runtimeDir, 'policy-ocr.sqlite'),
-  path.join(runtimeDir, 'local', 'policy-ocr.sqlite'),
+  resolvePolicyOcrWriteDatabasePath({ projectRoot }),
 ];
 
 function trim(value) {
@@ -689,7 +689,9 @@ function applyRepair(dbPath, payload, { dryRun = false } = {}) {
 
 async function main() {
   const explicitDbPath = trim(readArg('db-path'));
-  const dbPaths = explicitDbPath ? [path.resolve(explicitDbPath)] : DB_PATHS;
+  const dbPaths = explicitDbPath
+    ? [resolvePolicyOcrWriteDatabasePath({ projectRoot, requestedPath: explicitDbPath })]
+    : DB_PATHS;
   const dryRun = hasFlag('dry-run');
   const pdfBuffer = await fetchPdfBuffer();
   const rawText = extractPdfText(pdfBuffer);
