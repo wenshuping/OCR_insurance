@@ -1475,8 +1475,8 @@ test('buildFamilyReport keeps accident indicators out of critical death and disa
   assert.deepEqual(deathRow.sourcePolicies.map((policy) => policy.productName), [xinhuaNursing, xinhuaWholeLife]);
 
   const accidentMember = report.accident.members.find((item) => item.member === '温舒萍');
-  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'covered');
-  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'covered');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'general_accident').status, 'legacy_reference');
+  assert.equal(accidentMember.rows.find((row) => row.key === 'aviation').status, 'legacy_reference');
 });
 
 test('buildFamilyReport resolves critical illness amounts from formula text', () => {
@@ -1545,7 +1545,7 @@ test('buildFamilyReport assembles selected quantified optional indicators even w
   assert.equal(moderate.amount, 85000);
   assert.equal(moderate.amountText, '8.5万');
   assert.equal(waiver.amount, 0);
-  assert.equal(waiver.status, 'formula');
+  assert.equal(waiver.status, 'legacy_reference');
   assert.match(waiver.amountText, /豁免后续应交保险费/u);
   assert.equal(waiver.sourcePolicies[0].liability, '轻度疾病或中度疾病豁免保险费');
 });
@@ -1674,7 +1674,7 @@ test('buildFamilyReport does not fall back to active main policy amount from ina
   const member = report.criticalIllness.members.find((item) => item.member === '冯力');
   const row = member.rows.find((item) => item.key === 'critical_first');
   assert.equal(row.amount, 0);
-  assert.equal(row.status, 'missing');
+  assert.equal(row.status, 'inactive');
 });
 
 test('buildFamilyReport classifies ordinal critical disease payouts as multiple', () => {
@@ -2239,7 +2239,96 @@ test('buildFamilyReport does not recalculate protection amounts when a policy de
 
   const critical = report.criticalIllness.members[0].rows.find((row) => row.key === 'critical_first');
   assert.equal(critical.amount, 0);
-  assert.equal(critical.status, 'formula');
+  assert.equal(critical.status, 'legacy_reference');
+});
+
+test('buildFamilyReport uses responsibility cards and their projection before legacy indicators with exact rider matching', () => {
+  const riderName = '新华人寿附加重大疾病保险';
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 342,
+      name: '家庭保障计划',
+      amount: 500000,
+      plans: [
+        { role: 'main', name: '家庭保障计划', matchedProductName: '家庭保障计划', amount: 500000 },
+        { role: 'rider', name: '附加重大疾病保险', matchedProductName: riderName, amount: 100000 },
+      ],
+      coverageIndicators: [
+        { id: 'legacy-critical', coverageType: '疾病保障', liability: '旧指标重疾责任', value: 500, unit: '元', productName: '家庭保障计划' },
+      ],
+      responsibilityCards: [
+        {
+          productName: riderName,
+          title: '重大疾病保险金',
+          category: '疾病保障',
+          indicators: [{
+            id: 'card-critical',
+            productName: riderName,
+            coverageType: '疾病保障',
+            liability: '重大疾病保险金',
+            formulaText: '按附加险保险金额给付',
+          }],
+        },
+        {
+          productName: riderName,
+          title: '意外身故保险金',
+          category: '意外保障',
+          indicators: [{
+            id: 'card-accident',
+            productName: riderName,
+            coverageType: '意外保障',
+            liability: '意外身故保险金',
+          }],
+        },
+      ],
+      responsibilityCalculations: [{
+        indicatorId: 'card-critical',
+        liability: '重大疾病保险金',
+        amount: 120000,
+        calculationText: '附加险详情投影 = 120,000元',
+      }],
+      scenarioEntries: [{
+        scenario: '意外身故保险金',
+        amount: 80000,
+        productName: riderName,
+        calculationText: '附加险场景投影 = 80,000元',
+      }],
+    }),
+  ]);
+
+  const row = report.criticalIllness.members[0].rows.find((item) => item.key === 'critical_first');
+  assert.equal(row.amount, 120000);
+  assert.equal(row.status, 'covered');
+  assert.equal(row.sourcePolicies[0].productName, riderName);
+  assert.equal(row.sourcePolicies[0].calculationText, '附加险详情投影 = 120,000元');
+  const accident = report.accident.members[0].rows.find((item) => item.key === 'general_accident');
+  assert.equal(accident.amount, 80000);
+  assert.equal(accident.sourcePolicies[0].productName, riderName);
+  assert.equal(accident.sourcePolicies[0].calculationText, '附加险场景投影 = 80,000元');
+});
+
+test('buildFamilyReport labels legacy indicators as reference pending responsibility-card generation', () => {
+  const report = buildFamilyReport([
+    makePolicy({
+      id: 343,
+      amount: 300000,
+      coverageIndicators: [{
+        id: 'legacy-critical',
+        coverageType: '疾病保障',
+        liability: '重大疾病保险金',
+        value: 100,
+        unit: '%',
+        basis: '基本保额',
+        formulaText: '基本保额100%',
+      }],
+    }),
+  ]);
+
+  const row = report.criticalIllness.members[0].rows.find((item) => item.key === 'critical_first');
+  assert.equal(row.amount, 300000);
+  assert.equal(row.status, 'legacy_reference');
+  assert.match(row.conditionText, /旧指标参考\/待生成/u);
+  assert.match(row.sourcePolicies[0].calculationText, /旧指标参考\/待生成/u);
 });
 
 test('buildFamilyReport explains future deterministic payout totals by liability and year range', () => {
