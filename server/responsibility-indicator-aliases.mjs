@@ -66,17 +66,49 @@ function aliasScopeKey(indicator = {}, title = '') {
     : '';
 }
 
+function mergeArrayValues(left = [], right = []) {
+  const values = [...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])];
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeLegacyAliasIntoCanonical(canonical = {}, alias = {}) {
+  return {
+    ...alias,
+    ...canonical,
+    branches: mergeArrayValues(canonical.branches, alias.branches),
+    operands: mergeArrayValues(canonical.operands, alias.operands),
+    evidenceTokens: mergeArrayValues(canonical.evidenceTokens, alias.evidenceTokens),
+    ruleRefs: mergeArrayValues(canonical.ruleRefs, alias.ruleRefs),
+    requiredInputs: mergeArrayValues(canonical.requiredInputs, alias.requiredInputs),
+    indicators: mergeArrayValues(canonical.indicators, alias.indicators),
+  };
+}
+
 export function removeSupersededDiseaseDisabilityAliases(indicators = []) {
   const rows = Array.isArray(indicators) ? indicators : [];
-  const canonicalKeys = new Set(rows.map((indicator) => {
+  const canonicalIndexByKey = new Map();
+  rows.forEach((indicator, index) => {
     const title = combinedDeathDisabilityTitle(liabilityName(indicator), { exact: true });
-    return title ? aliasScopeKey(indicator, title) : '';
-  }).filter(Boolean));
+    const key = title ? aliasScopeKey(indicator, title) : '';
+    if (key && !canonicalIndexByKey.has(key)) canonicalIndexByKey.set(key, index);
+  });
 
-  if (!canonicalKeys.size) return rows;
-  return rows.filter((indicator) => {
+  if (!canonicalIndexByKey.size) return rows;
+  const mergedRows = [...rows];
+  const removedIndexes = new Set();
+  rows.forEach((indicator, index) => {
     const title = combinedDeathDisabilityTitleForLegacyAlias(indicator);
     const key = title ? aliasScopeKey(indicator, title) : '';
-    return !key || !canonicalKeys.has(key);
+    const canonicalIndex = key ? canonicalIndexByKey.get(key) : undefined;
+    if (canonicalIndex === undefined || canonicalIndex === index) return;
+    mergedRows[canonicalIndex] = mergeLegacyAliasIntoCanonical(mergedRows[canonicalIndex], indicator);
+    removedIndexes.add(index);
   });
+  return mergedRows.filter((_, index) => !removedIndexes.has(index));
 }

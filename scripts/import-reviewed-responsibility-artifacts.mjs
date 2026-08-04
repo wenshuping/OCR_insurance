@@ -12,6 +12,7 @@ import {
   buildResponsibilityCardsForPolicy,
   indicatorCheckForResponsibilityCard,
 } from '../server/responsibility-card-standardizer.mjs';
+import { removeSupersededDiseaseDisabilityAliases } from '../server/responsibility-indicator-aliases.mjs';
 import {
   assertNotLegacyPolicyOcrDatabasePath,
   resolvePolicyOcrWriteDatabasePath,
@@ -382,6 +383,7 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
     sourceUrl,
     sourceTitle,
     sourceExcerpt,
+    sourceProvenance: check.sourceProvenance || responsibility.sourceProvenance || sourceRecord.sourceProvenance,
     sourceEvidenceLevel: sourceUrl ? 'official_excerpt' : 'missing_source_url',
     responsibilityArtifactId: text(product.artifactId),
     semanticProjectionSource: 'approved_artifact',
@@ -411,6 +413,45 @@ function indicatorFrom(product = {}, responsibility = {}, now = new Date().toISO
   };
 }
 
+function canonicalizeAndDeduplicateIndicators(indicators = []) {
+  return removeSupersededDiseaseDisabilityAliases(indicators);
+}
+
+function canonicalizeResponsibilitiesForProduct(product = {}, responsibilities = []) {
+  const company = text(product.company);
+  const productName = text(product.productName);
+  const sourceDigest = text(product.sourceDigest || product.productIdentity?.sourceDigest);
+  const sourceUrl = text(product.sourceUrl || product.productIdentity?.sourceUrl);
+  return removeSupersededDiseaseDisabilityAliases(rows(responsibilities).map((responsibility) => ({
+    ...responsibility,
+    company: text(responsibility.company || company),
+    productName: text(responsibility.productName || productName),
+    sourceDigest: text(responsibility.sourceDigest || responsibility.responsibilitySourceDigest || sourceDigest),
+    sourceUrl: text(responsibility.sourceUrl || sourceUrl),
+  })));
+}
+
+function duplicateResponsibilityIdCanCanonicalize(left = {}, right = {}, product = {}) {
+  const leftLiability = text(left.liability || left.title || left.name).replace(/\s+/gu, '');
+  const rightLiability = text(right.liability || right.title || right.name).replace(/\s+/gu, '');
+  const liabilities = [leftLiability, rightLiability];
+  const hasLegacyAlias = liabilities.some((value) => /^疾病全残(?:保险金)?$/u.test(value));
+  const hasCanonicalTitle = liabilities.some((value) => /^(?:身故或身体全残保险金|身故和身体全残保险金|身故或全残保险金|身故和全残保险金)$/u.test(value));
+  if (!hasLegacyAlias || !hasCanonicalTitle) return false;
+  const productDigest = text(product.sourceDigest || product.productIdentity?.sourceDigest);
+  const productUrl = text(product.sourceUrl || product.productIdentity?.sourceUrl);
+  const sourceKey = (responsibility) => text(
+    responsibility.sourceDigest
+    || responsibility.responsibilitySourceDigest
+    || responsibility.sourceUrl
+    || productDigest
+    || productUrl,
+  );
+  const leftSourceKey = sourceKey(left);
+  const rightSourceKey = sourceKey(right);
+  return Boolean(leftSourceKey && leftSourceKey === rightSourceKey);
+}
+
 function validateProduct(product = {}, {
   unifiedResponsibilities = null,
   expectedResponsibilityCount = null,
@@ -420,15 +461,15 @@ function validateProduct(product = {}, {
   if (!text(product.productName)) issues.push('missing_productName');
   const acceptedResponsibilities = rows(product.acceptedResponsibilities);
   if (!acceptedResponsibilities.length) issues.push('empty_responsibilities');
-  const seenIds = new Set();
+  const responsibilitiesById = new Map();
   for (const responsibility of acceptedResponsibilities) {
     const responsibilityId = text(responsibility.responsibilityId);
     if (!responsibilityId) continue;
-    if (seenIds.has(responsibilityId)) {
+    const previous = responsibilitiesById.get(responsibilityId);
+    if (previous && !duplicateResponsibilityIdCanCanonicalize(previous, responsibility, product)) {
       issues.push(`duplicate_responsibility_id:${responsibilityId}`);
-    } else {
-      seenIds.add(responsibilityId);
     }
+    if (!previous) responsibilitiesById.set(responsibilityId, responsibility);
   }
   if (
     unifiedResponsibilities
@@ -775,13 +816,17 @@ export function importReviewedResponsibilityArtifacts({
         indicatorIdsByProduct.get(productKey).add(indicator.id);
       }
     }
-    if (accepted.length) productsForMaterialize.set(productKey, {
-      company: text(product.company),
-      productName: text(product.productName),
-      acceptedCount: accepted.length,
-      responsibilityMode: unifiedResponsibilities ? 'authoritative_only' : 'auto',
-      authoritativeResponsibilities: accepted,
-    });
+    if (accepted.length) {
+      const authoritativeResponsibilities = canonicalizeResponsibilitiesForProduct(product, accepted);
+      productsForMaterialize.set(productKey, {
+        company: text(product.company),
+        productName: text(product.productName),
+        acceptedCount: accepted.length,
+        acceptedResponsibilities: authoritativeResponsibilities,
+        responsibilityMode: unifiedResponsibilities ? 'authoritative_only' : 'auto',
+        authoritativeResponsibilities,
+      });
+    }
     if (accepted.length) productsByKey.set(productKey, product);
     if (samples.length < sampleLimit) {
       samples.push({
@@ -794,11 +839,13 @@ export function importReviewedResponsibilityArtifacts({
     }
   }
 
+  const canonicalIndicators = canonicalizeAndDeduplicateIndicators(indicators);
+
   let materializeResult = null;
   const indicatorPruneResults = [];
   const artifactWriteResults = [];
   const strictAlignmentResults = [];
-  if (write && indicators.length) {
+  if (write && canonicalIndicators.length) {
     const writeDbPath = assertNotLegacyPolicyOcrDatabasePath({ projectRoot, dbPath });
     const db = new DatabaseSync(writeDbPath);
     try {
@@ -826,7 +873,7 @@ export function importReviewedResponsibilityArtifacts({
       try {
         for (const product of productsForMaterialize.values()) {
           const productKey = `${product.company}\u001f${product.productName}`;
-          const productIndicators = indicators.filter((indicator) => (
+          const productIndicators = canonicalIndicators.filter((indicator) => (
             text(indicator.company) === product.company && text(indicator.productName) === product.productName
           ));
           const expectedIndicatorIds = indicatorIdsByProduct.get(productKey) || new Set();
@@ -945,7 +992,8 @@ export function importReviewedResponsibilityArtifacts({
     artifacts: artifacts.map((artifact) => path.resolve(artifact)),
     productsReviewed: productEntries.length,
     productsWithAcceptedResponsibilities: productsForMaterialize.size,
-    acceptedResponsibilities: indicators.length,
+    acceptedResponsibilities: canonicalIndicators.length,
+    rawAcceptedResponsibilities: indicators.length,
     validationFailures,
     versionConflicts,
     blockerProducts: blockers,

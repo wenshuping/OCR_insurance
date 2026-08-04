@@ -134,6 +134,8 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   const liability = liabilityName(indicator);
   const name = compact(liability);
   const excerpt = compact(sourceExcerpt);
+  const diseaseBranchTitle = diseaseBranchAggregateTitle(name, excerpt);
+  if (diseaseBranchTitle) return diseaseBranchTitle;
   const withoutForPrefix = text(liability).replace(/^对于/u, '').trim();
   if (withoutForPrefix && withoutForPrefix !== liability && /保险金/u.test(withoutForPrefix)) return withoutForPrefix;
   const cleanedLiability = cleanClauseTitle(liability);
@@ -145,6 +147,106 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   const concreteLiability = concreteScheduledLiabilityFromExcerptForAggregate(indicator, sourceExcerpt);
   if (concreteLiability) return concreteLiability;
   return liability;
+}
+
+function diseaseBranchAggregateTitle(liabilityNameValue = '', sourceExcerpt = '') {
+  if (!/^(?:疾病全残(?:保险金)?|疾病身故(?:或|和)?(?:身体)?全残(?:保险金)?)$/u.test(liabilityNameValue)) return '';
+  if (sourceExcerpt.includes('身故或身体全残保险金')) return '身故或身体全残保险金';
+  if (sourceExcerpt.includes('身故和身体全残保险金')) return '身故和身体全残保险金';
+  if (sourceExcerpt.includes('身故或全残保险金')) return '身故或全残保险金';
+  if (sourceExcerpt.includes('身故和全残保险金')) return '身故和全残保险金';
+  return '';
+}
+
+function isCombinedDeathDisabilityTitle(value = '') {
+  return /^(?:身故或身体全残保险金|身故和身体全残保险金|身故或全残保险金|身故和全残保险金)$/u.test(compact(value));
+}
+
+function isDiseaseBranchAlias(value = '') {
+  return /^(?:疾病全残(?:保险金)?|疾病身故(?:或|和)?(?:身体)?全残(?:保险金)?)$/u.test(compact(value));
+}
+
+function normalizedOfficialSourceUrl(value = '') {
+  const sourceUrl = text(value);
+  if (!sourceUrl) return '';
+  try {
+    const parsed = new URL(sourceUrl);
+    parsed.protocol = parsed.protocol.toLowerCase();
+    parsed.hostname = parsed.hostname.toLowerCase();
+    parsed.pathname = parsed.pathname.replace(/\/+/gu, '/').replace(/\/$/u, '') || '/';
+    return parsed.toString().replace(/\/$/u, '');
+  } catch {
+    return compact(sourceUrl).replace(/\/$/u, '');
+  }
+}
+
+function sourceDigestOf(row = {}) {
+  return firstNonEmpty(row.sourceDigest, row.source_digest);
+}
+
+function sourceUrlOf(row = {}) {
+  return sourceUrlFrom(row);
+}
+
+function exactCombinedHeadingEvidence(row = {}) {
+  const excerpt = compact(sourceExcerptFrom(row));
+  return Boolean(
+    excerpt.includes('身故或身体全残保险金')
+    || excerpt.includes('身故和身体全残保险金')
+    || excerpt.includes('身故或全残保险金')
+    || excerpt.includes('身故和全残保险金'),
+  );
+}
+
+function sourceIdentityCanMerge(left = {}, right = {}) {
+  const leftDigest = sourceDigestOf(left);
+  const rightDigest = sourceDigestOf(right);
+  if (leftDigest || rightDigest) return Boolean(leftDigest && rightDigest && leftDigest === rightDigest);
+  const leftUrl = normalizedOfficialSourceUrl(sourceUrlOf(left));
+  const rightUrl = normalizedOfficialSourceUrl(sourceUrlOf(right));
+  return Boolean(leftUrl && rightUrl && leftUrl === rightUrl && exactCombinedHeadingEvidence(left) && exactCombinedHeadingEvidence(right));
+}
+
+function indicatorCompletenessScore(indicator = {}) {
+  return [
+    indicator.responsibilityId,
+    indicator.sourceDigest,
+    indicator.sourceUrl,
+    indicator.formulaText,
+    indicator.normalizedFormula,
+    Array.isArray(indicator.requiredInputs) && indicator.requiredInputs.length ? 'requiredInputs' : '',
+    Array.isArray(indicator.operands) && indicator.operands.length ? 'operands' : '',
+    Array.isArray(indicator.branches) && indicator.branches.length ? 'branches' : '',
+    indicator.sourceExcerpt,
+  ].filter(Boolean).length;
+}
+
+function mergeIndicatorArrays(left = [], right = []) {
+  const values = [...(Array.isArray(left) ? left : []), ...(Array.isArray(right) ? right : [])];
+  const seen = new Set();
+  return values.filter((value) => {
+    const key = JSON.stringify(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function mergeCanonicalIndicator(left = {}, right = {}) {
+  const selected = (right.canonicalSourceRank || 0) > (left.canonicalSourceRank || 0)
+    || ((right.canonicalSourceRank || 0) === (left.canonicalSourceRank || 0) && indicatorCompletenessScore(right) > indicatorCompletenessScore(left))
+    ? right
+    : left;
+  const other = selected === left ? right : left;
+  return {
+    ...other,
+    ...selected,
+    branches: mergeIndicatorArrays(left.branches, right.branches),
+    operands: mergeIndicatorArrays(left.operands, right.operands),
+    evidenceTokens: mergeIndicatorArrays(left.evidenceTokens, right.evidenceTokens),
+    ruleRefs: mergeIndicatorArrays(left.ruleRefs, right.ruleRefs),
+    requiredInputs: mergeIndicatorArrays(left.requiredInputs, right.requiredInputs),
+  };
 }
 
 function escapeRegex(value = '') {
@@ -658,6 +760,11 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
     responsibilityRepairVersion: text(repairedIndicator.responsibilityRepairVersion),
     responsibilitySourceDigest: text(repairedIndicator.responsibilitySourceDigest),
     sourceDigest: text(repairedIndicator.sourceDigest),
+    sourceProvenance: repairedIndicator.sourceProvenance && typeof repairedIndicator.sourceProvenance === 'object'
+      ? repairedIndicator.sourceProvenance
+      : (repairedIndicator.provenance && typeof repairedIndicator.provenance === 'object'
+        ? repairedIndicator.provenance
+        : undefined),
     reviewedResponsibilityIndex: Number.isFinite(Number(repairedIndicator.reviewedResponsibilityIndex))
       ? Number(repairedIndicator.reviewedResponsibilityIndex)
       : undefined,
@@ -672,12 +779,38 @@ export function standardizeResponsibilityIndicator(indicator = {}, { policy = {}
 
   const projected = {
     ...normalized,
-    calculationStatus: calculationStatusFor(normalized),
+    calculationStatus: reviewedIndicatorCalculationStatus(indicator) || calculationStatusFor(normalized),
   };
   return {
     ...projected,
     ...approvedArtifactSemanticProjection(repairedIndicator),
   };
+}
+
+export function canonicalizeResponsibilityIndicators(indicators = [], { policy = {} } = {}) {
+  const canonical = [];
+  for (const rawIndicator of objectRows(indicators)) {
+    const standardized = standardizeResponsibilityIndicator(rawIndicator, { policy });
+    standardized.canonicalSourceRank = isDiseaseBranchAlias(liabilityName(rawIndicator)) ? 0 : 1;
+    const rawTitle = liabilityName(rawIndicator);
+    const canonicalTitle = text(standardized.liability);
+    const mergeableTitle = isCombinedDeathDisabilityTitle(canonicalTitle)
+      && (isDiseaseBranchAlias(rawTitle) || isCombinedDeathDisabilityTitle(rawTitle));
+    if (!mergeableTitle) {
+      canonical.push(standardized);
+      continue;
+    }
+    const existingIndex = canonical.findIndex((candidate) => (
+      text(candidate.liability) === canonicalTitle
+      && sourceIdentityCanMerge(candidate, standardized)
+    ));
+    if (existingIndex < 0) {
+      canonical.push(standardized);
+      continue;
+    }
+    canonical[existingIndex] = mergeCanonicalIndicator(canonical[existingIndex], standardized);
+  }
+  return canonical.map(({ canonicalSourceRank, ...indicator }) => indicator);
 }
 
 function responsibilityTitle(row = {}) {
@@ -1173,7 +1306,11 @@ function cardKeyFor({ policy = {}, indicator = {}, responsibility = {}, title = 
   const productKey = canonicalProductId
     ? `canonical:${compact(canonicalProductId)}`
     : `${compact(company)}:${compact(productName)}`;
-  return `${productKey}:${compact(title || indicator.liability || responsibility.title || '保险责任')}`;
+  const cardTitle = compact(title || indicator.liability || responsibility.title || '保险责任');
+  const sourceIdentity = isCombinedDeathDisabilityTitle(cardTitle)
+    ? (sourceDigestOf(indicator) || normalizedOfficialSourceUrl(sourceUrlOf(indicator)))
+    : '';
+  return `${productKey}:${cardTitle}:${sourceIdentity}`;
 }
 
 function plainSummaryFor({ title, triggerCondition, payoutSummary }) {
@@ -1219,6 +1356,7 @@ function cardSource({ indicator = {}, responsibility = {}, knowledge = {} }) {
       knowledge.responsibilitySourceDigest,
       knowledge.sourceDigest,
     ),
+    sourceProvenance: indicator.sourceProvenance || responsibility.sourceProvenance || knowledge.sourceProvenance,
     sourceTitle: firstNonEmpty(responsibility.sourceTitle, indicator.sourceTitle, knowledge.title),
     sourceExcerpt: firstNonEmpty(preferredExcerpt, responsibilityExcerpt, knowledgeExcerpt),
     sourceKind: sourceMeta.sourceKind,
@@ -1885,6 +2023,8 @@ function mergeIndicatorCard(card, indicator, responsibility, knowledge) {
   if (!card.sourceDigest) card.sourceDigest = source.sourceDigest;
   if (!card.responsibilitySourceDigest) card.responsibilitySourceDigest = source.responsibilitySourceDigest;
   if (!card.sourceUrl) card.sourceUrl = source.sourceUrl;
+  if (!card.sourceDigest) card.sourceDigest = source.sourceDigest;
+  if (!card.sourceProvenance) card.sourceProvenance = source.sourceProvenance;
   if (!card.sourceTitle) card.sourceTitle = source.sourceTitle;
   if (!card.sourceExcerpt) card.sourceExcerpt = source.sourceExcerpt;
   if (!card.sourceKind) card.sourceKind = source.sourceKind;

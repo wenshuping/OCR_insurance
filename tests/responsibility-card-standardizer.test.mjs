@@ -1765,6 +1765,102 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
   );
 });
 
+test('standardizeResponsibilityIndicator folds disease full disability into the official death-or-disability responsibility and preserves branches', () => {
+  const sourceExcerpt = '身故或身体全残保险金 被保险人因疾病导致身故或身体全残，本公司按基本保险金额给付身故或身体全残保险金。';
+  const result = standardizeResponsibilityIndicator({
+    id: 'disease-branch',
+    company: '测试保险',
+    productName: '测试两全保险',
+    coverageType: '人寿保障',
+    liability: '疾病全残保险金',
+    formulaText: '身故或身体全残保险金 = 基本保险金额',
+    normalizedFormula: 'basic_amount',
+    branches: [{ when: 'disease', formula: 'basic_amount' }],
+    operands: [{ name: 'policy.amount' }],
+    responsibilityId: 'death_or_disability',
+    sourceDigest: 'sha256:branch-digest',
+    sourceProvenance: { sourcePage: 3 },
+    sourceUrl: 'https://official.example.test/terms.pdf',
+    sourceExcerpt,
+    basis: '基本保险金额',
+  }, { policy: { company: '测试保险', name: '测试两全保险' } });
+
+  assert.equal(result.liability, '身故或身体全残保险金');
+  assert.deepEqual(result.branches, [{ when: 'disease', formula: 'basic_amount' }]);
+  assert.deepEqual(result.operands, [{ name: 'policy.amount' }]);
+  assert.equal(result.responsibilityId, 'death_or_disability');
+  assert.equal(result.sourceDigest, 'sha256:branch-digest');
+  assert.deepEqual(result.sourceProvenance, { sourcePage: 3 });
+});
+
+test('buildResponsibilityCardsForPolicy merges same-source disease branch with its official aggregate title only', () => {
+  const sourceUrl = 'https://official.example.test/terms.pdf';
+  const cards = buildResponsibilityCardsForPolicy({
+    policy: { company: '测试保险', name: '测试两全保险' },
+    coverageIndicators: [{
+      company: '测试保险', productName: '测试两全保险', coverageType: '人寿保障', liability: '疾病全残',
+      formulaText: '身故或身体全残保险金 = 基本保险金额', basis: '基本保险金额',
+      branches: [{ when: 'disease', formula: 'basic_amount' }], sourceDigest: 'sha256:branch-digest',
+      sourceUrl, sourceExcerpt: '身故或身体全残保险金 被保险人因疾病导致身故或身体全残，本公司按基本保险金额给付。',
+    }, {
+      id: 'canonical-indicator', responsibilityId: 'death-or-disability',
+      company: '测试保险', productName: '测试两全保险', coverageType: '人寿保障', liability: '身故或身体全残保险金',
+      formulaText: '身故或身体全残保险金 = 基本保险金额', basis: '基本保险金额',
+      sourceDigest: 'sha256:branch-digest', sourceUrl,
+      sourceExcerpt: '身故或身体全残保险金 被保险人身故或身体全残，本公司按基本保险金额给付。',
+    }],
+  });
+
+  assert.deepEqual(cards.map((card) => card.title), ['身故或身体全残保险金']);
+  assert.equal(cards[0].indicators.length, 1);
+  assert.equal(cards[0].indicators[0].id, 'canonical-indicator');
+  assert.equal(cards[0].indicators[0].responsibilityId, 'death-or-disability');
+  assert.deepEqual(cards[0].indicators[0].branches, [{ when: 'disease', formula: 'basic_amount' }]);
+  assert.equal(cards[0].sourceDigest, 'sha256:branch-digest');
+});
+
+test('canonical combined responsibility merges digestless exact-source aliases but preserves different digests', () => {
+  const base = {
+    company: '测试保险', productName: '测试版本保险', coverageType: '人寿保障',
+    formulaText: '身故或全残保险金 = 基本保险金额', basis: '基本保险金额',
+    sourceUrl: 'https://official.example.test/terms.pdf',
+  };
+  const sameUrlCards = buildResponsibilityCardsForPolicy({
+    policy: { company: '测试保险', name: '测试版本保险' },
+    coverageIndicators: [
+      { ...base, id: 'legacy', liability: '疾病全残', sourceExcerpt: '身故或全残保险金 被保险人因疾病导致全残，本公司按基本保险金额给付。' },
+      { ...base, id: 'canonical', responsibilityId: 'rid', liability: '身故或全残保险金', sourceExcerpt: '身故或全残保险金 被保险人身故或全残，本公司按基本保险金额给付。' },
+    ],
+  });
+  assert.equal(sameUrlCards.length, 1);
+  assert.equal(sameUrlCards[0].indicators.length, 1);
+  assert.equal(sameUrlCards[0].indicators[0].id, 'canonical');
+
+  const versionConflictCards = buildResponsibilityCardsForPolicy({
+    policy: { company: '测试保险', name: '测试版本保险' },
+    coverageIndicators: [
+      { ...base, id: 'v1', liability: '疾病全残', sourceDigest: 'sha256:version-one', sourceExcerpt: '身故或全残保险金 被保险人因疾病导致全残，本公司按基本保险金额给付。' },
+      { ...base, id: 'v2', liability: '身故或全残保险金', sourceDigest: 'sha256:version-two', sourceExcerpt: '身故或全残保险金 被保险人身故或全残，本公司按基本保险金额给付。' },
+    ],
+  });
+  assert.equal(versionConflictCards.length, 2);
+  assert.deepEqual(versionConflictCards.map((card) => card.indicators.length), [1, 1]);
+});
+
+test('standardizeResponsibilityIndicator does not fold independent accident or disease disability without aggregate evidence', () => {
+  const independentDisease = standardizeResponsibilityIndicator({
+    company: '测试保险', productName: '独立疾病险', coverageType: '疾病保障', liability: '疾病全残',
+    sourceUrl: 'https://official.example.test/disease.pdf', sourceExcerpt: '被保险人因疾病达到约定全残标准，给付疾病全残保险金。',
+  }, { policy: { company: '测试保险', name: '独立疾病险' } });
+  const accident = standardizeResponsibilityIndicator({
+    company: '测试保险', productName: '意外险', coverageType: '意外保障', liability: '意外全残保险金',
+    sourceUrl: 'https://official.example.test/accident.pdf', sourceExcerpt: '被保险人因意外伤害导致全残，给付意外全残保险金。',
+  }, { policy: { company: '测试保险', name: '意外险' } });
+
+  assert.equal(independentDisease.liability, '疾病全残');
+  assert.equal(accident.liability, '意外全残保险金');
+});
+
 test('buildResponsibilityCardsForPolicy does not over-derive clauses when structured indicators are already rich', () => {
   const productName = '复星联合妈咪保贝（星耀版）少儿重大疾病保险';
   const indicator = (liability) => ({
