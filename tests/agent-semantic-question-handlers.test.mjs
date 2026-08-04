@@ -158,6 +158,7 @@ test('sales advice freshness uses the same generated-versus-source boundary', as
     status: 'active',
     sourceUpdatedAt: '2026-07-10T00:00:00.000Z',
     generatedAt: '2026-07-11T00:00:00.000Z',
+    expertInputVersion: 'expert:v1',
     inputSummary: { policyCount: 4 },
   }] });
   const stale = harness({ familySalesReviews: [{
@@ -419,6 +420,7 @@ test('safe summaries do not copy numeric phone, identity, or account fields', as
     familyId: 7,
     status: 'active',
     generatedAt: '2026-07-11T00:00:00.000Z',
+    expertInputVersion: 'expert:v1',
     inputSummary: {
       policyCount: 2,
       mobile: 13800138000,
