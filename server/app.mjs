@@ -115,6 +115,7 @@ import {
   mergePolicyDerivedResult,
 } from './policy-derived-results.service.mjs';
 import { createProductKnowledgeStore } from './product-knowledge-store.mjs';
+import { createProductAgentStore } from './product-agent-store.mjs';
 import { createProductRagService } from './product-rag.service.mjs';
 import { createAgentProductKnowledgeSearch } from './agent-product-knowledge.service.mjs';
 import { createInsuranceExpertAgentPlanner } from './insurance-expert-agent-planner.service.mjs';
@@ -2711,6 +2712,8 @@ export function createPolicyOcrApp(options = {}) {
   let responsibilityAssistantProductMatch = null;
   const productKnowledgeStore = options.productKnowledgeStore
     || (options.db ? createProductKnowledgeStore(options.db) : null);
+  const productAgentStore = options.productAgentStore
+    || (options.db ? createProductAgentStore(options.db) : null);
   const productRagService = options.productRagService
     || (productKnowledgeStore ? createProductRagService({ store: productKnowledgeStore }) : null);
   const reconstructProductSlide = options.reconstructProductSlide
@@ -3317,6 +3320,8 @@ export function createPolicyOcrApp(options = {}) {
     ...routeContext,
     productKnowledgeStore,
     productRagService,
+    productAgentStore,
+    productAgentModelAdapter: options.productAgentModelAdapter,
   }));
   app.use('/api/admin', createAdminRoutes(routeContext));
 

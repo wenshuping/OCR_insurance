@@ -79,6 +79,48 @@
     ]
   },
   {
+    "name": "product-knowledge",
+    "patterns": [
+      "server/product-knowledge-store.mjs",
+      "server/product-document-upload.service.mjs",
+      "server/product-document-parser.service.mjs",
+      "server/product-boundary.service.mjs",
+      "server/product-chunker.service.mjs",
+      "server/product-ingestion.service.mjs",
+      "server/product-rag.service.mjs",
+      "server/product-agent-store.mjs",
+      "server/product-agent-memory.service.mjs",
+      "server/product-agent-context.service.mjs",
+      "server/product-agent-validator.service.mjs",
+      "server/product-sales-agent.service.mjs",
+      "server/routes/product-knowledge.routes.mjs",
+      "tests/product-knowledge-store.test.mjs",
+      "tests/product-document-upload.test.mjs",
+      "tests/product-document-parser.test.mjs",
+      "tests/product-boundary.test.mjs",
+      "tests/product-chunker.test.mjs",
+      "tests/product-ingestion.test.mjs",
+      "tests/product-rag.test.mjs",
+      "tests/product-agent-store.test.mjs",
+      "tests/product-agent-safety.test.mjs",
+      "tests/product-sales-agent.test.mjs",
+      "tests/product-knowledge-routes.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/product-knowledge-store.test.mjs",
+      "node --test tests/product-document-upload.test.mjs",
+      "node --test tests/product-document-parser.test.mjs",
+      "node --test tests/product-boundary.test.mjs",
+      "node --test tests/product-chunker.test.mjs",
+      "node --test tests/product-ingestion.test.mjs",
+      "node --test tests/product-rag.test.mjs",
+      "node --test tests/product-agent-store.test.mjs",
+      "node --test tests/product-agent-safety.test.mjs",
+      "node --test tests/product-sales-agent.test.mjs",
+      "node --test tests/product-knowledge-routes.test.mjs"
+    ]
+  },
+  {
     "name": "ping-an-coverage-audit",
     "patterns": [
       "scripts/audit-ping-an-coverage.mjs",

@@ -189,6 +189,9 @@ export function createProductKnowledgeRoutes(context = {}) {
     productDocumentPreviewService,
     productDocumentReviewService,
     productRagService,
+    productAgentStore,
+    productAgentModelAdapter,
+    productSalesAgent,
     recognizeDocumentText,
     parseProductPageVisual,
     reconstructProductSlide,
@@ -204,10 +207,18 @@ export function createProductKnowledgeRoutes(context = {}) {
   const ragService = productRagService || (productKnowledgeStore
     ? createProductRagService({ store: productKnowledgeStore })
     : null);
+  const salesAgent = productSalesAgent || (productAgentStore && ragService && productAgentModelAdapter
+    ? createProductSalesAgent({ agentStore: productAgentStore, ragService, modelAdapter: productAgentModelAdapter })
+    : null);
   const reviewService = productDocumentReviewService || createProductDocumentReviewService({
     reviewModel: createProductDocumentReviewModel(),
   });
   const previewService = productDocumentPreviewService || createProductDocumentPreviewService();
+
+  function userIdFromSession(session) {
+    return String(session?.userId || session?.id || session?.token || 'admin');
+  }
+
   function authorize(req, res) {
     if (typeof requireAdmin !== 'function') {
       res.status(503).json({
