@@ -776,6 +776,7 @@ export function routeUnifiedSpecialProductResponsibility({
     && chain.entries.some((entry) => entry.kind === 'card')
     && chain.entries.some((entry) => entry.kind === 'indicator')
   ));
+  const unalignedUniversalIdentity = accountIdentity(substantiveTextItems(entries));
   const fieldEvidenceDisplay = buildFieldEvidenceDisplay(entries, chains);
   const withFieldDisplay = (result) => ({
     ...result,
@@ -800,6 +801,15 @@ export function routeUnifiedSpecialProductResponsibility({
         fields: fieldEvidenceDisplay.fields,
         productFunctions: fieldEvidenceDisplay.productFunctions,
         blockers: ['source_chain_not_aligned'],
+      };
+    } else if (unalignedUniversalIdentity) {
+      result.category = 'blocked';
+      result.universalAccount = {
+        eligible: false,
+        status: 'hold',
+        fields: {},
+        productFunctions: [],
+        blockers: ['source_chain_not_aligned', 'missing_source_digest'],
       };
     }
     return withFieldDisplay(result);
@@ -938,6 +948,12 @@ export function applyUnifiedSpecialProductEvaluation(summary = {}, evaluation = 
     next.contentBlocks = blockWithProductFunctions(next.contentBlocks, fieldDisplay.productFunctions);
   } else if (evaluation.category === 'universal_account' || evaluation.universalAccount?.status === 'hold') {
     next.contentBlocks = blockWithProductFunctions(next.contentBlocks, evaluation.universalAccount?.productFunctions || []);
+  }
+  if (evaluation.category === 'blocked' && evaluation.universalAccount?.status === 'hold') {
+    next.notices = unique([
+      ...array(next.notices),
+      '万能账户条款版本或责任数据尚未完成对齐，账户利率、费用及领取规则暂不展示。',
+    ]);
   }
   if (evaluation.category === 'incremental_whole_life') {
     const rate = text(evaluation.incrementalWholeLife?.rate);
