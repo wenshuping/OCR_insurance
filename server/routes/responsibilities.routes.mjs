@@ -214,6 +214,10 @@ export function createResponsibilityRoutes(context) {
 
   function cardFromProductResponsibilityRow(row = {}) {
     const payload = parseJsonObject(row?.payload);
+    const indicators = Array.isArray(payload.indicators) ? payload.indicators : [];
+    const indicatorSourceDigests = new Set(indicators
+      .map((indicator) => trim(indicator?.sourceDigest || indicator?.source_digest || indicator?.responsibilitySourceDigest))
+      .filter(Boolean));
     return {
       ...payload,
       id: trim(row.id || payload.id),
@@ -226,7 +230,14 @@ export function createResponsibilityRoutes(context) {
       sourceUrl: trim(row.source_url || payload.sourceUrl || payload.source_url),
       sourceTitle: trim(payload.sourceTitle || payload.source_title),
       sourceExcerpt: trim(payload.sourceExcerpt || payload.source_excerpt),
-      indicators: Array.isArray(payload.indicators) ? payload.indicators : [],
+      sourceDigest: trim(
+        row.source_digest
+        || payload.sourceDigest
+        || payload.source_digest
+        || payload.responsibilitySourceDigest
+        || (indicatorSourceDigests.size === 1 ? [...indicatorSourceDigests][0] : ''),
+      ),
+      indicators,
     };
   }
 
@@ -341,6 +352,94 @@ export function createResponsibilityRoutes(context) {
       return cardsFromProductResponsibilityRows(matchedRows, {
         company, productName, productKey, canonicalProductId,
       });
+    } catch {
+      return [];
+    }
+  }
+
+  function reviewedResponsibilityCardProductSuggestions({ company = '', productName = '' } = {}) {
+    if (!db || !company || productName.length < 2) return [];
+    try {
+      const companyIdentity = responsibilityCompanyIdentity(company);
+      const companyNames = new Set([company]);
+      if (typeof buildEffectiveOfficialDomainProfiles === 'function') {
+        for (const profile of buildEffectiveOfficialDomainProfiles(state) || []) {
+          const aliases = [
+            profile?.company,
+            ...(Array.isArray(profile?.aliases) ? profile.aliases : []),
+            ...(Array.isArray(profile?.companyAliases) ? profile.companyAliases : []),
+          ].map(trim).filter(Boolean);
+          if (aliases.some((alias) => responsibilityCompanyIdentity(alias) === companyIdentity)) {
+            aliases.forEach((alias) => companyNames.add(alias));
+          }
+        }
+      }
+      const legalCompanyPrefix = productName.match(
+        /^[\u4e00-\u9fff]{2,12}(?:人寿保险|财产保险|健康保险|养老保险|保险)(?:股份)?有限公司/u,
+      )?.[0] || '';
+      if (legalCompanyPrefix) companyNames.add(legalCompanyPrefix);
+      const productSearchNames = new Set([productName]);
+      for (const companyName of companyNames) {
+        if (productName.startsWith(companyName) && productName.length > companyName.length) {
+          productSearchNames.add(productName.slice(companyName.length));
+        }
+      }
+      if (legalCompanyPrefix && productName.startsWith(legalCompanyPrefix)) {
+        productSearchNames.add(productName.slice(legalCompanyPrefix.length));
+      }
+
+      const rowsById = new Map();
+      for (const companyName of companyNames) {
+        for (const searchName of productSearchNames) {
+          const rows = db.prepare(`
+            SELECT *
+            FROM product_responsibility_cards
+            WHERE company = ? AND product_name LIKE ?
+            ORDER BY product_name ASC, title ASC, id ASC
+            LIMIT 200
+          `).all(companyName, `%${searchName}%`);
+          for (const row of rows) rowsById.set(trim(row.id), row);
+        }
+      }
+      const productsByKey = new Map();
+      for (const row of rowsById.values()) {
+        const card = cardFromProductResponsibilityRow(row);
+        if (responsibilityCompanyIdentity(card.company) !== companyIdentity
+          || !productNameMatchesQuery(card.productName, productName)) continue;
+        const key = `${card.company}\u001f${card.productName}`;
+        const product = productsByKey.get(key) || {
+          company: card.company,
+          productName: card.productName,
+          sourceDigests: new Set(),
+          sourceUrls: new Set(),
+          cardCount: 0,
+        };
+        product.sourceDigests.add(card.sourceDigest);
+        product.sourceUrls.add(card.sourceUrl);
+        product.cardCount += 1;
+        productsByKey.set(key, product);
+      }
+      const normalizedQuery = comparableProductName(productName);
+      return [...productsByKey.values()]
+        .filter((product) => (
+          product.sourceDigests.size === 1
+          && product.sourceUrls.size === 1
+          && !product.sourceDigests.has('')
+          && !product.sourceUrls.has('')
+        ))
+        .sort((left, right) => {
+          const leftName = comparableProductName(left.productName);
+          const rightName = comparableProductName(right.productName);
+          return leftName.indexOf(normalizedQuery) - rightName.indexOf(normalizedQuery)
+            || leftName.length - rightName.length
+            || left.productName.localeCompare(right.productName, 'zh-CN');
+        })
+        .map((product) => ({
+          company: product.company,
+          productName: product.productName,
+          recordCount: product.cardCount,
+          matchType: 'responsibility_card',
+        }));
     } catch {
       return [];
     }
@@ -941,6 +1040,8 @@ export function createResponsibilityRoutes(context) {
     const company = trim(req.query?.company);
     const q = trim(req.query?.q);
     const limit = Number(req.query?.limit);
+    const maxResults = Number.isFinite(limit) && limit > 0 ? limit : undefined;
+    const cardSuggestions = q ? reviewedResponsibilityCardProductSuggestions({ company, productName: q }) : [];
     let knowledgeRecords = state.knowledgeRecords || [];
     if (q && typeof loadKnowledgeRecords === 'function') {
       try {
@@ -949,14 +1050,20 @@ export function createResponsibilityRoutes(context) {
         // Keep the in-memory fallback for test stores and legacy runtimes.
       }
     }
-    res.json({
-      ok: true,
-      suggestions: buildResponsibilityProductSuggestions(state, {
+    const knowledgeSuggestions = buildResponsibilityProductSuggestions(state, {
         company,
         query: q,
-        maxResults: Number.isFinite(limit) && limit > 0 ? limit : undefined,
+        maxResults,
         knowledgeRecords,
-      }),
+      });
+    const suggestions = [...cardSuggestions, ...knowledgeSuggestions].filter((item, index, rows) => (
+      rows.findIndex((candidate) => (
+        candidate.company === item.company && candidate.productName === item.productName
+      )) === index
+    ));
+    res.json({
+      ok: true,
+      suggestions: maxResults ? suggestions.slice(0, maxResults) : suggestions,
     });
   });
 
@@ -988,6 +1095,7 @@ export function createResponsibilityRoutes(context) {
         productName: input.name,
         canonicalProductId,
         sourceRecords: summaryState.knowledgeRecords,
+        requireSourceDigest: true,
       });
       if (cardSummary) {
         return {

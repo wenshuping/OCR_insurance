@@ -5528,6 +5528,74 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
   }
 });
 
+test('responsibility product suggestions include only source-pinned single-version card products', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  const insertCard = db.prepare(`
+    INSERT INTO product_responsibility_cards
+      (id, product_key, company, product_name, title, category, source_url, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const addCard = ({ id, productName, title, sourceUrl, sourceDigest = '', indicatorDigest = '' }) => {
+    const payload = {
+      id,
+      company: '测试保险',
+      productName,
+      title,
+      sourceUrl,
+      ...(sourceDigest ? { sourceDigest } : {}),
+      ...(indicatorDigest ? { indicators: [{ liability: title, sourceDigest: indicatorDigest }] } : {}),
+    };
+    insertCard.run(id, `company_product:测试保险:${productName}`, '测试保险', productName, title, '人寿保障', sourceUrl, JSON.stringify(payload));
+  };
+  addCard({
+    id: 'card_single_1', productName: '安心单一版本', title: '身故保险金',
+    sourceUrl: 'https://official.example.test/single.pdf', indicatorDigest: 'sha256:single-version',
+  });
+  addCard({
+    id: 'card_single_2', productName: '安心单一版本', title: '全残保险金',
+    sourceUrl: 'https://official.example.test/single.pdf', sourceDigest: 'sha256:single-version',
+  });
+  addCard({
+    id: 'card_conflict_1', productName: '安心冲突版本', title: '版本一责任',
+    sourceUrl: 'https://official.example.test/conflict-1.pdf', sourceDigest: 'sha256:conflict-1',
+  });
+  addCard({
+    id: 'card_conflict_2', productName: '安心冲突版本', title: '版本二责任',
+    sourceUrl: 'https://official.example.test/conflict-2.pdf', sourceDigest: 'sha256:conflict-2',
+  });
+  const app = createPolicyOcrApp({ db, state: { ...createInitialState() } });
+  const server = await listen(app);
+  try {
+    const suggested = await jsonFetch(
+      server.baseUrl,
+      '/api/policy-responsibilities/product-suggestions?company=测试保险&q=安心',
+    );
+    assert.equal(suggested.response.status, 200);
+    assert.deepEqual(suggested.payload.suggestions, [{
+      company: '测试保险',
+      productName: '安心单一版本',
+      recordCount: 2,
+      matchType: 'responsibility_card',
+    }]);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary reads existing responsibility cards without model generation', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`

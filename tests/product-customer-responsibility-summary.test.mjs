@@ -393,6 +393,44 @@ test('database summary projects legacy cards through the shared responsibility s
   assert.doesNotMatch(responsibility.plainText, /第4页|55520181|新华人寿保险股份有限公司/u);
 });
 
+test('source-pinned database summary rejects mixed responsibility-card versions', () => {
+  const cards = [
+    {
+      id: 'card_version_one',
+      productKey,
+      company,
+      productName,
+      title: '版本一责任',
+      sourceUrl: 'https://example.test/version-one.pdf',
+      sourceDigest: 'sha256:version-one',
+      sourceExcerpt: '版本一责任条款。',
+    },
+    {
+      id: 'card_version_two',
+      productKey,
+      company,
+      productName,
+      title: '版本二责任',
+      sourceUrl: 'https://example.test/version-two.pdf',
+      sourceDigest: 'sha256:version-two',
+      sourceExcerpt: '版本二责任条款。',
+    },
+  ];
+  const db = {
+    prepare(sql) {
+      if (/product_responsibility_cards/u.test(sql)) return { all: () => cards };
+      return { all: () => [] };
+    },
+  };
+
+  assert.equal(buildCustomerResponsibilitySummaryFromCards({
+    db,
+    company,
+    productName,
+    requireSourceDigest: true,
+  }), null);
+});
+
 test('generateProductCustomerResponsibilitySummary returns an existing database summary without calling DeepSeek', async () => {
   let modelCalls = 0;
   const existing = {
