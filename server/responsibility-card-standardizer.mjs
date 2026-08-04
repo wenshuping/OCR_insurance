@@ -134,8 +134,7 @@ function displayLiabilityName(indicator = {}, sourceExcerpt = '') {
   if (withoutForPrefix && withoutForPrefix !== liability && /保险金/u.test(withoutForPrefix)) return withoutForPrefix;
   const cleanedLiability = cleanClauseTitle(liability);
   if (cleanedLiability && cleanedLiability !== liability) return cleanedLiability;
-  const combinedDeathDisabilityTitle = combinedDeathDisabilityTitleForLegacyAlias(indicator)
-    || (name === '疾病全残' && /^身故或身体全残保险金/u.test(excerpt) ? '身故或身体全残保险金' : '');
+  const combinedDeathDisabilityTitle = combinedDeathDisabilityTitleForLegacyAlias(indicator);
   if (combinedDeathDisabilityTitle) return combinedDeathDisabilityTitle;
   if (/^(?:满期|满期保险金|满期生存保险金|满期返还|满期金|期满保险金|期满金)$/u.test(name)) return '满期保险金';
   if (name === '满期返还' && excerpt.includes('满期保险金')) return '满期保险金';
@@ -1118,7 +1117,6 @@ function bestKnowledgeRecord(records = []) {
 
 function isAggregateLiabilityName(value = '') {
   const target = compact(value);
-  if (target === '高等教育金') return false;
   return /[\/／、]|等|综合|汇总/u.test(target);
 }
 

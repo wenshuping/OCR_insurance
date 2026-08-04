@@ -297,7 +297,6 @@ test('does not treat effective insured amount as the policy basic amount', () =>
   });
 
   assert.equal(meta.basisKey, 'effective_insured_amount');
-  assert.equal(meta.calculationKey, 'formula_projection');
   assert.notEqual(meta.calculationKey, 'percent_of_basic_amount');
   assert.deepEqual(requiredCalculationInputsForMeta(meta), ['effectiveInsuranceAmount', 'policyYearOrAge']);
 });

@@ -143,7 +143,7 @@ const app = createPolicyOcrApp({
   advisorMemoryConfirmationService,
   verifyAdvisorMemoryConfirmation: advisorMemoryConfirmationService.verify,
   db: store.db,
-  recomputeCashflowOnStartup: false,
+  productResponsibilityPipelineDbPath: dbPath,
 });
 
 const server = app.listen(port, host, () => {

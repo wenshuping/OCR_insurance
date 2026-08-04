@@ -2994,7 +2994,6 @@ export function createPolicyOcrApp(options = {}) {
     buildResponsibilityCompanySuggestions,
     buildResponsibilityProductSuggestions,
     loadKnowledgeRecords: options.loadKnowledgeRecords,
-    loadResponsibilityIndexes: options.loadResponsibilityIndexes,
     findKnowledgeProductCandidates,
     legacyExternalProductReferenceRecords,
     withPolicyProductMatchStatus,

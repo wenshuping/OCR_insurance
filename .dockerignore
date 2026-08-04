@@ -7,6 +7,7 @@ node_modules
 npm-debug.log*
 ocr-service/.env
 ocr-service/.env.local
+
 # Local evidence, backups, and handoff bundles are never part of an application image.
 artifacts/
 output/

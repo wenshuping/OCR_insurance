@@ -322,11 +322,6 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     calculationKey = 'percent_of_basic_amount';
   } else if (basisKey === 'basic_amount' && value !== null && normalizedUnit === '倍') {
     calculationKey = 'multiple_of_basic_amount';
-  } else if (basisKey === 'effective_insured_amount' && value !== null && /^(?:%|倍)$/u.test(normalizedUnit)) {
-    // The effective insured amount is a contract-defined value, not the
-    // policy's basic amount. A direct factor can still be projected safely
-    // from the formula (including a minimum when its definition is supplied).
-    calculationKey = 'formula_projection';
   } else if (basisKey === 'basic_amount' && /公式|^$/u.test(normalizedUnit || '') && /基本保险金额|基本保险金|基本保额|保险金额/u.test(text)) {
     calculationKey = 'basic_amount';
   } else if ((basisKey === 'first_premium' || basisKey === 'first_basic_responsibility_premium' || basisKey === 'annual_premium') && value !== null && normalizedUnit === '%') {
@@ -1022,17 +1017,18 @@ export function resolveIndicatorAmountFromCalculation(indicator = {}, inputs = {
       calculationText: `${displayText(repairedIndicator.liability || repairedIndicator.coverageType)}需根据出险原因和出险日期选择条款给付分支，当前未提供，暂不计算`,
     };
   }
-  const baseAmount = Number(inputs.baseAmount || 0) || 0;
-  const firstPremium = Number(inputs.firstPremium || 0) || 0;
-  const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
   const normalizedFormulaResult = resolveNormalizedFormula(repairedIndicator, inputs);
   if (normalizedFormulaResult?.resolved) return { ...normalizedFormulaResult, meta };
   if (normalizedFormulaResult?.partial) return { ...normalizedFormulaResult, meta };
-  const pendingProjection = pendingFormulaProjection(repairedIndicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
-  if (pendingProjection) return pendingProjection;
 
+  const baseAmount = Number(inputs.baseAmount || 0) || 0;
+  const firstPremium = Number(inputs.firstPremium || 0) || 0;
+  const paymentYears = Number(inputs.paymentYears || 0) > 0 ? Number(inputs.paymentYears) : 1;
   const totalPremium = firstPremium * paymentYears;
   const value = Number(meta.value || 0);
+
+  const pendingProjection = pendingFormulaProjection(repairedIndicator, { ...inputs, baseAmount, firstPremium, paymentYears }, meta);
+  if (pendingProjection) return pendingProjection;
 
   if (!meta.calculationEligible) return { resolved: false, amount: 0, meta, calculationText: meta.calculationReason };
 

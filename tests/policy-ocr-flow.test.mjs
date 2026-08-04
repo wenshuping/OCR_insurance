@@ -5528,186 +5528,7 @@ test('responsibility assistant reuses persisted product cards before analyzer', 
   }
 });
 
-test('responsibility cards resolve a legal insurer name through a short insurer alias', async () => {
-  const db = new DatabaseSync(':memory:');
-  db.exec(`
-    CREATE TABLE policies (id INTEGER PRIMARY KEY);
-    CREATE TABLE product_responsibility_cards (
-      id TEXT PRIMARY KEY,
-      product_key TEXT NOT NULL,
-      company TEXT,
-      product_name TEXT,
-      title TEXT,
-      category TEXT,
-      source_url TEXT,
-      payload TEXT NOT NULL
-    )
-  `);
-  const card = {
-    id: 'card_xinhua_sunshine_child',
-    productKey: 'company_product:新华人寿保险股份有限公司:阳光灿烂少儿两全保险（分红型）',
-    company: '新华人寿保险股份有限公司',
-    productName: '阳光灿烂少儿两全保险（分红型）',
-    title: '高等教育金',
-    category: '现金流',
-    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/terms.pdf',
-    sourceExcerpt: '高等教育金按条款约定给付。',
-    sourceDigest: 'sha256:xinhua-sunshine-child',
-  };
-  const otherCard = {
-    ...card,
-    id: 'card_xinhua_sunshine_other',
-    productKey: 'company_product:新华人寿保险股份有限公司:阳光少儿教育年金保险',
-    productName: '阳光少儿教育年金保险',
-    title: '教育年金',
-    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/other.pdf',
-    sourceDigest: 'sha256:xinhua-sunshine-other',
-  };
-  const conflictingCard = {
-    ...card,
-    id: 'card_xinhua_sunshine_conflict_1',
-    productKey: 'company_product:新华人寿保险股份有限公司:阳光版本冲突保险',
-    productName: '阳光版本冲突保险',
-    title: '版本一责任',
-    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/conflict-1.pdf',
-    sourceDigest: 'sha256:xinhua-sunshine-conflict-1',
-  };
-  const insertCard = db.prepare(`
-    INSERT INTO product_responsibility_cards (
-      id, product_key, company, product_name, title, category, source_url, payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  for (const row of [card, otherCard, conflictingCard, {
-    ...conflictingCard,
-    id: 'card_xinhua_sunshine_conflict_2',
-    title: '版本二责任',
-    sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/conflict-2.pdf',
-    sourceDigest: 'sha256:xinhua-sunshine-conflict-2',
-  }]) {
-    insertCard.run(
-      row.id,
-      row.productKey,
-      row.company,
-      row.productName,
-      row.title,
-      row.category,
-      row.sourceUrl,
-      JSON.stringify(row),
-    );
-  }
-  const app = createPolicyOcrApp({ db, state: { ...createInitialState() } });
-  const server = await listen(app);
-
-  try {
-    const suggested = await jsonFetch(
-      server.baseUrl,
-      '/api/policy-responsibilities/product-suggestions?company=新华保险&q=阳光',
-    );
-    assert.equal(suggested.response.status, 200);
-    assert.deepEqual(
-      new Set(suggested.payload.suggestions.map((item) => item.productName)),
-      new Set([card.productName, otherCard.productName]),
-    );
-    assert.ok(suggested.payload.suggestions.every((item) => item.matchType === 'responsibility_card'));
-
-    const matched = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/matches', {
-      method: 'POST',
-      body: JSON.stringify({
-        company: '新华保险',
-        name: card.productName,
-        includeOnline: false,
-      }),
-    });
-    assert.equal(matched.response.status, 200);
-    assert.equal(matched.payload.status, 'exact');
-    assert.equal(matched.payload.matches[0].company, card.company);
-    assert.equal(matched.payload.matches[0].productName, card.productName);
-    assert.equal(matched.payload.matches[0].matchReason, '已命中库内保险责任卡');
-    assert.equal(matched.payload.matches[0].needsConfirmation, false);
-  } finally {
-    await server.close();
-    db.close();
-  }
-});
-
-test('customer summary returns source-pinned responsibility cards before source generation', async () => {
-  const db = new DatabaseSync(':memory:');
-  db.exec(`
-    CREATE TABLE policies (
-      id INTEGER PRIMARY KEY
-    );
-    CREATE TABLE product_responsibility_cards (
-      id TEXT PRIMARY KEY,
-      product_key TEXT NOT NULL,
-      company TEXT,
-      product_name TEXT,
-      title TEXT,
-      category TEXT,
-      source_url TEXT,
-      payload TEXT NOT NULL
-    )
-  `);
-  const card = {
-    id: 'card_customer_summary_xinhua_sunshine_child',
-    productKey: 'company_product:新华人寿保险股份有限公司:阳光灿烂少儿两全保险（分红型）',
-    company: '新华人寿保险股份有限公司',
-    productName: '阳光灿烂少儿两全保险（分红型）',
-    title: '教育金',
-    category: '两全保险',
-    plainSummary: '被保险人生存至约定年龄时给付教育金。',
-    payoutSummary: '按条款约定的基本保险金额比例给付。',
-    sourceUrl: 'https://official.example-life.test/sunshine-child.pdf',
-    sourceExcerpt: '教育金：被保险人生存至约定年龄时给付教育金。',
-    indicators: [{
-      sourceDigest: 'sha256:test-new-china-sunshine-child',
-    }],
-  };
-  db.prepare(`
-    INSERT INTO product_responsibility_cards (
-      id, product_key, company, product_name, title, category, source_url, payload
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    card.id,
-    card.productKey,
-    card.company,
-    card.productName,
-    card.title,
-    card.category,
-    card.sourceUrl,
-    JSON.stringify(card),
-  );
-  let analyzerCalls = 0;
-  const app = createPolicyOcrApp({
-    db,
-    state: createInitialState(),
-    assistantAnalyzer: async () => {
-      analyzerCalls += 1;
-      throw new Error('analyzer should not run when source-pinned responsibility cards exist');
-    },
-  });
-  const server = await listen(app);
-
-  try {
-    const result = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
-      method: 'POST',
-      body: JSON.stringify({
-        company: '新华保险',
-        name: '阳光灿烂少儿两全保险（分红型）',
-      }),
-    });
-    assert.equal(result.response.status, 200);
-    assert.equal(result.payload.ok, true);
-    assert.equal(result.payload.source, 'responsibility_cards');
-    assert.equal(result.payload.summary.mainResponsibilities.length, 1);
-    assert.equal(result.payload.summary.mainResponsibilities[0].title, '教育金');
-    assert.equal(analyzerCalls, 0);
-  } finally {
-    await server.close();
-    db.close();
-  }
-});
-
-test('customer responsibility summary generates once and then reads from database', async () => {
+test('customer responsibility summary reads existing responsibility cards without model generation', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec(`
     CREATE TABLE policies (
@@ -5852,13 +5673,15 @@ test('customer responsibility summary generates once and then reads from databas
     });
     assert.equal(first.response.status, 200);
     assert.equal(first.payload.ok, true);
-    assert.equal(first.payload.source, 'generated');
-    assert.equal(first.payload.summary.headline, '这是一份以身故或身体全残保障为主的终身寿险。');
-    const materialBlock = first.payload.summary.contentBlocks.find((block) => block.title === '保单服务');
-    assert.deepEqual(materialBlock?.sourceRefs, ['M1']);
-    assert.equal(modelCalls, 1);
-    assert.equal(materialModelCalls, 1);
-    assert.equal(persistedSummaries.size, 1);
+    assert.equal(first.payload.source, 'database');
+    assert.match(first.payload.summary.headline, /身故或身体全残保险金/u);
+    assert.equal(first.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(first.payload.summary.mainResponsibilities[0].plainText, '发生身故或身体全残时给付保险金。');
+    assert.equal(first.payload.summary.mainResponsibilities[0].howItPays, '金额结合已交保险费、基本保险金额和保单年度计算。');
+    assert.equal(modelCalls, 0);
+    assert.equal(materialModelCalls, 0);
+    assert.equal(materialRetrieveCalls, 0);
+    assert.equal(persistedSummaries.size, 0);
 
     const second = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
       method: 'POST',
@@ -5868,9 +5691,10 @@ test('customer responsibility summary generates once and then reads from databas
     assert.equal(second.payload.ok, true);
     assert.equal(second.payload.source, 'database');
     assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
-    assert.equal(second.payload.summary.contentBlocks.some((block) => block.title === '保单服务'), false);
-    assert.equal(modelCalls, 1);
-    assert.equal(materialModelCalls, 1);
+    assert.equal(second.payload.summary.mainResponsibilities[0].title, '身故或身体全残保险金');
+    assert.equal(modelCalls, 0);
+    assert.equal(materialModelCalls, 0);
+    assert.equal(materialRetrieveCalls, 0);
   } finally {
     await server.close();
     db.close();
@@ -9598,7 +9422,6 @@ test('responsibility assistant company suggestions match legal-suffix variants w
 });
 
 test('responsibility assistant product suggestions are scoped to selected company', async () => {
-  let scopedLookupCalls = 0;
   const app = createPolicyOcrApp({
     state: {
       users: [],
@@ -9640,20 +9463,6 @@ test('responsibility assistant product suggestions are scoped to selected compan
       policies: [],
       nextId: 4,
     },
-    loadKnowledgeRecords: async ({ company, productName }) => {
-      scopedLookupCalls += 1;
-      assert.equal(company, '中国平安');
-      assert.equal(productName, 'e生');
-      return [{
-        id: 1,
-        company: '中国平安',
-        productName: '平安e生保医疗保险',
-        title: '平安e生保医疗保险产品条款',
-        url: 'https://life.pingan.example/pingan-esheng.pdf',
-        pageText: '保险责任包括一般医疗保险金。',
-        official: true,
-      }];
-    },
   });
   const server = await listen(app);
 
@@ -9663,7 +9472,6 @@ test('responsibility assistant product suggestions are scoped to selected compan
     assert.equal(suggested.payload.ok, true);
     assert.ok(suggested.payload.suggestions.some((item) => item.productName === '平安e生保医疗保险'));
     assert.equal(suggested.payload.suggestions.some((item) => item.company === '中国太平'), false);
-    assert.equal(scopedLookupCalls, 1);
   } finally {
     await server.close();
   }

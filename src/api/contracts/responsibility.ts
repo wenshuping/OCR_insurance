@@ -218,7 +218,7 @@ export type CustomerResponsibilitySummary = {
 export type CustomerResponsibilitySummaryResponse =
   | {
       ok: true;
-      source: 'database' | 'generated' | 'customer_upload' | 'responsibility_cards';
+      source: 'database' | 'generated' | 'customer_upload';
       summary: CustomerResponsibilitySummary;
     }
   | {
