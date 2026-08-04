@@ -289,6 +289,38 @@ test('mergePolicyDerivedResult attaches persisted payload and derived status wit
   assert.equal(merged.derivedResponsibilityProjectionVersion, RESPONSIBILITY_PROJECTION_VERSION);
 });
 
+test('mergePolicyDerivedResult removes legacy standard maturity aliases before family report calculation', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf';
+  const base = {
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    basis: '基本保险金额',
+    formulaText: '基本保险金额 × 100%',
+    sourceUrl,
+    sourceDigest: 'sha256:zunshang',
+  };
+  const policy = {
+    id: 20,
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+  };
+  const merged = mergePolicyDerivedResult(policy, {
+    policyId: 20,
+    status: 'ready',
+    responsibilityProjectionVersion: '2026-07-31-claim-event-facts-required',
+    coverageIndicators: [
+      { ...base, id: 'official_maturity', liability: '满期保险金', sourceExcerpt: '生存至80周岁给付满期保险金。' },
+      { ...base, id: 'legacy_maturity', liability: '满期', sourceExcerpt: '满期给付。' },
+      { ...base, id: 'generic_maturity', liability: '满期金', sourceExcerpt: '满期给付满期金。' },
+    ],
+    optionalResponsibilities: [],
+    responsibilityCards: [],
+  });
+
+  assert.deepEqual(merged.coverageIndicators.map((item) => item.id), ['official_maturity']);
+});
+
 test('old derived projections are identifiable for read-time reconstruction', () => {
   assert.equal(isCurrentResponsibilityProjection({ responsibilityProjectionVersion: '2026-06-23-reviewed-responsibility-artifact-import' }), false);
 });

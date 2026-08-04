@@ -63,6 +63,199 @@ test('optional responsibility review preserves manual selection and excludes uns
   assert.equal(reviewItems[0].selectionStatus, 'not_selected');
 });
 
+test('findPolicyCoverageIndicators matches legal insurer prefixes through the shared responsibility identity', () => {
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    plans: [{
+      company: '新华保险',
+      name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+      matchedProductName: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+      canonicalProductId: 'stale_ocr_match',
+    }],
+  }, [{
+    id: 'maturity_indicator',
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    liability: '满期保险金',
+    normalizedFormula: 'basic_insurance_amount',
+    formulaText: '基本责任的保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://static-cdn.newchinalife.com/terms.pdf',
+    sourceExcerpt: '按基本责任保险金额给付满期保险金。',
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['maturity_indicator']);
+});
+
+test('findPolicyCoverageIndicators dedupes standard maturity aliases for one official product version', () => {
+  const sourceUrl = 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf';
+  const sourceDigest = 'sha256:zunshang';
+  const base = {
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    formulaText: '基本保险金额 × 100%',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl,
+    sourceDigest,
+  };
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+  }, [{
+    ...base,
+    id: 'official_maturity',
+    liability: '满期保险金',
+    sourceExcerpt: '被保险人生存至年满80周岁保单生效对应日零时，按基本保险金额给付满期保险金。',
+  }, {
+    ...base,
+    id: 'legacy_maturity',
+    liability: '满期',
+    sourceExcerpt: '满期时按基本保险金额给付。',
+  }, {
+    ...base,
+    id: 'generic_maturity',
+    liability: '满期金',
+    sourceExcerpt: '满期时给付满期金。',
+  }]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['official_maturity']);
+  assert.equal(indicators[0].liability, '满期保险金');
+});
+
+test('findPolicyCoverageIndicators preserves competing standard maturity source digests', () => {
+  const base = {
+    company: '测试保险公司',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    value: 100,
+    unit: '%',
+    basis: '基本保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://official.example.test/terms.pdf',
+    sourceExcerpt: '生存至保险期间届满，按基本保险金额给付满期保险金。',
+  };
+  const indicators = findPolicyCoverageIndicators({
+    company: '测试保险公司',
+    name: '测试两全保险',
+  }, [
+    { ...base, id: 'version_a', liability: '满期保险金', sourceDigest: 'sha256:a' },
+    { ...base, id: 'version_b', liability: '满期金', sourceDigest: 'sha256:b' },
+  ]);
+
+  assert.deepEqual(indicators.map((item) => item.id), ['version_a', 'version_b']);
+});
+
+test('policy optional responsibility state overrides a legacy indicator that omitted its optional scope', () => {
+  const indicators = findPolicyCoverageIndicators({
+    company: '新华保险',
+    name: '新华人寿保险股份有限公司尊尚人生两全保险（分红型）',
+    optionalResponsibilities: [{
+      id: 'optional_longevity',
+      company: '新华人寿保险股份有限公司',
+      productName: '尊尚人生两全保险（分红型）',
+      liability: '祝寿金',
+      responsibilityScope: 'optional',
+      selectionStatus: 'unknown',
+      selectionEvidence: 'official_terms',
+      quantificationStatus: 'pending_review',
+    }],
+  }, [{
+    id: 'longevity_indicator',
+    company: '新华人寿保险股份有限公司',
+    productName: '尊尚人生两全保险（分红型）',
+    coverageType: '现金流',
+    liability: '祝寿金',
+    responsibilityScope: 'basic_or_unspecified',
+    selectionStatus: 'unknown',
+    quantificationStatus: 'quantified',
+    formulaText: '可选责任的保险金额',
+    sourceEvidenceLevel: 'official_excerpt',
+    sourceUrl: 'https://static-cdn.newchinalife.com/terms.pdf',
+    sourceExcerpt: '按可选责任的保险金额给付祝寿金。',
+  }]);
+
+  assert.equal(indicators[0].responsibilityScope, 'optional');
+  assert.equal(indicators[0].selectionStatus, 'unknown');
+  assert.equal(indicators[0].quantificationStatus, 'pending_review');
+  assert.equal(selectedCoverageIndicators(indicators).length, 0);
+});
+
+test('optional responsibility calculations use only the responsibility coverage amount across every selection state', () => {
+  const indicator = {
+    id: 'optional_birthday_benefit',
+    company: '测试保险',
+    productName: '测试两全保险',
+    coverageType: '现金流',
+    liability: '祝寿金',
+    responsibilityScope: 'optional',
+    optionalResponsibilityId: 'optional_birthday',
+    selectionStatus: 'selected',
+    quantificationStatus: 'quantified',
+    value: 50,
+    unit: '%',
+    basis: '可选责任保险金额',
+    formulaText: '可选责任保险金额 × 50%',
+  };
+  const basePolicy = {
+    company: '测试保险',
+    name: '测试两全保险',
+    amount: 100000,
+  };
+  const selectedPolicy = {
+    ...basePolicy,
+    optionalResponsibilities: [{
+      id: 'optional_birthday',
+      liability: '祝寿金',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+      coverageAmount: 30000,
+    }],
+  };
+  const selectedCalculation = computePolicyResponsibilityCalculations(selectedPolicy, [indicator]);
+  assert.equal(selectedCalculation.length, 1);
+  assert.equal(selectedCalculation[0].amount, 15000);
+  assert.match(selectedCalculation[0].calculationText, /可选责任保险金额30,000元 × 50%/u);
+  assert.doesNotMatch(selectedCalculation[0].calculationText, /100,000/u);
+
+  const selectedWithoutAmount = computePolicyResponsibilityCalculations({
+    ...basePolicy,
+    optionalResponsibilities: [{
+      id: 'optional_birthday',
+      liability: '祝寿金',
+      selectionStatus: 'selected',
+      quantificationStatus: 'quantified',
+    }],
+  }, [indicator]);
+  assert.equal(selectedWithoutAmount.length, 1);
+  assert.equal(selectedWithoutAmount[0].isPending, true);
+  assert.match(selectedWithoutAmount[0].calculationText, /可选责任保险金额（待补充）/u);
+
+  const withoutOptionalResponsibilityRecord = computePolicyResponsibilityCalculations(basePolicy, [indicator]);
+  assert.equal(withoutOptionalResponsibilityRecord.length, 1);
+  assert.equal(withoutOptionalResponsibilityRecord[0].isPending, true);
+  assert.doesNotMatch(withoutOptionalResponsibilityRecord[0].calculationText, /100,000/u);
+
+  for (const selectionStatus of ['not_selected', 'unknown']) {
+    const calculations = computePolicyResponsibilityCalculations({
+      ...basePolicy,
+      optionalResponsibilities: [{
+        id: 'optional_birthday',
+        liability: '祝寿金',
+        selectionStatus,
+        quantificationStatus: 'quantified',
+        coverageAmount: 30000,
+      }],
+    }, [{ ...indicator, selectionStatus }]);
+    assert.deepEqual(calculations, [], `${selectionStatus} optional responsibility must not be calculated`);
+  }
+});
+
 test('OCR evidence resolves a previously unknown optional responsibility draft', () => {
   const productName = '新华人寿保险股份有限公司多倍保障重大疾病保险（智赢版）';
   const policy = {

@@ -954,6 +954,110 @@ function dedupePolicyIndicatorRows(rows = []) {
   return result;
 }
 
+const STANDARD_MATURITY_LIABILITIES = new Set([
+  '满期',
+  '满期保险金',
+  '满期生存保险金',
+  '满期返还',
+  '满期金',
+  '期满保险金',
+  '期满金',
+]);
+
+function isStandardMaturityLiability(value) {
+  return STANDARD_MATURITY_LIABILITIES.has(normalizeLookupText(value));
+}
+
+function indicatorSourceDigest(indicator = {}) {
+  return String(
+    indicator.responsibilitySourceDigest
+    || indicator.sourceDigest
+    || indicator.artifactSourceDigest
+    || '',
+  ).trim();
+}
+
+function indicatorSourceUrl(indicator = {}) {
+  return String(indicator.responsibilitySourceUrl || indicator.sourceUrl || '').trim();
+}
+
+function standardMaturityBasisKey(indicator = {}) {
+  const value = normalizeLookupText([
+    indicator.basisKey,
+    indicator.basis,
+    indicator.formulaText,
+    indicator.normalizedFormula,
+  ].join(' '));
+  if (/实际交纳|已交保费|所交保费/u.test(value)) return 'paid_premium';
+  if (/基本保额|基本保险金额|基本保险金/u.test(value)) return 'basic_amount';
+  if (/现金价值/u.test(value)) return 'cash_value';
+  return '';
+}
+
+function indicatorVersionsAreCompatible(left = {}, right = {}) {
+  const leftDigest = indicatorSourceDigest(left);
+  const rightDigest = indicatorSourceDigest(right);
+  if (leftDigest && rightDigest) return leftDigest === rightDigest;
+  const leftUrl = indicatorSourceUrl(left);
+  const rightUrl = indicatorSourceUrl(right);
+  if (leftUrl && rightUrl) return leftUrl === rightUrl;
+  return true;
+}
+
+function indicatorsReferToSameProduct(left = {}, right = {}) {
+  const leftCanonicalId = explicitCanonicalProductId(left);
+  const rightCanonicalId = explicitCanonicalProductId(right);
+  if (leftCanonicalId && rightCanonicalId) return leftCanonicalId === rightCanonicalId;
+  return sameResponsibilityProduct({
+    company: resolveRecordCompany(left),
+    productName: resolveRecordProductName(left),
+  }, {
+    company: resolveRecordCompany(right),
+    productName: resolveRecordProductName(right),
+  });
+}
+
+function standardMaturityIndicatorsMatch(left = {}, right = {}) {
+  if (!isStandardMaturityLiability(left.liability) || !isStandardMaturityLiability(right.liability)) return false;
+  if (!indicatorsReferToSameProduct(left, right) || !indicatorVersionsAreCompatible(left, right)) return false;
+  const leftScope = normalizeLookupText(left.responsibilityScope);
+  const rightScope = normalizeLookupText(right.responsibilityScope);
+  if (leftScope && rightScope && leftScope !== rightScope) return false;
+  const leftBasis = standardMaturityBasisKey(left);
+  const rightBasis = standardMaturityBasisKey(right);
+  return !leftBasis || !rightBasis || leftBasis === rightBasis;
+}
+
+function standardMaturityIndicatorScore(indicator = {}) {
+  const liability = normalizeLookupText(indicator.liability);
+  return (
+    (liability === '满期保险金' ? 100 : liability === '满期生存保险金' ? 90 : 0)
+    + (indicatorSourceDigest(indicator) ? 20 : 0)
+    + (indicatorSourceUrl(indicator) ? 10 : 0)
+    + (String(indicator.sourceExcerpt || '').trim() ? 5 : 0)
+    + (String(indicator.triggerCondition || '').trim() ? 3 : 0)
+  );
+}
+
+export function dedupePolicyCoverageIndicators(rows = []) {
+  const result = [];
+  for (const row of dedupePolicyIndicatorRows(rows)) {
+    if (!isStandardMaturityLiability(row?.liability)) {
+      result.push(row);
+      continue;
+    }
+    const existingIndex = result.findIndex((candidate) => standardMaturityIndicatorsMatch(candidate, row));
+    if (existingIndex < 0) {
+      result.push(row);
+      continue;
+    }
+    if (standardMaturityIndicatorScore(row) > standardMaturityIndicatorScore(result[existingIndex])) {
+      result[existingIndex] = row;
+    }
+  }
+  return result;
+}
+
 function optionalResponsibilityRecordMatchesPolicy(policy = {}, record = {}) {
   const canonicalIds = new Set(policyCanonicalProductIds(policy));
   const recordCanonicalProductId = explicitCanonicalProductId(record);
@@ -1032,7 +1136,7 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
   const keys = new Set(policyProductIndicatorKeys(policy));
   const canonicalIds = new Set(policyCanonicalProductIds(policy));
   if (!keys.size && !canonicalIds.size) return [];
-  return dedupePolicyIndicatorRows(
+  return dedupePolicyCoverageIndicators(
     (Array.isArray(indicatorRecords) ? indicatorRecords : []).filter((record) => {
       if (!isFormalResponsibilityEvidence(record)) return false;
       const recordCanonicalProductId = explicitCanonicalProductId(record);
@@ -1049,8 +1153,8 @@ export function findPolicyCoverageIndicators(policy = {}, indicatorRecords = [])
         company: resolveRecordCompany(record),
         productName: resolveRecordProductName(record),
       });
-    }),
-  ).map((record) => annotateCoverageIndicatorSelection(policy, record));
+    }).map((record) => annotateCoverageIndicatorSelection(policy, record)),
+  );
 }
 
 // Derived policy results may retain an older, reduced projection of an
@@ -1076,7 +1180,7 @@ export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecord
       .filter((record) => indicatorId(record?.id))
       .map((record) => [indicatorId(record.id), record]),
   );
-  return (Array.isArray(indicators) ? indicators : []).map((indicator) => {
+  return dedupePolicyCoverageIndicators((Array.isArray(indicators) ? indicators : []).map((indicator) => {
     const latest = latestById.get(indicatorId(indicator?.id));
     if (!latest) return indicator;
     return {
@@ -1087,7 +1191,7 @@ export function hydratePolicyCoverageIndicators(indicators = [], indicatorRecord
       quantificationStatus: indicatorId(indicator.quantificationStatus) || latest.quantificationStatus,
       canonicalProductId: indicatorId(indicator.canonicalProductId) || latest.canonicalProductId,
     };
-  });
+  }));
 }
 
 export function attachPolicyCoverageIndicators(policy = {}, indicatorRecords = [], knowledgeRecords = [], optionalResponsibilityRecords = []) {

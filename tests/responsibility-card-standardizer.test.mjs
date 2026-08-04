@@ -1458,6 +1458,26 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
     }, {
       company: '新华保险',
       productName,
+      coverageType: '现金流',
+      liability: '满期',
+      value: 100,
+      unit: '%',
+      basis: '保险金额',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+      sourceExcerpt: '满期保险金 被保险人生存至年满80周岁保单生效对应日零时，本公司按基本责任的保险金额给付满期保险金。',
+    }, {
+      company: '新华保险',
+      productName,
+      coverageType: '现金流',
+      liability: '满期金',
+      value: 100,
+      unit: '%',
+      basis: '保险金额',
+      sourceUrl: 'https://static-cdn.newchinalife.com/ncl/pdf/zunshang.pdf',
+      sourceExcerpt: '满期保险金 被保险人生存至年满80周岁保单生效对应日零时，本公司按基本责任的保险金额给付满期保险金。',
+    }, {
+      company: '新华保险',
+      productName,
       coverageType: '人寿保障',
       id: 'legacy_disease_disability',
       liability: '疾病全残',
@@ -1481,8 +1501,10 @@ test('buildResponsibilityCardsForPolicy normalizes duplicate maturity and death 
   });
 
   assert.equal(cards.filter((card) => card.title === '满期保险金').length, 1);
-  assert.equal(cards.find((card) => card.title === '满期保险金')?.indicators.length, 2);
+  assert.equal(cards.find((card) => card.title === '满期保险金')?.indicators.length, 1);
   assert.equal(cards.some((card) => card.title === '满期返还'), false);
+  assert.equal(cards.some((card) => card.title === '满期'), false);
+  assert.equal(cards.some((card) => card.title === '满期金'), false);
   assert.equal(cards.some((card) => card.title === '疾病全残'), false);
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.selectionStatus, 'unknown');
   assert.equal(cards.find((card) => card.title === '身故或身体全残保险金')?.responsibilityScope, 'optional');

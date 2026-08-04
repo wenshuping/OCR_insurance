@@ -143,6 +143,17 @@ export function CustomerResponsibilitySummaryCard({
               .sort((left, right) => Number(left.year) - Number(right.year));
             const calculatedTotal = calculatedRows.reduce((total, entry) => total + Number(entry.amount || 0), 0);
             const calculatedAmounts = Array.from(new Set(calculatedRows.map((entry) => Number(entry.amount || 0))));
+            const calculationTexts = Array.from(new Set(
+              calculatedRows
+                .map((entry) => cleanText(entry.calculationText || entry.calcText))
+                .filter(Boolean),
+            ));
+            const hasMinimumEstimate = calculatedRows.some((entry) => (
+              entry.isMinimumEstimate || /最低可确认金额/u.test(cleanText(entry.calculationText || entry.calcText))
+            ));
+            const uncertaintyNotes = Array.from(new Set(
+              calculatedRows.map((entry) => cleanText(entry.uncertaintyNote)).filter(Boolean),
+            ));
             const calculatedScenario = scenarioEntries.find((entry) => (
               responsibilityTitlesMatch(item.title, entry.scenario) && Number(entry.amount) > 0
             ));
@@ -180,9 +191,20 @@ export function CustomerResponsibilitySummaryCard({
                           共 {calculatedRows.length} 次，合同计划累计 {formatCurrency(calculatedTotal)}
                           （{calculatedRows[0].year}—{calculatedRows[calculatedRows.length - 1].year}年）
                         </p>
-                        <p className="mt-1 text-[11px] text-cyan-700">
-                          {calculatedRows[0].calculationText || calculatedRows[0].calcText || '按保险责任指标计算'}
-                        </p>
+                        {calculationTexts.length ? calculationTexts.map((text, calculationIndex) => (
+                          <p key={text} className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            {calculationTexts.length > 1 ? `分支 ${calculationIndex + 1}：` : ''}{text}
+                          </p>
+                        )) : (
+                          <p className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            按保险责任指标计算
+                          </p>
+                        )}
+                        {uncertaintyNotes.map((note) => (
+                          <p key={note} className={`mt-1 text-[11px] ${hasMinimumEstimate ? 'text-amber-700' : 'text-cyan-700'}`}>
+                            备注：{note}
+                          </p>
+                        ))}
                       </div>
                     ) : calculatedScenario ? (
                       <div className="mt-2 rounded-xl bg-cyan-50 px-3 py-2 text-xs font-bold leading-5 text-cyan-800 ring-1 ring-cyan-100">

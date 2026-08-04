@@ -149,9 +149,13 @@ export function normalizeIndicatorCalculation(indicator = {}) {
     && indicator.branches.length > 0
     && indicator.branches.every((branch) => displayText(branch?.normalizedFormula || branch?.formulaText));
   const hasStructuredScheduledBranches = hasStructuredEventBranches
-    && /生存|年金|养老金|祝寿|教育|婚嫁|满期/u.test(liability)
+    && /生存保险金|生存金|生存|年金|养老金|教育金|深造金|婚嫁金|祝寿金|满期/u.test(liability)
     && indicator.branches.every((branch) => (
       /周岁|保单生效对应日|合同生效满|保险期间届满/u.test(displayText([
+        branch?.conditionText,
+        branch?.condition,
+      ].filter(Boolean).join(' ')))
+      && !/(?:身故|死亡|全残|伤残|疾病|意外|出险|事故)/u.test(displayText([
         branch?.conditionText,
         branch?.condition,
       ].filter(Boolean).join(' ')))
@@ -912,7 +916,10 @@ function claimBranchLabel(branch = {}) {
     disease_after_first_year: '满一年后疾病导致身故或全残',
     accidental: '意外伤害导致身故或全残',
   };
-  return labels[displayText(branch.branchId)] || displayText(branch.condition) || '条款条件分支';
+  return labels[displayText(branch.branchId)]
+    || displayText(branch.conditionText)
+    || displayText(branch.condition)
+    || '条款条件分支';
 }
 
 function claimBranchCalculationText(branch = {}, result = {}, inputs = {}) {

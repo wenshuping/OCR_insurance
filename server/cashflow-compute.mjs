@@ -1038,6 +1038,100 @@ function shouldSkipCashflowIndicator(indicator = {}) {
   return cashflowIndicatorIsParameter(indicator) || indicatorHasUncertainValue(indicator);
 }
 
+function isDeterministicScheduledIndicator(indicator = {}) {
+  const liability = normalizeCashflowLookupText(indicator?.liability || indicator?.coverageType);
+  if (!/生存保险金|生存金|年金|养老金|教育金|深造金|婚嫁金|祝寿金|满期/u.test(liability)) return false;
+  const trigger = normalizeCashflowLookupText([
+    indicator?.triggerCondition,
+    indicator?.condition,
+    indicator?.sourceExcerpt,
+  ].join(' '));
+  if (!trigger || /身故|死亡|全残|伤残|疾病|意外|出险|事故/u.test(trigger)) return false;
+  return /生存|满期|期满|每一保单生效对应日|每个保单周年日/u.test(trigger);
+}
+
+function cashflowIndicator(indicator = {}) {
+  return indicator?.coverageType === '现金流'
+    || indicator?.cashflowTreatment === 'scheduled_cashflow'
+    || isDeterministicScheduledIndicator(indicator);
+}
+
+function scheduledBranchYearRange(conditionText, policy) {
+  const condition = normalizeCashflowLookupText(conditionText);
+  const effectiveYear = effectiveDateParts(policy)?.year || 0;
+  const birth = parseDateParts(policy?.insuredBirthday);
+  const effective = effectiveDateParts(policy);
+  if (!condition || !effectiveYear || !birth || !effective) return null;
+
+  const policyAnniversaryYearAtAge = (age) => {
+    const candidateYear = birth.year + age;
+    const candidateDate = { year: candidateYear, month: effective.month, day: effective.day };
+    return ageAtDate(policy, candidateDate) >= age ? candidateYear : candidateYear + 1;
+  };
+  const coverageAge = normalizeCashflowLookupText(policy?.coveragePeriod)
+    .match(/(?:至|保至)?(\d{1,3})(?:周岁|岁)/u);
+  const coverageEndYear = coverageAge
+    ? policyAnniversaryYearAtAge(Number(coverageAge[1]))
+    : parseCoverageEndYear(policy);
+  if (!coverageEndYear) return null;
+
+  const policyYearStart = condition.match(/生效满([一二三四五六七八九十百千万两\d]+)年起/u);
+  const ageStart = condition.match(/(?:^|于)(\d+)周岁保单生效对应日起/u);
+  const ageEndExclusive = condition.match(/至(\d+)周岁保单生效对应日之前/u);
+  const ageEndInclusive = condition.match(/至(\d+)周岁保单生效对应日期间/u);
+  const startYear = policyYearStart
+    ? effectiveYear + parseChineseInteger(policyYearStart[1])
+    : ageStart
+      ? policyAnniversaryYearAtAge(Number(ageStart[1]))
+      : 0;
+  const endYear = ageEndExclusive
+    ? policyAnniversaryYearAtAge(Number(ageEndExclusive[1])) - 1
+    : ageEndInclusive
+      ? policyAnniversaryYearAtAge(Number(ageEndInclusive[1]))
+      : 0;
+  if (!startYear || !endYear || startYear > endYear) return null;
+  return {
+    startYear: Math.max(startYear, effectiveYear),
+    endYear: Math.min(endYear, coverageEndYear),
+  };
+}
+
+function expandStructuredScheduledBranches(indicator, policy) {
+  if (!isDeterministicScheduledIndicator(indicator)) return [];
+  const branches = Array.isArray(indicator?.branches) ? indicator.branches : [];
+  if (!branches.length) return [];
+  const baseAmount = Number(policy?.amount || 0) || 0;
+  if (baseAmount <= 0) return [];
+
+  const entries = [];
+  for (const branch of branches) {
+    const conditionText = String(branch?.conditionText || branch?.condition || '').trim();
+    const range = scheduledBranchYearRange(conditionText, policy);
+    const formulaText = normalizeCashflowLookupText(branch?.formulaText);
+    const percentageMatch = formulaText.match(/(?:基本责任(?:的)?保险金额|基本保险金额|基本保险金|基本保额)(?:的)?(\d+(?:\.\d+)?)%/u);
+    if (!range || !percentageMatch) return [];
+    const percentage = Number(percentageMatch[1]);
+    const amount = Math.round(baseAmount * percentage) / 100;
+    if (!(amount > 0)) return [];
+    for (let year = range.startYear; year <= range.endYear; year += 1) {
+      entries.push({
+        year,
+        age: ageAtCalendarYear(policy, year, year - parseYearFromDate(policy?.insuredBirthday)),
+        amount,
+        liability: indicator.liability || '生存保险金',
+        policyId: policy.id,
+        productName: policy.name || indicator.productName || '',
+        calcText: `条件：${conditionText}；基本责任保险金额 ${baseAmount.toLocaleString('zh-CN')} × ${percentage}% = ${amount.toLocaleString('zh-CN')}元`,
+        isMinimumEstimate: true,
+        uncertaintyNote: '按当前已知基本责任保险金额测算，未计入未来分红增加部分。',
+        _cashflowSource: 'structured_indicator_branch',
+        _cashflowIndicatorId: indicator.id || '',
+      });
+    }
+  }
+  return entries;
+}
+
 function resolvePensionStartAgeFromIndicators(cashflowIndicators = [], policy = {}) {
   for (const indicator of Array.isArray(cashflowIndicators) ? cashflowIndicators : []) {
     if (!cashflowIndicatorIsParameter(indicator)) continue;
@@ -1573,6 +1667,7 @@ function computeFromIndicators(cashflowIndicators, ctx) {
   for (const indicator of usableCashflowIndicators) {
     const scopedPolicy = policyScopedToIndicator(ctx.policy, indicator);
     const pensionStartAge = resolvePensionStartAgeFromIndicators(allCashflowIndicators, scopedPolicy);
+    entries.push(...expandStructuredScheduledBranches(indicator, scopedPolicy));
     entries.push(...expandCashflowIndicator(indicator, scopedPolicy, pensionStartAge));
     entries.push(...expandCashflowIndicatorSourceText(indicator, ctx.policy, allCashflowIndicators));
   }
@@ -1608,7 +1703,7 @@ export function computePolicyCashflow(policy, template, indicators) {
     formulaVariables: formulaVariablesFromIndicators(effectiveIndicators),
   };
   const ctx = buildContext(policyWithFormulaVariables);
-  const cashflowIndicators = effectiveIndicators.filter(i => i.coverageType === '现金流');
+  const cashflowIndicators = effectiveIndicators.filter(cashflowIndicator);
   const rules = template?.rules || [];
 
   let entries = [];
@@ -1725,7 +1820,7 @@ export function computeScenarioEntries(indicators, policy) {
   const entries = [];
   for (const indicator of (Array.isArray(indicators) ? indicators : [])) {
     if (!isSelectedCoverageIndicator(indicator)) continue;
-    if (indicator.coverageType === '现金流') continue;
+    if (cashflowIndicator(indicator)) continue;
     if (indicator.coverageType === '规则参数') continue;
     if (/定义$/u.test(String(indicator.liability || '')) && /^\s*[A-Za-z_][A-Za-z0-9_]*\s*=/u.test(String(indicator.normalizedFormula || ''))) continue;
     if (indicatorHasUncertainValue(indicator)) continue;
