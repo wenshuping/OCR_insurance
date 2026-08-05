@@ -63,7 +63,7 @@ export function resolvePolicyOcrWriteDatabasePath({
   const configuredDevelopmentPath = readConfiguredDevelopmentDatabasePath(root);
   const defaultDevelopmentPath = path.join(homeDir, 'OCR_insurance_ssd', '.runtime', 'local', 'policy-ocr.sqlite');
   const expectedDevelopmentPath = configuredDevelopmentPath
-    || String(env.POLICY_OCR_APP_DB_PATH || '').trim()
+    || (targetProfile === 'dev' ? String(env.POLICY_OCR_APP_DB_PATH || '').trim() : '')
     || defaultDevelopmentPath;
 
   if (targetProfile === 'prod') {

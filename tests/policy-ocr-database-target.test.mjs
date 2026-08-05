@@ -126,6 +126,26 @@ test('production writes resolve to the production database', async (t) => {
   );
 });
 
+test('production env database path is not mistaken for the development SSD target', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-ocr-prod-db-target-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const projectRoot = path.join(root, 'project');
+  const productionDbPath = path.join(root, 'data', 'policy-ocr.sqlite');
+  fs.mkdirSync(projectRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(productionDbPath), { recursive: true });
+  fs.writeFileSync(productionDbPath, '');
+  const resolveDatabasePath = await loadResolver();
+
+  assert.equal(
+    resolveDatabasePath({
+      projectRoot,
+      profile: 'prod',
+      env: { POLICY_OCR_APP_DB_PATH: productionDbPath },
+    }),
+    fs.realpathSync(productionDbPath),
+  );
+});
+
 test('production writes reject the configured development SSD database', async (t) => {
   const layout = createDatabaseLayout();
   t.after(() => fs.rmSync(layout.root, { recursive: true, force: true }));
