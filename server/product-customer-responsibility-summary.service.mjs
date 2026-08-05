@@ -2070,6 +2070,13 @@ async function generateProductCustomerResponsibilitySummaryInternal({
           message: '保险责任整理暂时失败，系统将在下次查询时重试。',
         };
       }
+      if (pipelineStatus === 'published') {
+        return {
+          ok: false,
+          status: 'responsibility_pipeline_result_missing',
+          message: '保险责任整理已完成，但当前结果无法读取，请联系运营人员处理。',
+        };
+      }
       return {
         ok: false,
         status: pipelineStatus === 'processing'

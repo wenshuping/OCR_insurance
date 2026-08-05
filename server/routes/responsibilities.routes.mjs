@@ -1238,7 +1238,9 @@ export function createResponsibilityRoutes(context) {
         : undefined,
       privateSourceRecords,
       boundSourceIdentity,
-      requireApprovedPipelineArtifact: !usesPrivateSource && typeof enqueueProductResponsibilityPipeline === 'function',
+      requireApprovedPipelineArtifact: !usesPrivateSource
+        && !boundSourceIdentity
+        && typeof enqueueProductResponsibilityPipeline === 'function',
       enqueueProductResponsibilityPipeline: usesPrivateSource ? undefined : enqueueProductResponsibilityPipeline,
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
       generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,

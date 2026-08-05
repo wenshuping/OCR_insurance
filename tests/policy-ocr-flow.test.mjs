@@ -5861,6 +5861,87 @@ test('customer responsibility summary uses the current policy owner pending uplo
   }
 });
 
+test('customer responsibility summary generates directly from an exact policy-bound official version', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
+  const sourceUrl = 'https://life.pingan.com/ilife-home/product/getPlanClausePdf?planCode=1050&versionNo=1050-4&attachmentType=1';
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 7, mobile: '13800000007' }],
+    sessions: [{ token: 'owner-token', userId: 7 }],
+    policies: [{
+      id: 516517,
+      userId: 7,
+      guestId: '',
+      company: '中国平安',
+      name: '平安金牛年金保险（万能型）',
+      responsibilities: [{ title: '年金', sourceUrl }],
+    }],
+    knowledgeRecords: [{
+      id: 516517,
+      company: '中国平安',
+      productName: '平安金牛年金保险（万能型）',
+      title: '平安金牛年金保险（万能型）条款',
+      url: sourceUrl,
+      pageText: '第三条 保险责任 年金 被保险人生存时按约定领取年金。身故保险金 被保险人身故时按保单账户价值给付。',
+      official: true,
+    }],
+    insuranceIndicatorRecords: [],
+  };
+  let enqueueCalls = 0;
+  let modelCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    productResponsibilityPipelineQueue: {
+      async enqueue() { enqueueCalls += 1; return { status: 'queued' }; },
+      start() {},
+      stop() {},
+    },
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {
+        productCategory: 'universal_life',
+        categoryLabel: '万能保险',
+        headline: '本产品提供年金和身故保障。',
+        responsibilities: [{
+          title: '年金',
+          plainText: '被保险人生存时按约定领取年金。',
+          triggerCondition: '被保险人生存。',
+          paymentRule: '按合同约定领取。',
+          calculationStatus: 'scheduled_cashflow',
+        }],
+        productFunctions: [],
+        importantNotes: [],
+        missingOrUnclear: [],
+      };
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const result = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      headers: { authorization: 'Bearer owner-token' },
+      body: JSON.stringify({
+        policyId: 516517,
+        company: '中国平安',
+        name: '平安金牛年金保险（万能型）',
+      }),
+    });
+    assert.equal(result.response.status, 200);
+    assert.equal(result.payload.ok, true);
+    assert.equal(result.payload.source, 'generated');
+    assert.equal(result.payload.summary.sourceUrls.includes(sourceUrl), true);
+    assert.equal(modelCalls, 1);
+    assert.equal(enqueueCalls, 0);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary uses the current policy owner pending upload without publishing it', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');
