@@ -1242,6 +1242,7 @@ export function createResponsibilityRoutes(context) {
         && !boundSourceIdentity
         && typeof enqueueProductResponsibilityPipeline === 'function',
       enqueueProductResponsibilityPipeline: usesPrivateSource ? undefined : enqueueProductResponsibilityPipeline,
+      officialDomainProfiles: buildEffectiveOfficialDomainProfiles(summaryState),
       generateWithDeepSeek: generateProductCustomerResponsibilitySummaryWithDeepSeek,
       generatePlannerWithDeepSeek: generateProductCustomerResponsibilityPlannerWithDeepSeek,
       generateOfficialAnalysis: async ({ company: insurer, productName }) => assistantAnalyzer({

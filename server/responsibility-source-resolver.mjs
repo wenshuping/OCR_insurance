@@ -1,4 +1,10 @@
-const OFFICIAL_DOMAINS = [
+import {
+  getDefaultOfficialDomainProfiles,
+  isPolicyOfficialSourceUrl,
+} from './c-policy-analysis.service.mjs';
+import { companiesMatch } from './policy-knowledge.service.mjs';
+
+const LEGACY_OFFICIAL_DOMAINS = [
   'newchinalife.com',
   'pingan.com',
   'chinalife.com',
@@ -115,22 +121,26 @@ function hasResponsibilityText(record = {}) {
   return /保险责任|给付|保险金|年金|豁免/u.test(responsibilityText(record));
 }
 
-function hasOfficialDomain(urlValue) {
+function hasOfficialDomain(urlValue, { company, productName, officialDomainProfiles }) {
   const url = text(urlValue);
   if (!url) return false;
-
+  if (isPolicyOfficialSourceUrl(
+    url,
+    { company, name: productName },
+    officialDomainProfiles,
+  )) return true;
   try {
     const hostname = new URL(url).hostname.toLowerCase();
-    return OFFICIAL_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
+    return LEGACY_OFFICIAL_DOMAINS.some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
   } catch {
     return false;
   }
 }
 
-function isOfficial(record = {}) {
+function isOfficial(record = {}, sourceIdentity) {
   return record.official === true
     || text(record.evidenceLevel || record.evidence_level) === 'insurer_official'
-    || allUrlValues(record).some(hasOfficialDomain);
+    || allUrlValues(record).some((url) => hasOfficialDomain(url, sourceIdentity));
 }
 
 function isCustomerPolicyUpload(record = {}) {
@@ -155,13 +165,23 @@ export function resolveOfficialResponsibilitySources({
   productName = '',
   records = [],
   allowCustomerUploadSources = false,
+  officialDomainProfiles = getDefaultOfficialDomainProfiles(),
 } = {}) {
   const resolvedCompany = text(company);
   const inputProductName = text(productName);
+  const sourceIdentity = {
+    company: resolvedCompany,
+    productName: inputProductName,
+    officialDomainProfiles,
+  };
   const matched = normalizeArray(records)
-    .filter((record) => text(record.company || record.companyName) === resolvedCompany)
+    .filter((record) => companiesMatch(
+      record.company || record.companyName,
+      resolvedCompany,
+      officialDomainProfiles,
+    ))
     .filter((record) => productNameMatches(record.productName || record.product_name || record.title, inputProductName))
-    .filter((record) => isOfficial(record) || (allowCustomerUploadSources && isCustomerPolicyUpload(record)))
+    .filter((record) => isOfficial(record, sourceIdentity) || (allowCustomerUploadSources && isCustomerPolicyUpload(record)))
     .filter((record) => firstUrl(record) || hasResponsibilityText(record))
     .sort((left, right) => materialRank(left) - materialRank(right)
       || Number(hasResponsibilityText(right)) - Number(hasResponsibilityText(left))

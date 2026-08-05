@@ -1900,6 +1900,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   boundSourceIdentity = null,
   requireApprovedPipelineArtifact = false,
   enqueueProductResponsibilityPipeline,
+  officialDomainProfiles,
 } = {}) {
   const company = text(input.company).slice(0, 80);
   const inputProductName = text(input.name || input.productName).slice(0, 160);
@@ -2112,6 +2113,7 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     productName,
     records,
     allowCustomerUploadSources: scopedPrivateRecords.length > 0,
+    officialDomainProfiles,
   });
   if (resolvedSources.status !== 'ready') {
     await persistGenerationReviewRun(persistGenerationRun, buildGenerationRun({

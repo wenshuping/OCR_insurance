@@ -133,6 +133,26 @@ test('resolveOfficialResponsibilitySources accepts official and source URL field
   assert.equal(result.records.length, 2);
 });
 
+test('resolveOfficialResponsibilitySources accepts configured insurer domains beyond the legacy shortlist', () => {
+  const sourceUrl = 'https://www.sino-life.com/upload/clause/lqbx_2023082.pdf';
+  const result = resolveOfficialResponsibilitySources({
+    company: '富德生命人寿保险股份有限公司',
+    productName: '富德生命长盈六号两全保险（万能型）（荣耀版）',
+    records: [
+      {
+        company: '富德生命',
+        productName: '富德生命长盈六号两全保险（万能型）（荣耀版）',
+        url: sourceUrl,
+        pageText: '保险责任 满期保险金和身故保险金按合同约定给付。',
+      },
+    ],
+  });
+
+  assert.equal(result.status, 'ready');
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].url, sourceUrl);
+});
+
 test('resolveOfficialResponsibilitySources accepts file URL fields from official domains', () => {
   const result = resolveOfficialResponsibilitySources({
     company: '人保寿险',
