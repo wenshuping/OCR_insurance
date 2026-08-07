@@ -77,3 +77,35 @@ print(json.dumps({'names': names, 'results': results, 'artifact': artifact, 'ver
     currentVersionSkips: true,
   });
 });
+
+test('backfill accepts the configured production database without treating it as the development SSD', () => {
+  const script = String.raw`
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+root = Path.cwd()
+script_dir = root / '.agents/skills/ocr-insurance-product-responsibility-pipeline/scripts'
+sys.path.insert(0, str(script_dir))
+import batch_deepseek_backfill as batch
+
+with tempfile.TemporaryDirectory() as directory:
+    project_root = Path(directory) / 'project'
+    production_db = Path(directory) / 'data' / 'policy-ocr.sqlite'
+    project_root.mkdir(parents=True)
+    production_db.parent.mkdir(parents=True)
+    production_db.touch()
+    os.environ['POLICY_OCR_PROFILE'] = 'prod'
+    os.environ['POLICY_OCR_APP_DB_PATH'] = str(production_db)
+    resolved = batch.resolve_database_path(str(production_db), project_root)
+    print(json.dumps({'resolved': str(resolved), 'expected': str(production_db.resolve())}))
+`;
+  const output = execFileSync('python3', ['-c', script], {
+    cwd: new URL('..', import.meta.url),
+    encoding: 'utf8',
+  });
+  const result = JSON.parse(output);
+  assert.equal(result.resolved, result.expected);
+});

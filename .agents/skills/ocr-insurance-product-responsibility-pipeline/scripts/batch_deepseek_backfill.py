@@ -1605,7 +1605,7 @@ def resolve_database_path(requested_path, project_root):
     default_development_path = Path.home() / "OCR_insurance_ssd" / ".runtime" / "local" / "policy-ocr.sqlite"
     development_path = Path(
         configured_development_path
-        or os.environ.get("POLICY_OCR_APP_DB_PATH")
+        or (os.environ.get("POLICY_OCR_APP_DB_PATH") if not production else "")
         or default_development_path
     ).expanduser().resolve()
     if production:

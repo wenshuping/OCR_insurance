@@ -46,7 +46,7 @@ import {
   responsibilityGenerationGovernanceDigest,
 } from './responsibility-generation-governance.service.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v28-skill-domain-workers';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v29-safe-structured-content';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -72,6 +72,30 @@ function firstText(...values) {
 
 function normalizeArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+export function customerSummaryDisplayText(value) {
+  if (value === null || value === undefined) return '';
+  if (Array.isArray(value)) return value.map(customerSummaryDisplayText).filter(Boolean).join('\n');
+  if (typeof value !== 'object') {
+    const normalized = text(value);
+    return normalized === '[object Object]' ? '' : normalized;
+  }
+
+  const title = firstText(value.title, value.label, value.name);
+  const body = firstText(
+    customerSummaryDisplayText(value.content),
+    customerSummaryDisplayText(value.text),
+    customerSummaryDisplayText(value.plainText),
+    customerSummaryDisplayText(value.summary),
+    customerSummaryDisplayText(value.description),
+    customerSummaryDisplayText(value.sourceExcerpt),
+    customerSummaryDisplayText(value.note),
+    customerSummaryDisplayText(value.remark),
+    customerSummaryDisplayText(value.value),
+  );
+  if (title && body && title !== body) return `${title}：${body}`;
+  return body || title;
 }
 
 function plainObject(value) {
@@ -1546,19 +1570,18 @@ const CUSTOMER_SUMMARY_BLOCK_DEFINITIONS = [
 ];
 
 function linesToText(lines = []) {
-  return normalizeArray(lines).map(text).filter(Boolean).join('\n');
+  return normalizeArray(lines).map(customerSummaryDisplayText).filter(Boolean).join('\n');
 }
 
 function productFunctionTextFrom(item) {
-  if (typeof item === 'string') return text(item);
-  return firstText(item?.title, item?.name, item?.plainText, item?.summary, item?.description);
+  return customerSummaryDisplayText(item);
 }
 
 function enabledContentBlock(summary = {}, blockKey = '') {
   return normalizeArray(summary.contentBlocks).find((block) => (
     text(block?.blockKey) === blockKey
       && block?.enabled !== false
-      && text(block?.content)
+      && customerSummaryDisplayText(block?.content)
   ));
 }
 
@@ -1646,7 +1669,7 @@ function defaultCustomerSummaryBlocks(summary = {}, source = {}) {
   const responsibilities = normalizeArray(summary.mainResponsibilities);
   const productFunctions = normalizeArray(source.productFunctions).map(productFunctionTextFrom).filter(Boolean);
   return [
-    { blockKey: 'productPurpose', content: text(summary.headline) },
+    { blockKey: 'productPurpose', content: customerSummaryDisplayText(summary.headline) },
     {
       blockKey: 'responsibilities',
       content: linesToText(responsibilities.map((item) =>
@@ -1673,7 +1696,7 @@ function normalizeCustomerSummaryContentBlocks(rawBlocks, summary = {}, source =
       enabled: raw.enabled !== false,
       editable: raw.editable !== false,
       order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : definition.order,
-      content: text(raw.content),
+      content: customerSummaryDisplayText(raw.content),
       sourceRefs: sourceRefIdsFromValue(raw.sourceRefs),
     };
   });
@@ -1686,7 +1709,7 @@ function normalizeCustomerSummaryContentBlocks(rawBlocks, summary = {}, source =
       enabled: block.enabled !== false,
       editable: block.editable !== false,
       order: Number.isFinite(Number(block.order)) ? Number(block.order) : blocks.length + index + 1,
-      content: text(block.content),
+      content: customerSummaryDisplayText(block.content),
       sourceRefs: sourceRefIdsFromValue(block.sourceRefs),
     }))
     .filter((block) => block.title || block.content);
@@ -1715,17 +1738,17 @@ function normalizeStructuredSummaryToCustomerSummary(raw = {}, { company, produc
     })
     .filter((item) => item.title || item.plainText || item.triggerCondition || item.howItPays || item.calculationStatus || item.requiredPolicyFields.length || item.sourceRefs?.length);
   const notices = uniqueStrings([
-    ...normalizeArray(source?.importantNotes).map(text),
-    ...normalizeArray(source?.notices).map(text),
+    ...normalizeArray(source?.importantNotes).map(customerSummaryDisplayText),
+    ...normalizeArray(source?.notices).map(customerSummaryDisplayText),
     ...normalizeArray(source?.missingOrUnclear).map((item) => {
-      const content = text(item);
+      const content = customerSummaryDisplayText(item);
       return content ? `需核验：${content}` : '';
     }),
   ]);
   const summary = {
     company,
     productName,
-    headline: text(source?.headline || source?.productSummary || source?.summary),
+    headline: customerSummaryDisplayText(source?.headline || source?.productSummary || source?.summary),
     mainResponsibilities: responsibilities,
     notices,
     requiredPolicyFields: uniqueStrings(responsibilities.flatMap((item) => item.requiredPolicyFields)),

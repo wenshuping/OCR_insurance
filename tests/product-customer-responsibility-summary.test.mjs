@@ -7,6 +7,7 @@ import {
   buildCustomerResponsibilitySummaryFromCards,
   buildCustomerResponsibilitySourceDigest,
   callDeepSeekForCustomerResponsibilitySummary,
+  customerSummaryDisplayText,
   enrichCustomerResponsibilitySummaryWithMaterials,
   generateProductCustomerResponsibilitySummary,
   validateCustomerResponsibilitySummaryJson,
@@ -17,7 +18,19 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v28-skill-domain-workers';
+const currentSummaryVersion = 'customer-summary-v29-safe-structured-content';
+
+test('customer summary renders structured content without object coercion artifacts', () => {
+  const rendered = customerSummaryDisplayText([
+    { title: '最低保证利率', content: '年利率1.5%。' },
+    { label: '账户费用', description: '追加保险费初始费用为3%。' },
+    '[object Object]',
+    { unsupported: true },
+  ]);
+
+  assert.equal(rendered, '最低保证利率：年利率1.5%。\n账户费用：追加保险费初始费用为3%。');
+  assert.doesNotMatch(rendered, /\[object Object\]/u);
+});
 
 test('material enrichment dynamically adds grounded blocks and responsibilities from published chunks', async () => {
   let receivedPrompt = '';
