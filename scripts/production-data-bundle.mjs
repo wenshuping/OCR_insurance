@@ -23,6 +23,8 @@ const KNOWLEDGE_TABLES = [
   'insurance_indicator_records',
   'optional_responsibility_records',
   'product_responsibility_cards',
+  'product_indicator_versions',
+  'indicator_update_batches',
   'official_domain_profiles',
   'indicator_definitions',
 ];

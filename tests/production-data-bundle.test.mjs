@@ -43,6 +43,8 @@ async function seedDatabase(dbPath) {
     knowledgeRecords: [{ id: 7, company: '新华保险', productName: '福如东海A款终身寿险（分红型）', url: 'https://example.test/terms.pdf', pageText: '保险责任' }],
     insuranceIndicatorRecords: [{ id: 'indicator-1', company: '新华保险', productName: '福如东海A款终身寿险（分红型）', coverageType: '身故', liability: '身故保险金', formulaText: '身故保险金 = 有效保险金额' }],
     optionalResponsibilityRecords: [{ id: 'optional-1', company: '新华保险', productName: '福如东海A款终身寿险（分红型）', liability: '附加重疾', sourceExcerpt: '重大疾病保险责任' }],
+    productIndicatorVersions: [{ productKey: 'company_product:新华保险:福如东海A款终身寿险（分红型）', version: 2, batchId: 'indicator-batch-1', updatedAt: '2026-06-13T00:05:30.000Z' }],
+    indicatorUpdateBatches: [{ id: 'indicator-batch-1', productKeys: ['company_product:新华保险:福如东海A款终身寿险（分红型）'], changedProductKeyCount: 1, affectedPolicyCount: 0, createdAt: '2026-06-13T00:05:30.000Z' }],
     officialDomainProfiles: [{ id: 'new-china-life', company: '新华保险', officialDomains: ['newchinalife.com'] }],
     pendingScans: [{ guestId: 'guest-1', createdAt: '2026-06-13T00:05:00.000Z', scan: { data: { company: '新华保险' } } }],
     insuranceIndicatorSnapshot: { syncedAt: '2026-06-13T00:06:00.000Z', count: 1 },
@@ -190,6 +192,8 @@ test('production data bundle preserves policies families knowledge indicators an
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
   assert.equal(bundle.snapshot.coreCounts.product_responsibility_cards, 1);
+  assert.equal(bundle.snapshot.counts.product_indicator_versions, 1);
+  assert.equal(bundle.snapshot.counts.indicator_update_batches, 1);
   assert.equal(bundle.snapshot.coreCounts.policy_cash_values, 1);
   assert.equal(bundle.snapshot.coreCounts.policy_cashflows, 1);
 
@@ -317,6 +321,8 @@ test('knowledge data install updates knowledge tables without replacing user pol
   assert.equal(manifest.source.knowledgeCounts.policies, undefined);
   assert.equal(manifest.source.knowledgeCounts.knowledge_records, 1);
   assert.equal(manifest.source.knowledgeCounts.product_responsibility_cards, 1);
+  assert.equal(manifest.source.knowledgeCounts.product_indicator_versions, 1);
+  assert.equal(manifest.source.knowledgeCounts.indicator_update_batches, 1);
   assert.equal(manifest.snapshot.nonEmptyGuardTotal, undefined);
   assert.equal(manifest.snapshot.counts.users, undefined);
   assert.equal(manifest.snapshot.counts.policies, undefined);
@@ -350,6 +356,8 @@ test('knowledge data install updates knowledge tables without replacing user pol
     assert.equal(db.prepare("SELECT count(*) AS count FROM knowledge_records WHERE product_name = '知识-target'").get().count, 0);
     assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-source'").get().count, 1);
     assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-target'").get().count, 0);
+    assert.equal(db.prepare("SELECT version FROM product_indicator_versions WHERE product_key = 'company_product:新华保险:福如东海A款终身寿险（分红型）'").get().version, 2);
+    assert.equal(db.prepare("SELECT affected_policy_count FROM indicator_update_batches WHERE id = 'indicator-batch-1'").get().affected_policy_count, 0);
     assert.equal(db.prepare("SELECT count(*) AS count FROM pending_scans WHERE guest_id = 'guest-1'").get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM policy_cashflows WHERE policy_id = 2').get().count, 1);
     assert.equal(JSON.parse(db.prepare("SELECT payload FROM state_documents WHERE key = 'insuranceIndicatorSnapshot'").get().payload).label, 'source');

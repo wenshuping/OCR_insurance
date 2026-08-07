@@ -192,7 +192,7 @@ If the host has the line but the container does not, the image is stale. Re-run 
 
 ## Production Knowledge Data Release
 
-Use this when production must receive local knowledge-base updates: knowledge records, insurance indicators, optional responsibility records, official-domain profiles, indicator definitions, and the indicator snapshot document.
+Use this when production must receive local public product-data updates: knowledge records, insurance indicators, optional responsibility records, responsibility cards, product indicator versions and update batches, official-domain profiles, indicator definitions, and the indicator snapshot document.
 
 This is separate from code release. Rebuilding Docker images must not create or overwrite production data. Knowledge data release must not replace production users, policies, pending scans, memberships, family data, policy source records, cash values, or cashflows.
 
@@ -238,10 +238,11 @@ The knowledge installer writes a backup under `/data/backups/`, then replaces on
 
 The knowledge-only bundle itself contains only `knowledge_records`,
 `insurance_indicator_records`, `optional_responsibility_records`,
-`official_domain_profiles`, `indicator_definitions`, and the
-`insuranceIndicatorSnapshot` state document. It must not contain production
-users, policies, family rows, source records, pending scans, cash values, or
-cashflows.
+`product_responsibility_cards`, `product_indicator_versions`,
+`indicator_update_batches`, `official_domain_profiles`,
+`indicator_definitions`, and the `insuranceIndicatorSnapshot` state document.
+It must not contain production users, policies, family rows, source records,
+pending scans, cash values, cashflows, or customer behavior data.
 
 Full SQLite replacement is a disaster-recovery operation, not a normal release path. The full installer refuses to replace a non-empty target by default. Even with `--replace-non-empty`, it now refuses if the incoming bundle would remove protected production rows such as `users`, `policies`, `pending_scans`, memberships, family rows, source records, cash values, or cashflows. Use `--allow-user-data-loss` only after a separate written confirmation that deleting those rows is intentional.
 
