@@ -289,14 +289,33 @@ function universalFields(items) {
   add('withdrawalAndSurrenderCharges', '部分领取/退保手续费', /(?:部分领取|部分提取|退保).*?(?:手续费|费用|费率|比例)|(?:手续费|费用|费率|比例).*?(?:部分领取|部分提取|退保)/u);
   add('withdrawalEligibilityAndLimits', '领取/退保条件与限额', /(?:部分领取|部分提取|退保).*?(?:条件|资格|最低|限额|余额|次数|频率|保单年度|犹豫期|申请|效力终止|有效身份证件)|(?:条件|资格|最低|限额|余额|次数|频率|保单年度|犹豫期|申请|效力终止|有效身份证件).*?(?:部分领取|部分提取|退保)/u);
   add('accountValueRule', '账户价值规则', /账户价值.*?(?:等于|计算|扣除|加上|余额|积累|增长)|(?:等于|计算|扣除|加上|余额|积累|增长).*?账户价值/u);
+  const rateScheduleAfter = (anchor) => unique(items.flatMap((item) => {
+    const body = text(item.originalText || item.text);
+    const schedules = [];
+    for (const match of body.matchAll(anchor)) {
+      const tail = body.slice(Number(match.index || 0), Number(match.index || 0) + 1600);
+      const nextClauseIndex = tail.slice(match[0].length).search(/\n\s*第[一二三四五六七八九十百零〇\d]{1,8}条\s*/u);
+      const schedule = nextClauseIndex >= 0
+        ? tail.slice(0, match[0].length + nextClauseIndex)
+        : tail;
+      schedules.push(...[...schedule.matchAll(/\d+(?:\.\d+)?\s*%/gu)].map((rate) => rate[0].replace(/\s+/gu, '')));
+    }
+    return schedules;
+  }));
   const partialWithdrawalRates = clausesFromOfficialText(items, /部分领取手续费率|部分领取.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
   const surrenderRates = clausesFromOfficialText(items, /退保手续费率|退保.*?(?:5\s*%|4\s*%|3\s*%|2\s*%|1\s*%)/u);
   const withdrawalRates = unique([...partialWithdrawalRates, ...surrenderRates]);
   if (withdrawalRates.length) {
     const percentagesFor = (clauses) => unique(clauses.flatMap((clause) => [...clause.matchAll(/\d+(?:\.\d+)?\s*%/gu)].map((match) => match[0].replace(/\s+/gu, ''))));
     const rateParts = [];
-    const partialPercentages = percentagesFor(partialWithdrawalRates);
-    const surrenderPercentages = percentagesFor(surrenderRates);
+    const partialPercentages = unique([
+      ...percentagesFor(partialWithdrawalRates),
+      ...rateScheduleAfter(/部分领取手续费率/gu),
+    ]);
+    const surrenderPercentages = unique([
+      ...percentagesFor(surrenderRates),
+      ...rateScheduleAfter(/退保手续费率/gu),
+    ]);
     if (partialPercentages.length) rateParts.push(`部分领取手续费率：${partialPercentages.join(' / ')}`);
     if (surrenderPercentages.length) rateParts.push(`退保手续费率：${surrenderPercentages.join(' / ')}`);
     fields.withdrawalAndSurrenderCharges = {

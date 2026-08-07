@@ -215,6 +215,29 @@ test('universal lane selects numeric fee clauses and retains account fee rules',
   assert.match(result.universalAccount.fields.withdrawalAndSurrenderCharges.value, /退保手续费率/u);
 });
 
+test('universal lane reads withdrawal and surrender rate tables split across PDF lines', () => {
+  const evidence = universalChain('sha256:universal-multiline-fee-table');
+  const body = [
+    '第十条 本合同设置万能账户，账户价值按本条款计算。',
+    '第十一条 本合同最低保证利率为年利率2%。',
+    '第十二条 部分领取手续费率如下表：',
+    '保险年度 第一年 第二年 第三年 第四年 第五年',
+    '部分领取手续费率 5% 4% 3% 2% 1%',
+    '第十三条 退保手续费率如下表：',
+    '保险年度 第一年 第二年 第三年 第四年 第五年',
+    '退保手续费率 5% 4% 3% 2% 1%',
+    '第十四条 合同终止。',
+  ].join('\n');
+  evidence.artifacts[0].sourceExcerpt = body;
+  evidence.cards = evidence.cards.map((card) => ({ ...card, sourceExcerpt: body }));
+  evidence.indicators = evidence.indicators.map((indicator) => ({ ...indicator, sourceExcerpt: body, formulaText: body }));
+
+  const result = routeEvidence(evidence);
+  const charges = result.universalAccount.fields.withdrawalAndSurrenderCharges.value;
+  assert.match(charges, /部分领取手续费率：5% \/ 4% \/ 3% \/ 2% \/ 1%/u);
+  assert.match(charges, /退保手续费率：5% \/ 4% \/ 3% \/ 2% \/ 1%/u);
+});
+
 test('universal lane omits unsupported fields and reports blockers', () => {
   const result = routeEvidence(universalChain('sha256:universal-sparse', { fields: false }));
   assert.equal(result.category, 'blocked');
