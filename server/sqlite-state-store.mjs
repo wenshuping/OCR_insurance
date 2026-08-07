@@ -939,6 +939,21 @@ function createSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_product_responsibility_cards_company_product ON product_responsibility_cards(company, product_name);
     CREATE INDEX IF NOT EXISTS idx_product_responsibility_cards_status ON product_responsibility_cards(calculation_status);
 
+    CREATE TABLE IF NOT EXISTS product_responsibility_artifacts (
+      id TEXT PRIMARY KEY,
+      company TEXT NOT NULL,
+      product_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL,
+      source_url TEXT,
+      published_at TEXT NOT NULL,
+      publisher_version TEXT NOT NULL,
+      payload TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_product_responsibility_artifacts_company_product
+      ON product_responsibility_artifacts(company, product_name);
+    CREATE INDEX IF NOT EXISTS idx_product_responsibility_artifacts_source_digest
+      ON product_responsibility_artifacts(source_digest);
+
     CREATE TABLE IF NOT EXISTS product_customer_responsibility_summaries (
       id TEXT PRIMARY KEY,
       product_key TEXT NOT NULL,

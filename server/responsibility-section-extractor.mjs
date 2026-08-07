@@ -376,14 +376,33 @@ function extractResponsibilityChapter(source) {
   return '';
 }
 
+function namedSectionQuality(value) {
+  const section = compact(value);
+  let score = Math.min(section.length, 5000);
+  if (/(?:以下为阅读指引|条款目录|【阅读指引】|PDF_LAYOUT_PAGE_1\b)/u.test(section)) score -= 20_000;
+  if (/(?:\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*元|[=＝×]|不得超过|不超过|低于)/u.test(section)) score += 5000;
+  if (/(?:我们|本公司)[^。；;\n]{0,100}(?:收取|扣除|确定|计算|接受|支付|退还|建立)/u.test(section)) score += 2000;
+  return score;
+}
+
 function extractNamedSection(source, titles, maxLength = 1800) {
   const normalized = normalizeText(source);
   for (const title of titles) {
-    const start = findHeading(normalized, title);
-    if (start >= 0) return boundedSection(normalized, start, maxLength);
-
-    const looseStart = findLooseHeading(normalized, title);
-    if (looseStart >= 0) return boundedSection(normalized, looseStart, maxLength);
+    const starts = new Set();
+    for (const findStart of [findHeading, findLooseHeading]) {
+      let from = 0;
+      while (from < normalized.length) {
+        const start = findStart(normalized, title, from);
+        if (start < 0) break;
+        starts.add(start);
+        from = start + Math.max(title.length, 1);
+      }
+    }
+    const sections = [...starts]
+      .map((start) => boundedSection(normalized, start, maxLength))
+      .filter(Boolean)
+      .sort((left, right) => namedSectionQuality(right) - namedSectionQuality(left));
+    if (sections.length) return sections[0];
   }
   return '';
 }
@@ -443,7 +462,24 @@ function extractDividendSection(source) {
 function extractAccountSection(source) {
   const sections = extractNamedSections(
     source,
-    ['账户价值', '投资账户价值', '保单账户价值', '结算利率', '最低保证利率', '保证利率', '费用', '投资风险', '风险'],
+    [
+      '个人账户的建立',
+      '初始费用',
+      '保单管理费',
+      '风险保险费',
+      '个人账户结算',
+      '最低保证利率',
+      '个人账户价值部分领取',
+      '个人账户退保',
+      '账户价值',
+      '投资账户价值',
+      '保单账户价值',
+      '结算利率',
+      '保证利率',
+      '费用',
+      '投资风险',
+      '风险',
+    ],
     1600,
   );
   if (sections.length) return sections.join('\n\n');

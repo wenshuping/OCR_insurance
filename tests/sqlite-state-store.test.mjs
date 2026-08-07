@@ -21,6 +21,27 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+test('sqlite state store creates the public responsibility artifact table', async (t) => {
+  const dir = await makeTempDir();
+  const dbPath = path.join(dir, 'policy-ocr.sqlite');
+  const store = await createSqliteStateStore({ dbPath });
+  t.after(() => store.close());
+
+  const columns = store.db.prepare('PRAGMA table_info(product_responsibility_artifacts)')
+    .all()
+    .map((row) => row.name);
+  assert.deepEqual(columns, [
+    'id',
+    'company',
+    'product_name',
+    'source_digest',
+    'source_url',
+    'published_at',
+    'publisher_version',
+    'payload',
+  ]);
+});
+
 test('sqlite state store safely loads legacy expert and sales payloads as stale', async () => {
   const dir = await makeTempDir();
   const dbPath = path.join(dir, 'policy-ocr.sqlite');

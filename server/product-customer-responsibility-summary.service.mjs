@@ -2129,10 +2129,25 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     sourceDigest,
   });
   if (existing) {
+    const cachedSummary = safeCustomerSummary(existing);
+    const special = buildSpecialProductDatabaseSummary({
+      summary: cachedSummary,
+      evidence: {
+        company,
+        productName,
+        productKey,
+        cards,
+        indicators,
+        artifacts: approvedResponsibilityArtifacts,
+        sourceRecords: alignSourceRecordsToApprovedArtifactSourceDigests(records, approvedResponsibilityArtifacts),
+      },
+    });
     return {
       ok: true,
       source: 'database',
-      summary: safeCustomerSummary(existing),
+      summary: ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
+        ? special.summary
+        : cachedSummary,
     };
   }
 

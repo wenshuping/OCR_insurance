@@ -470,6 +470,20 @@ function dbWithCards(cards = [baseCard()]) {
   };
 }
 
+function dbWithProductEvidence({ cards = [], artifacts = [] } = {}) {
+  return {
+    prepare(sql) {
+      if (/product_responsibility_cards/u.test(sql)) {
+        return { all: () => cards };
+      }
+      if (/product_responsibility_artifacts/u.test(sql)) {
+        return { all: () => artifacts };
+      }
+      return { all: () => [] };
+    },
+  };
+}
+
 test('database summary projects legacy cards through the shared responsibility standardizer instead of rendering raw PDF text', () => {
   const legacyCard = {
     id: 'legacy_care_benefit',
@@ -733,6 +747,108 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
   ]);
   assert.equal(result.summary.mainResponsibilities[0].calculationKey, undefined);
   assert.equal(modelCalls, 0);
+});
+
+test('existing universal summary is refreshed from source-pinned database evidence', async () => {
+  const universalProductName = '示例两全保险（万能型）';
+  const universalSourceUrl = 'https://official.example.test/universal-terms.pdf';
+  const universalSourceDigest = 'sha256:universal-terms-v1';
+  const accountText = [
+    '第四条 保险责任 被保险人身故时给付身故保险金。',
+    '第十一条 初始费用 一次性交纳保险费的初始费用收取比例为3%；追加保险费的初始费用收取比例为3%。',
+    '第十二条 保单管理费 保单管理费为每月0元。',
+    '第十四条 个人账户结算 账户结算利率按月确定，并以日复利方式计算个人账户价值。',
+    '第十五条 最低保证利率 最低保证利率为年利率2%。',
+    '第十六条 个人账户价值部分领取 第一至第五个保险年度手续费率为5%、4%、3%、2%、1%。',
+    '第十七条 个人账户退保 退保手续费率第一至第五个保险年度分别为5%、4%、3%、2%、1%。',
+  ].join('\n');
+  const card = {
+    id: 'universal_card_1',
+    productKey: `company_product:${company}:${universalProductName}`,
+    company,
+    productName: universalProductName,
+    title: '身故保险金',
+    plainSummary: '被保险人身故时给付身故保险金。',
+    sourceUrl: universalSourceUrl,
+    sourceDigest: universalSourceDigest,
+    sourceExcerpt: accountText,
+    indicators: [],
+  };
+  const artifact = {
+    id: 'universal_artifact_1',
+    company,
+    product_name: universalProductName,
+    source_digest: universalSourceDigest,
+    source_url: universalSourceUrl,
+    payload: JSON.stringify({
+      company,
+      productName: universalProductName,
+      sourceDigest: universalSourceDigest,
+      sourceUrl: universalSourceUrl,
+      audit: { status: 'approved' },
+      productFunctions: [accountText],
+    }),
+  };
+  const existing = {
+    company,
+    productName: universalProductName,
+    summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+    status: 'ready',
+    headline: '旧万能险摘要。',
+    summaryJson: {
+      company,
+      productName: universalProductName,
+      headline: '旧万能险摘要。',
+      mainResponsibilities: [{ title: '身故保险金', plainText: '被保险人身故时给付。' }],
+      notices: [],
+      requiredPolicyFields: [],
+      sourceUrls: [universalSourceUrl],
+      contentBlocks: [
+        { blockKey: 'productPurpose', title: '产品主要做什么', enabled: true, editable: true, order: 1, content: '旧万能险摘要。' },
+        { blockKey: 'responsibilities', title: '主要保险责任', enabled: true, editable: true, order: 2, content: '身故保险金。' },
+      ],
+    },
+    sourceUrls: [universalSourceUrl],
+    sourceDigest: universalSourceDigest,
+  };
+  let modelCalls = 0;
+
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: {
+      knowledgeRecords: [{
+        company,
+        productName: universalProductName,
+        official: true,
+        url: universalSourceUrl,
+        sourceDigest: universalSourceDigest,
+        pageText: accountText,
+      }],
+      insuranceIndicatorRecords: [{
+        id: 'universal_indicator_1',
+        company,
+        productName: universalProductName,
+        sourceDigest: universalSourceDigest,
+        sourceUrl: universalSourceUrl,
+        formulaText: accountText,
+        official: true,
+      }],
+    },
+    db: dbWithProductEvidence({ cards: [card], artifacts: [artifact] }),
+    input: { company, name: universalProductName },
+    findSummary: async () => existing,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {};
+    },
+  });
+
+  assert.equal(result.source, 'database');
+  assert.equal(modelCalls, 0);
+  const productFunctions = result.summary.contentBlocks.find((block) => block.blockKey === 'productFunctions');
+  assert.equal(productFunctions.enabled, true);
+  assert.match(productFunctions.content, /最低保证利率.*2%/u);
+  assert.match(productFunctions.content, /初始费用.*3%/u);
+  assert.match(productFunctions.content, /部分领取.*5%.*4%.*3%.*2%.*1%/u);
 });
 
 test('canonical product queries fall back to the exact company-product summary cache', async () => {

@@ -23,6 +23,8 @@ const KNOWLEDGE_TABLES = [
   'insurance_indicator_records',
   'optional_responsibility_records',
   'product_responsibility_cards',
+  'product_responsibility_artifacts',
+  'product_customer_responsibility_summaries',
   'product_indicator_versions',
   'indicator_update_batches',
   'official_domain_profiles',
@@ -37,6 +39,7 @@ const RESPONSIBILITY_BUNDLE_TABLES = [
   'insurance_indicator_records',
   'optional_responsibility_records',
   'product_responsibility_cards',
+  'product_responsibility_artifacts',
   'product_customer_responsibility_summaries',
   'product_customer_summary_generation_runs',
 ];

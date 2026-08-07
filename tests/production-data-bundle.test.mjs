@@ -107,12 +107,26 @@ function insertProductionOnlyPolicy(dbPath) {
 
 function replaceKnowledgeRows(dbPath, label) {
   withDb(dbPath, (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS product_responsibility_artifacts (
+        id TEXT PRIMARY KEY,
+        company TEXT NOT NULL,
+        product_name TEXT NOT NULL,
+        source_digest TEXT NOT NULL,
+        source_url TEXT,
+        published_at TEXT NOT NULL,
+        publisher_version TEXT NOT NULL,
+        payload TEXT NOT NULL
+      )
+    `);
     db.exec('BEGIN IMMEDIATE');
     try {
       db.prepare('DELETE FROM knowledge_records').run();
       db.prepare('DELETE FROM insurance_indicator_records').run();
       db.prepare('DELETE FROM optional_responsibility_records').run();
       db.prepare('DELETE FROM product_responsibility_cards').run();
+      db.prepare('DELETE FROM product_responsibility_artifacts').run();
+      db.prepare('DELETE FROM product_customer_responsibility_summaries').run();
       db.prepare('DELETE FROM official_domain_profiles').run();
       db.prepare("DELETE FROM state_documents WHERE key = 'insuranceIndicatorSnapshot'").run();
       db.prepare(`
@@ -154,6 +168,39 @@ function replaceKnowledgeRows(dbPath, label) {
         INSERT INTO official_domain_profiles (id, payload)
         VALUES (?, ?)
       `).run(`profile-${label}`, JSON.stringify({ id: `profile-${label}`, company: '中国人寿', officialDomains: [`${label}.example.test`] }));
+      db.prepare(`
+        INSERT INTO product_responsibility_artifacts (
+          id, company, product_name, source_digest, source_url,
+          published_at, publisher_version, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `artifact-${label}`,
+        '中国人寿',
+        `知识-${label}`,
+        `sha256:${label}`,
+        `https://example.test/${label}.pdf`,
+        '2026-06-14T00:00:00.000Z',
+        'test',
+        JSON.stringify({ audit: { status: 'approved' }, label }),
+      );
+      db.prepare(`
+        INSERT INTO product_customer_responsibility_summaries (
+          id, product_key, company, product_name, summary_version, status,
+          headline, summary_json, source_urls_json, source_digest, payload
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        `summary-${label}`,
+        `company_product:中国人寿:知识-${label}`,
+        '中国人寿',
+        `知识-${label}`,
+        'customer-summary-test',
+        'ready',
+        `摘要-${label}`,
+        JSON.stringify({ headline: `摘要-${label}`, label }),
+        JSON.stringify([`https://example.test/${label}.pdf`]),
+        `sha256:${label}`,
+        JSON.stringify({ headline: `摘要-${label}`, label }),
+      );
       db.prepare(`
         INSERT INTO state_documents (key, payload)
         VALUES ('insuranceIndicatorSnapshot', ?)
@@ -311,6 +358,8 @@ test('knowledge data install updates knowledge tables without replacing user pol
   assert.equal(bundle.snapshot.coreCounts.insurance_indicator_records, 1);
   assert.equal(bundle.snapshot.coreCounts.optional_responsibility_records, 1);
   assert.equal(bundle.snapshot.coreCounts.product_responsibility_cards, 1);
+  assert.equal(bundle.snapshot.counts.product_responsibility_artifacts, 1);
+  assert.equal(bundle.snapshot.counts.product_customer_responsibility_summaries, 1);
   const manifest = JSON.parse(await fs.readFile(bundle.manifestPath, 'utf8'));
   assert.equal(manifest.sourceDbPath, undefined);
   assert.equal(manifest.bundlePath, undefined);
@@ -356,6 +405,10 @@ test('knowledge data install updates knowledge tables without replacing user pol
     assert.equal(db.prepare("SELECT count(*) AS count FROM knowledge_records WHERE product_name = '知识-target'").get().count, 0);
     assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-source'").get().count, 1);
     assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_cards WHERE product_name = '知识-target'").get().count, 0);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_artifacts WHERE product_name = '知识-source'").get().count, 1);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_responsibility_artifacts WHERE product_name = '知识-target'").get().count, 0);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_customer_responsibility_summaries WHERE product_name = '知识-source'").get().count, 1);
+    assert.equal(db.prepare("SELECT count(*) AS count FROM product_customer_responsibility_summaries WHERE product_name = '知识-target'").get().count, 0);
     assert.equal(db.prepare("SELECT version FROM product_indicator_versions WHERE product_key = 'company_product:新华保险:福如东海A款终身寿险（分红型）'").get().version, 2);
     assert.equal(db.prepare("SELECT affected_policy_count FROM indicator_update_batches WHERE id = 'indicator-batch-1'").get().affected_policy_count, 0);
     assert.equal(db.prepare("SELECT count(*) AS count FROM pending_scans WHERE guest_id = 'guest-1'").get().count, 1);

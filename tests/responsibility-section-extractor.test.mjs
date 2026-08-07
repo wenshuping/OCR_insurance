@@ -635,6 +635,87 @@ test('extractStructuredResponsibilitySections combines separate universal fee an
   assert.match(accountSupplement.text, /投资风险/u);
 });
 
+test('extractStructuredResponsibilitySections keeps separately headed universal account clauses', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'universal_life',
+    records: [{
+      pageText: [
+        '第四条 保险责任',
+        '本公司承担满期保险金和身故保险金责任。',
+        '第十条 个人账户的建立',
+        '每次交纳的保险费在扣除初始费用后计入个人账户。',
+        '第十一条 初始费用',
+        '一次性交纳保险费的初始费用收取比例为3%；追加保险费的初始费用收取比例为3%。',
+        '第十二条 保单管理费',
+        '保单管理费为每月0元。',
+        '第十三条 风险保险费',
+        '风险保险费按风险保额和年龄费率按月收取。',
+        '第十四条 个人账户结算',
+        '账户结算利率按月确定，并以日复利方式计算个人账户价值。',
+        '第十五条 最低保证利率',
+        '最低保证利率为年利率2%。',
+        '第十六条 个人账户价值部分领取',
+        '犹豫期后可申请部分领取，第一至第五个保险年度手续费率为5%、4%、3%、2%、1%。',
+        '第十七条 个人账户退保',
+        '退保手续费率第一至第五个保险年度分别为5%、4%、3%、2%、1%。',
+        '第十八条 个人账户的撤销',
+      ].join('\n'),
+    }],
+  });
+
+  const accountSupplement = result.supplementSections.find((section) => section.type === 'account_value');
+  assert.ok(accountSupplement);
+  assert.match(accountSupplement.text, /一次性交纳保险费的初始费用收取比例为3%/u);
+  assert.match(accountSupplement.text, /追加保险费的初始费用收取比例为3%/u);
+  assert.match(accountSupplement.text, /保单管理费为每月0元/u);
+  assert.match(accountSupplement.text, /按月确定.*日复利/u);
+  assert.match(accountSupplement.text, /最低保证利率为年利率2%/u);
+  assert.match(accountSupplement.text, /部分领取.*5%、4%、3%、2%、1%/u);
+  assert.match(accountSupplement.text, /退保手续费率.*5%、4%、3%、2%、1%/u);
+});
+
+test('extractStructuredResponsibilitySections prefers universal account article bodies over contents entries', () => {
+  const result = extractStructuredResponsibilitySections({
+    productCategory: 'universal_life',
+    records: [{
+      title: '示例万能险官方条款',
+      pageText: [
+        '目录',
+        '第十一条 初始费用',
+        '第十二条 保单管理费',
+        '第十三条 风险保险费',
+        '第十四条 个人账户结算',
+        '第十五条 最低保证利率',
+        '第十六条 个人账户价值部分领取',
+        '第十七条 个人账户退保',
+        '第四条 保险责任',
+        '被保险人身故时，我们按合同约定给付身故保险金。',
+        '第十一条 初始费用',
+        '一次性交纳保险费的初始费用收取比例为3%；追加保险费的初始费用收取比例为3%。',
+        '第十二条 保单管理费',
+        '保单管理费为每月0元。',
+        '第十三条 风险保险费',
+        '我们每月根据危险保额和风险保险费率收取风险保险费。',
+        '第十四条 个人账户结算',
+        '个人账户按月结算，并按日复利方式计算个人账户价值。',
+        '第十五条 最低保证利率',
+        '最低保证利率为年利率2%。',
+        '第十六条 个人账户价值部分领取',
+        '部分领取手续费率第一至第五个保险年度分别为5%、4%、3%、2%、1%。',
+        '第十七条 个人账户退保',
+        '退保手续费率第一至第五个保险年度分别为5%、4%、3%、2%、1%。',
+        '第十八条 责任免除',
+      ].join('\n'),
+    }],
+  });
+
+  const accountSupplement = result.supplementSections.find((section) => section.type === 'account_value');
+  assert.match(accountSupplement.text, /一次性交纳保险费的初始费用收取比例为3%/u);
+  assert.match(accountSupplement.text, /最低保证利率为年利率2%/u);
+  assert.match(accountSupplement.text, /部分领取手续费率第一至第五个保险年度/u);
+  assert.match(accountSupplement.text, /退保手续费率第一至第五个保险年度/u);
+});
+
 test('extractStructuredResponsibilitySections skips annuity optional supplement without optional sections', () => {
   const result = extractStructuredResponsibilitySections({
     productCategory: 'annuity',
