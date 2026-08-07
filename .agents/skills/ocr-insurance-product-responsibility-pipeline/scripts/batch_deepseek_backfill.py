@@ -73,6 +73,19 @@ SHADOW_RESPONSE_FORMAT = {
     },
 }
 
+ALLOWED_DOMAIN_SKILLS = {
+    "ocr-insurance-accident-responsibility",
+    "ocr-insurance-annuity-responsibility",
+    "ocr-insurance-critical-illness-responsibility",
+    "ocr-insurance-endowment-responsibility",
+    "ocr-insurance-incremental-whole-life-responsibility",
+    "ocr-insurance-long-term-care-responsibility",
+    "ocr-insurance-medical-health-responsibility",
+    "ocr-insurance-term-life-responsibility",
+    "ocr-insurance-unified-responsibility-parser",
+    "ocr-insurance-universal-account-responsibility",
+}
+
 
 def text(value):
     return str(value or "").strip()
@@ -82,6 +95,33 @@ def safe_name(value):
     compact = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "-", text(value)).strip("-")
     digest = hashlib.sha1(text(value).encode("utf-8")).hexdigest()[:10]
     return f"{compact[:60] or 'product'}-{digest}"
+
+
+def load_domain_skill_text(project_root, product):
+    requested = product.get("domainSkills") if isinstance(product.get("domainSkills"), list) else []
+    names = []
+    sections = []
+    for value in requested:
+        name = text(value)
+        if not name or name in names:
+            continue
+        if name not in ALLOWED_DOMAIN_SKILLS:
+            raise ValueError(f"unsupported responsibility domain skill: {name}")
+        skill_path = project_root / ".agents" / "skills" / name / "SKILL.md"
+        if not skill_path.is_file():
+            raise FileNotFoundError(f"responsibility domain skill is missing: {skill_path}")
+        names.append(name)
+        skill_sections = [skill_path.read_text(encoding="utf-8")]
+        required_references = [skill_path.parent / "references" / "contract.md"]
+        if name == "ocr-insurance-unified-responsibility-parser":
+            required_references.append(skill_path.parent / "references" / "routing-matrix.md")
+        for reference_path in required_references:
+            if reference_path.is_file():
+                skill_sections.append(
+                    f"REQUIRED_REFERENCE: {reference_path.name}\n{reference_path.read_text(encoding='utf-8')}"
+                )
+        sections.append(f"DOMAIN_SKILL: {name}\n" + "\n\n".join(skill_sections))
+    return names, "\n\n".join(sections)
 
 
 def json_line(path, value):
@@ -971,7 +1011,7 @@ def start_shadow_assistant(
     return thread, receipt_path
 
 
-def process_product(product, *, skill_dir, skill_text, api_key, provider, base_url, model, shadow_config, repair_rounds, request_timeout_ms, max_output_tokens, max_prompt_candidate_chars, max_prompt_skill_chars, max_prompt_hint_chars, run_dir, published_source_digests, retry_manual, retry_failure_classes, retry_failure_layers):
+def process_product(product, *, skill_dir, project_root, skill_text, api_key, provider, base_url, model, shadow_config, repair_rounds, request_timeout_ms, max_output_tokens, max_prompt_candidate_chars, max_prompt_skill_chars, max_prompt_hint_chars, run_dir, published_source_digests, retry_manual, retry_failure_classes, retry_failure_layers):
     product_key = safe_name(f"{product.get('company')}--{product.get('productName')}")
     product_dir = run_dir / "products" / product_key
     product_dir.mkdir(parents=True, exist_ok=True)
@@ -985,6 +1025,12 @@ def process_product(product, *, skill_dir, skill_text, api_key, provider, base_u
         ):
             return previous
     try:
+        domain_skills, domain_skill_text = load_domain_skill_text(project_root, product)
+        (product_dir / "domain-skill-routing.json").write_text(json.dumps({
+            "productCategory": text(product.get("productCategory")),
+            "categoryLabel": text(product.get("categoryLabel")),
+            "domainSkills": domain_skills,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
         source_url = text(product.get("sourceUrl"))
         official_domain = text(product.get("officialDomain")) or parse.urlparse(source_url).netloc
         source_document = Path(product["sourceDocumentPath"]) if product.get("sourceDocumentPath") else product_dir / "official-source.pdf"
@@ -1059,7 +1105,7 @@ def process_product(product, *, skill_dir, skill_text, api_key, provider, base_u
                 **{key: value for key, value in shadow_config.items() if key != "routing"},
                 routing_reasons=complexity_reasons,
             )
-        prompt_skill_text = skill_text
+        prompt_skill_text = "\n\n".join(value for value in [skill_text, domain_skill_text] if value)
         prompt_candidate_text = (
             locked_inventory_source_text(locked_inventory)
             if locked_inventory
@@ -1067,7 +1113,7 @@ def process_product(product, *, skill_dir, skill_text, api_key, provider, base_u
         )
         prompt_hint = text(product.get('existingResponsibilityHint')) or 'not_available'
         if max_prompt_skill_chars > 0:
-            prompt_skill_text = skill_text[:max_prompt_skill_chars]
+            prompt_skill_text = prompt_skill_text[:max_prompt_skill_chars]
         if max_prompt_candidate_chars > 0 and not locked_inventory:
             prompt_candidate_text = candidate_text[:max_prompt_candidate_chars]
         if max_prompt_hint_chars > 0:
@@ -1094,6 +1140,8 @@ Set publication.sqlite to development_required_after_approval and publication.fe
 Database identity hint:
 - company: {text(product.get('company'))}
 - productName: {text(product.get('productName'))}
+- productCategory: {text(product.get('productCategory'))}
+- domainSkills: {json.dumps(domain_skills, ensure_ascii=False)}
 - official source URL: {source_url}
 - official source digest: {source_digest}
 
@@ -1595,7 +1643,7 @@ def main(argv=None):
         else load_published_source_digests(args.db_path)
     )
     worker_args = {
-        "skill_dir": skill_dir, "skill_text": skill_text, "api_key": api_key, "provider": provider,
+        "skill_dir": skill_dir, "project_root": project_root, "skill_text": skill_text, "api_key": api_key, "provider": provider,
         "base_url": base_url, "model": model,
         "shadow_config": shadow_config,
         "repair_rounds": args.repair_rounds,

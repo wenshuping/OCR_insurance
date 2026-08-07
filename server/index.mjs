@@ -148,6 +148,7 @@ const app = createPolicyOcrApp({
   verifyAdvisorMemoryConfirmation: advisorMemoryConfirmationService.verify,
   db: store.db,
   productResponsibilityPipelineDbPath: dbPath,
+  productResponsibilityPipelineRuntimeDir: process.env.OCR_RESPONSIBILITY_PIPELINE_RUNTIME_DIR || '',
 });
 
 const server = app.listen(port, host, () => {

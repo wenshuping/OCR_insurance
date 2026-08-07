@@ -1,9 +1,12 @@
 import { spawn } from 'node:child_process';
 import crypto from 'node:crypto';
+import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { routeInsuranceProductCategory } from './insurance-product-category-router.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -11,6 +14,34 @@ const PIPELINE_SCRIPT = path.join(
   PROJECT_ROOT,
   '.agents/skills/ocr-insurance-product-responsibility-pipeline/scripts/batch_deepseek_backfill.py',
 );
+const PRODUCT_RESPONSIBILITY_PIPELINE_VERSION = 'v2-domain-skills-runtime';
+
+const DOMAIN_SKILL_BY_CATEGORY = {
+  accident: 'ocr-insurance-accident-responsibility',
+  annuity: 'ocr-insurance-annuity-responsibility',
+  critical_illness: 'ocr-insurance-critical-illness-responsibility',
+  endowment: 'ocr-insurance-endowment-responsibility',
+  incremental_whole_life: 'ocr-insurance-incremental-whole-life-responsibility',
+  investment_linked: 'ocr-insurance-universal-account-responsibility',
+  long_term_care: 'ocr-insurance-long-term-care-responsibility',
+  medical: 'ocr-insurance-medical-health-responsibility',
+  ordinary_whole_life: 'ocr-insurance-unified-responsibility-parser',
+  participating_life: 'ocr-insurance-unified-responsibility-parser',
+  term_life: 'ocr-insurance-term-life-responsibility',
+  universal_life: 'ocr-insurance-universal-account-responsibility',
+};
+
+const COMPOSITE_DOMAIN_SKILLS = [
+  [/(?:万能型|万能保险|万能险|投资连结|投连险)/u, 'ocr-insurance-universal-account-responsibility'],
+  [/(?:增额终身寿|增额寿)/u, 'ocr-insurance-incremental-whole-life-responsibility'],
+  [/(?:年金保险|养老年金)/u, 'ocr-insurance-annuity-responsibility'],
+  [/(?:两全保险|两全险)/u, 'ocr-insurance-endowment-responsibility'],
+  [/(?:重大疾病保险|重疾险)/u, 'ocr-insurance-critical-illness-responsibility'],
+  [/(?:医疗保险|医疗险)/u, 'ocr-insurance-medical-health-responsibility'],
+  [/(?:意外伤害保险|意外险)/u, 'ocr-insurance-accident-responsibility'],
+  [/(?:长期护理保险|护理保险)/u, 'ocr-insurance-long-term-care-responsibility'],
+  [/(?:定期寿险|定期人寿)/u, 'ocr-insurance-term-life-responsibility'],
+];
 
 function text(value) {
   return String(value || '').trim();
@@ -18,6 +49,22 @@ function text(value) {
 
 function productKey(company, productName) {
   return `company_product:${text(company)}:${text(productName)}`;
+}
+
+export function routeProductResponsibilitySkills({ productName = '', existingResponsibilityHint = '' } = {}) {
+  const routing = routeInsuranceProductCategory({
+    productName,
+    cards: existingResponsibilityHint
+      ? [{ title: productName, sourceExcerpt: existingResponsibilityHint }]
+      : [],
+  });
+  const domainSkills = new Set();
+  const primarySkill = DOMAIN_SKILL_BY_CATEGORY[routing.productCategory];
+  if (primarySkill) domainSkills.add(primarySkill);
+  for (const [pattern, skill] of COMPOSITE_DOMAIN_SKILLS) {
+    if (pattern.test(text(productName))) domainSkills.add(skill);
+  }
+  return { ...routing, domainSkills: [...domainSkills] };
 }
 
 function rowToJob(row) {
@@ -63,7 +110,8 @@ function ensureSchema(db) {
 function resolvePython() {
   const configured = text(process.env.OCR_RESPONSIBILITY_PIPELINE_PYTHON);
   if (configured) return configured;
-  return path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3');
+  const bundled = path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3');
+  return existsSync(bundled) ? bundled : 'python3';
 }
 
 function runCommand(command, args, options = {}) {
@@ -156,12 +204,20 @@ export function createProductResponsibilityPipelineQueue({
     const productName = text(input.productName);
     const key = productKey(company, productName);
     const timestamp = now();
+    const existingResponsibilityHint = text(input.existingResponsibilityHint).slice(0, 12_000);
+    const routing = routeProductResponsibilitySkills({ productName, existingResponsibilityHint });
     const payload = JSON.stringify({
+      pipelineVersion: PRODUCT_RESPONSIBILITY_PIPELINE_VERSION,
       company,
       productName,
       sourceUrl: text(input.sourceUrl),
       officialDomain: text(input.officialDomain),
-      existingResponsibilityHint: text(input.existingResponsibilityHint).slice(0, 12_000),
+      existingResponsibilityHint,
+      productCategory: routing.productCategory,
+      categoryLabel: routing.categoryLabel,
+      featureTags: routing.featureTags,
+      modelTier: routing.modelTier,
+      domainSkills: routing.domainSkills,
     });
     db.prepare(`
       INSERT INTO product_responsibility_pipeline_jobs
@@ -170,17 +226,30 @@ export function createProductResponsibilityPipelineQueue({
       ON CONFLICT(product_key) DO UPDATE SET
         payload = excluded.payload,
         updated_at = CASE
-          WHEN product_responsibility_pipeline_jobs.status = 'failed' THEN excluded.updated_at
+          WHEN product_responsibility_pipeline_jobs.status = 'failed'
+            AND (product_responsibility_pipeline_jobs.attempts < 3
+              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+                <> json_extract(excluded.payload, '$.pipelineVersion')) THEN excluded.updated_at
           ELSE product_responsibility_pipeline_jobs.updated_at
+        END,
+        attempts = CASE
+          WHEN product_responsibility_pipeline_jobs.status = 'failed'
+            AND COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+              <> json_extract(excluded.payload, '$.pipelineVersion') THEN 0
+          ELSE product_responsibility_pipeline_jobs.attempts
         END,
         status = CASE
           WHEN product_responsibility_pipeline_jobs.status = 'failed'
-            AND product_responsibility_pipeline_jobs.attempts < 3 THEN 'queued'
+            AND (product_responsibility_pipeline_jobs.attempts < 3
+              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+                <> json_extract(excluded.payload, '$.pipelineVersion')) THEN 'queued'
           ELSE product_responsibility_pipeline_jobs.status
         END,
         last_error = CASE
           WHEN product_responsibility_pipeline_jobs.status = 'failed'
-            AND product_responsibility_pipeline_jobs.attempts < 3 THEN ''
+            AND (product_responsibility_pipeline_jobs.attempts < 3
+              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+                <> json_extract(excluded.payload, '$.pipelineVersion')) THEN ''
           ELSE product_responsibility_pipeline_jobs.last_error
         END
     `).run(key, company, productName, payload, timestamp, timestamp);

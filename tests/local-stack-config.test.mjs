@@ -58,3 +58,12 @@ test('production Docker runtime copies src modules imported by the API server', 
   assert.match(dockerfileSource, /COPY src\/policy-plan-filter\.mjs \.\/src\/policy-plan-filter\.mjs/u);
   assert.match(dockerfileSource, /COPY src\/policy-validity\.mjs \.\/src\/policy-validity\.mjs/u);
 });
+
+test('production Docker runtime includes the responsibility PDF pipeline and domain skills', () => {
+  assert.match(dockerfileSource, /python3 -m venv \/opt\/ocr-responsibility-venv/u);
+  assert.match(dockerfileSource, /pip install --no-cache-dir pypdf/u);
+  assert.match(dockerfileSource, /COPY \.agents\/skills\/ocr-insurance-product-responsibility-pipeline/u);
+  assert.match(dockerfileSource, /COPY \.agents\/skills\/ocr-insurance-universal-account-responsibility /u);
+  assert.match(dockerfileSource, /COPY \.agents\/skills\/ocr-insurance-endowment-responsibility /u);
+  assert.match(dockerfileSource, /OCR_RESPONSIBILITY_PIPELINE_PYTHON=\/opt\/ocr-responsibility-venv\/bin\/python3/u);
+});

@@ -330,6 +330,20 @@
     ]
   },
   {
+    "name": "product-responsibility-runtime",
+    "patterns": [
+      "Dockerfile",
+      "docker-compose.poptonic.yml",
+      "server/product-responsibility-pipeline-queue.service.mjs",
+      "tests/local-stack-config.test.mjs",
+      "tests/product-responsibility-pipeline-queue.test.mjs"
+    ],
+    "commands": [
+      "node --test tests/local-stack-config.test.mjs",
+      "node --test tests/product-responsibility-pipeline-queue.test.mjs"
+    ]
+  },
+  {
     "name": "product-identity-responsibility",
     "patterns": [
       "server/product-responsibility-identity.mjs",
