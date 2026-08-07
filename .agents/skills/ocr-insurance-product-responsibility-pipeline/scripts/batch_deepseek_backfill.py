@@ -101,12 +101,27 @@ DOMAIN_SKILL_IDENTIFIERS = [
 
 UNIVERSAL_ACCOUNT_FACT_PATTERNS = {
     "minimum_guaranteed_rate": re.compile(r"最低保证利率|保证利率"),
-    "settlement": re.compile(r"结算(?:利率|频率|方式|方法)|按月.*结算|按日.*结算"),
+    "settlement": re.compile(r"个人账户结算|结算(?:利率|频率|方式|方法)|按月.*结算|按日.*结算"),
     "initial_charge": re.compile(r"初始费用|初始费率"),
-    "management_or_risk_fee": re.compile(r"保单管理费|账户管理费|风险保险费|风险费"),
-    "withdrawal_or_surrender_charge": re.compile(r"(?:部分领取|退保).{0,80}(?:手续费|费用|费率)|(?:手续费|费用|费率).{0,80}(?:部分领取|退保)"),
+    "management_fee": re.compile(r"保单管理费|账户管理费"),
+    "risk_fee": re.compile(r"风险保险费|风险费"),
+    "withdrawal_charge": re.compile(r"(?:部分领取).{0,80}(?:手续费|费用|费率)|(?:手续费|费用|费率).{0,80}(?:部分领取)"),
+    "surrender_charge": re.compile(r"(?:退保).{0,80}(?:手续费|费用|费率)|(?:手续费|费用|费率).{0,80}(?:退保)"),
     "account_value_rule": re.compile(r"(?:个人账户|保单账户|万能账户)(?:价值)?|账户价值"),
 }
+
+UNIVERSAL_ACCOUNT_FACT_TITLES = {
+    "minimum_guaranteed_rate": "最低保证利率",
+    "settlement": "账户结算规则",
+    "initial_charge": "初始费用",
+    "management_fee": "保单管理费",
+    "risk_fee": "风险保险费",
+    "withdrawal_charge": "部分领取费用",
+    "surrender_charge": "退保费用",
+    "account_value_rule": "个人账户价值规则",
+}
+
+CLAUSE_HEADING_PATTERN = re.compile(r"^\s*第[一二三四五六七八九十百零〇\d]{1,8}条\s*", re.MULTILINE)
 
 
 def text(value):
@@ -168,6 +183,36 @@ def normalized_evidence_text(value):
     return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text(value))).strip()
 
 
+def source_backed_universal_fact(source_text, field_name, pattern):
+    candidates = []
+    for match in pattern.finditer(source_text):
+        line_start = source_text.rfind("\n", 0, match.start()) + 1
+        next_heading = CLAUSE_HEADING_PATTERN.search(source_text, match.end())
+        paragraph_end = source_text.find("\n\n", match.end())
+        if CLAUSE_HEADING_PATTERN.match(source_text, line_start):
+            excerpt_end = next_heading.start() if next_heading else min(len(source_text), line_start + 2200)
+        else:
+            excerpt_end = paragraph_end if paragraph_end >= 0 else min(len(source_text), line_start + 900)
+        excerpt_end = min(excerpt_end, line_start + 2200)
+        excerpt = source_text[line_start:excerpt_end].strip()
+        if not excerpt:
+            continue
+        score = (
+            (1000 if CLAUSE_HEADING_PATTERN.match(source_text, line_start) else 0)
+            + (200 if re.search(r"\d|%|％|元", excerpt) else 0)
+            + min(len(excerpt), 500)
+        )
+        candidates.append((score, excerpt))
+    if not candidates:
+        return None
+    excerpt = max(candidates, key=lambda item: item[0])[1]
+    return {
+        "kind": "product_function",
+        "title": UNIVERSAL_ACCOUNT_FACT_TITLES[field_name],
+        "sourceExcerpt": excerpt,
+    }
+
+
 def normalize_domain_worker_result(skill_name, value, source_text, source_digest):
     source = value if isinstance(value, dict) else {}
     normalized_source = normalized_evidence_text(source_text)
@@ -190,6 +235,21 @@ def normalize_domain_worker_result(skill_name, value, source_text, source_digest
     if not facts:
         raise RuntimeError(f"domain worker returned no exact source-backed facts: {skill_name}")
     if skill_name == "ocr-insurance-universal-account-responsibility":
+        function_text = normalized_evidence_text("\n".join(
+            item["sourceExcerpt"] for item in facts if item["kind"] == "product_function"
+        ))
+        missing = [
+            key for key, pattern in UNIVERSAL_ACCOUNT_FACT_PATTERNS.items()
+            if pattern.search(normalized_source) and not pattern.search(function_text)
+        ]
+        for field_name in missing:
+            supplemental = source_backed_universal_fact(
+                source_text, field_name, UNIVERSAL_ACCOUNT_FACT_PATTERNS[field_name]
+            )
+            if supplemental and supplemental["sourceExcerpt"] not in {
+                item["sourceExcerpt"] for item in facts
+            }:
+                facts.append(supplemental)
         function_text = normalized_evidence_text("\n".join(
             item["sourceExcerpt"] for item in facts if item["kind"] == "product_function"
         ))

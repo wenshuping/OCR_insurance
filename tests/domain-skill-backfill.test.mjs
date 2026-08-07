@@ -27,8 +27,6 @@ def fake_call(_api_key, _model, messages, **_kwargs):
     if 'ocr-insurance-universal-account-responsibility' in prompt:
         facts = [
             {'kind': 'product_function', 'title': '最低保证利率与结算', 'sourceExcerpt': '第五条 个人账户 本合同最低保证利率为年利率2%，每月结算并按日复利。'},
-            {'kind': 'product_function', 'title': '账户费用', 'sourceExcerpt': '趸交保险费和追加保险费的初始费用均为3%，保单管理费为每月0元，并按月收取风险保险费。'},
-            {'kind': 'product_function', 'title': '领取和退保费用', 'sourceExcerpt': '部分领取和退保手续费率在第一个保单年度为5%，第二个保单年度为4%。账户价值按已计入保险费和结算利息增加，按费用及领取金额减少。'},
         ]
     else:
         facts = [{'kind': 'responsibility', 'title': '满期保险金', 'sourceExcerpt': '第四条 保险责任 若被保险人在合同期满日仍生存，按个人账户价值给付满期保险金。'}]
@@ -56,7 +54,17 @@ version_checks = {
         {'sha256:source': {'v3'}}, 'sha256:source', 'v3'
     ),
 }
-print(json.dumps({'names': names, 'results': results, 'artifact': artifact, 'versionChecks': version_checks}, ensure_ascii=False))
+print(json.dumps({
+    'names': names,
+    'results': results,
+    'artifact': artifact,
+    'versionChecks': version_checks,
+    'allSourceBacked': all(
+        fact['sourceExcerpt'] in source
+        for worker in results
+        for fact in worker['facts']
+    ),
+}, ensure_ascii=False))
 `;
   const output = execFileSync('python3', ['-c', script], {
     cwd: new URL('..', import.meta.url),
@@ -71,6 +79,8 @@ print(json.dumps({'names': names, 'results': results, 'artifact': artifact, 'ver
   assert.match(result.artifact.productFunctions.join('\n'), /年利率2%/u);
   assert.match(result.artifact.productFunctions.join('\n'), /初始费用均为3%/u);
   assert.match(result.artifact.productFunctions.join('\n'), /第一个保单年度为5%/u);
+  assert.match(result.artifact.productFunctions.join('\n'), /风险保险费/u);
+  assert.equal(result.allSourceBacked, true);
   assert.equal(result.artifact.domainAnalysis.length, 2);
   assert.deepEqual(result.versionChecks, {
     oldVersionRequiresReparse: true,

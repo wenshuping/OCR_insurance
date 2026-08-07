@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
 import {
   createProductResponsibilityPipelineQueue,
+  createProductResponsibilityPipelineRunner,
   routeProductResponsibilitySkills,
 } from '../server/product-responsibility-pipeline-queue.service.mjs';
 
@@ -23,6 +27,41 @@ test('product responsibility pipeline routes every product family to domain skil
     const routing = routeProductResponsibilitySkills({ productName });
     assert.equal(routing.productCategory, expectedCategory, productName);
     assert.deepEqual(routing.domainSkills, expectedSkills, productName);
+  }
+});
+
+test('pipeline runner preserves the real manual-review error when the artifact table does not exist yet', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'responsibility-pipeline-runner-'));
+  const dbPath = path.join(directory, 'policy-ocr.sqlite');
+  const db = new DatabaseSync(dbPath);
+  const runner = createProductResponsibilityPipelineRunner({
+    db,
+    dbPath,
+    runtimeDir: path.join(directory, 'runtime'),
+    commandRunner: async (_command, args) => {
+      const outputDir = args[args.indexOf('--output-dir') + 1];
+      await fs.mkdir(outputDir, { recursive: true });
+      await fs.writeFile(
+        path.join(outputDir, 'manual-review.jsonl'),
+        JSON.stringify({ error: '万能账户字段缺少原文证据' }),
+      );
+      return { exitCode: 0, stdout: '', stderr: '' };
+    },
+  });
+
+  try {
+    const result = await runner({
+      id: 1,
+      attempts: 1,
+      company: '测试保险',
+      productName: '测试万能保险',
+      payload: { sourceUrl: 'https://example.test/terms.pdf' },
+    });
+    assert.equal(result.status, 'manual_review');
+    assert.match(result.lastError, /万能账户字段缺少原文证据/u);
+  } finally {
+    db.close();
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -101,7 +140,7 @@ test('product responsibility pipeline retries an exhausted failed job after a pi
   const completed = queue.getByProductKey('company_product:测试保险:测试医疗保险');
   assert.equal(completed.status, 'published');
   assert.equal(completed.attempts, 1);
-  assert.equal(completed.payload.pipelineVersion, 'v3-independent-domain-skill-workers');
+  assert.equal(completed.payload.pipelineVersion, 'v4-source-backed-universal-fallback');
   db.close();
 });
 
@@ -131,7 +170,7 @@ test('product responsibility pipeline republishes a completed job after a pipeli
   assert.equal(completed.status, 'published');
   assert.equal(completed.attempts, 1);
   assert.equal(completed.artifactPath, '/tmp/v3-artifact.json');
-  assert.equal(completed.payload.pipelineVersion, 'v3-independent-domain-skill-workers');
+  assert.equal(completed.payload.pipelineVersion, 'v4-source-backed-universal-fallback');
   db.close();
 });
 

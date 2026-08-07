@@ -14,7 +14,7 @@ const PIPELINE_SCRIPT = path.join(
   PROJECT_ROOT,
   '.agents/skills/ocr-insurance-product-responsibility-pipeline/scripts/batch_deepseek_backfill.py',
 );
-export const PRODUCT_RESPONSIBILITY_PIPELINE_VERSION = 'v3-independent-domain-skill-workers';
+export const PRODUCT_RESPONSIBILITY_PIPELINE_VERSION = 'v4-source-backed-universal-fallback';
 
 const DOMAIN_SKILL_BY_CATEGORY = {
   accident: 'ocr-insurance-accident-responsibility',
@@ -149,13 +149,18 @@ export function createProductResponsibilityPipelineRunner({ db, dbPath, runtimeD
       throw new Error(text(completed.stderr || completed.stdout || `pipeline exited ${completed.exitCode}`));
     }
     const sourceUrl = text(job.payload?.sourceUrl);
-    const artifact = sourceUrl
-      ? db.prepare(`
+    const hasArtifactTable = Boolean(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'product_responsibility_artifacts'",
+    ).get());
+    const artifact = !hasArtifactTable
+      ? null
+      : sourceUrl
+        ? db.prepare(`
           SELECT payload FROM product_responsibility_artifacts
           WHERE source_url = ? AND json_extract(payload, '$.audit.status') = 'approved'
           ORDER BY published_at DESC LIMIT 1
         `).get(sourceUrl)
-      : db.prepare(`
+        : db.prepare(`
           SELECT payload FROM product_responsibility_artifacts
           WHERE product_name = ? AND json_extract(payload, '$.audit.status') = 'approved'
           ORDER BY published_at DESC LIMIT 1

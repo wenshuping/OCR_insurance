@@ -334,7 +334,7 @@ test('approved artifact is recognized through its official source URL when compa
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run('artifact_1', '新华人寿保险股份有限公司', '盛世荣耀终身寿险', 'sha256:test', sourceUrl,
     '2026-07-22T00:00:00.000Z', 'test', JSON.stringify({
-      pipelineVersion: 'v3-independent-domain-skill-workers',
+      pipelineVersion: 'v4-source-backed-universal-fallback',
       audit: { status: 'approved' },
     }));
   let queued = 0;
