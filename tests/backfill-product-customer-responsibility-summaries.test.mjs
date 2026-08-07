@@ -26,7 +26,7 @@ test('parseBackfillArgs resolves the legacy v25 alias to the current summary ver
     '--dry-run',
   ]);
 
-  assert.equal(args.summaryVersion, 'customer-summary-v27-whole-document-domains');
+  assert.equal(args.summaryVersion, 'customer-summary-v28-skill-domain-workers');
   assert.equal(args.limit, 10);
   assert.equal(args.company, '新华保险');
   assert.equal(args.dbPath, '/tmp/policy-ocr.sqlite');
@@ -37,15 +37,15 @@ test('parseBackfillArgs resolves the legacy v25 alias to the current summary ver
 test('parseBackfillArgs rejects unsupported summary versions', () => {
   assert.throws(
     () => parseBackfillArgs(['--version', 'v21']),
-    /Only customer-summary-v27-whole-document-domains is supported/,
+    /Only customer-summary-v28-skill-domain-workers is supported/,
   );
   assert.throws(
     () => parseBackfillArgs(['--version', 'customer-summary-v21']),
-    /Only customer-summary-v27-whole-document-domains is supported/,
+    /Only customer-summary-v28-skill-domain-workers is supported/,
   );
   assert.equal(
-    parseBackfillArgs(['--version', 'customer-summary-v27-whole-document-domains']).summaryVersion,
-    'customer-summary-v27-whole-document-domains',
+    parseBackfillArgs(['--version', 'customer-summary-v28-skill-domain-workers']).summaryVersion,
+    'customer-summary-v28-skill-domain-workers',
   );
 });
 

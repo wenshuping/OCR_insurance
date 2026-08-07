@@ -17,7 +17,7 @@ const company = '新华保险';
 const productName = '盛世荣耀';
 const productKey = `company_product:${company}:${productName}`;
 const sourceUrl = 'https://example.test/terms.pdf';
-const currentSummaryVersion = 'customer-summary-v27-whole-document-domains';
+const currentSummaryVersion = 'customer-summary-v28-skill-domain-workers';
 
 test('material enrichment dynamically adds grounded blocks and responsibilities from published chunks', async () => {
   let receivedPrompt = '';
@@ -320,7 +320,10 @@ test('approved artifact is recognized through its official source URL when compa
       (id, company, product_name, source_digest, source_url, published_at, publisher_version, payload)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run('artifact_1', '新华人寿保险股份有限公司', '盛世荣耀终身寿险', 'sha256:test', sourceUrl,
-    '2026-07-22T00:00:00.000Z', 'test', JSON.stringify({ audit: { status: 'approved' } }));
+    '2026-07-22T00:00:00.000Z', 'test', JSON.stringify({
+      pipelineVersion: 'v3-independent-domain-skill-workers',
+      audit: { status: 'approved' },
+    }));
   let queued = 0;
   const result = await generateProductCustomerResponsibilitySummary({
     state: baseState(),
@@ -337,6 +340,41 @@ test('approved artifact is recognized through its official source URL when compa
 
   assert.equal(result.ok, true);
   assert.equal(queued, 0);
+  db.close();
+});
+
+test('approved artifact from an older pipeline version is queued for Skill-worker regeneration', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE product_responsibility_artifacts (
+      id TEXT PRIMARY KEY, company TEXT NOT NULL, product_name TEXT NOT NULL,
+      source_digest TEXT NOT NULL, source_url TEXT, published_at TEXT NOT NULL,
+      publisher_version TEXT NOT NULL, payload TEXT NOT NULL
+    )
+  `);
+  db.prepare(`
+    INSERT INTO product_responsibility_artifacts
+      (id, company, product_name, source_digest, source_url, published_at, publisher_version, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('artifact_v2', company, productName, 'sha256:test', sourceUrl,
+    '2026-08-06T00:00:00.000Z', 'test', JSON.stringify({
+      pipelineVersion: 'v2-domain-skills-runtime',
+      audit: { status: 'approved' },
+    }));
+  let queued = 0;
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db,
+    input: { company, name: productName },
+    requireApprovedPipelineArtifact: true,
+    enqueueProductResponsibilityPipeline: async () => {
+      queued += 1;
+      return { status: 'queued' };
+    },
+  });
+
+  assert.equal(result.status, 'responsibility_pipeline_queued');
+  assert.equal(queued, 1);
   db.close();
 });
 

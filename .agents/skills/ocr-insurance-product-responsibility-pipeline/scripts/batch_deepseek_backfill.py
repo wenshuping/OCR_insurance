@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from urllib import parse, request
 
@@ -86,6 +87,27 @@ ALLOWED_DOMAIN_SKILLS = {
     "ocr-insurance-universal-account-responsibility",
 }
 
+DOMAIN_SKILL_IDENTIFIERS = [
+    (re.compile(r"(?:万能型|万能保险|万能险|万能账户|投资连结|投连险)"), "ocr-insurance-universal-account-responsibility"),
+    (re.compile(r"(?:两全保险|两全险)"), "ocr-insurance-endowment-responsibility"),
+    (re.compile(r"(?:养老年金保险|年金保险|养老年金)"), "ocr-insurance-annuity-responsibility"),
+    (re.compile(r"(?:增额终身寿|增额寿)"), "ocr-insurance-incremental-whole-life-responsibility"),
+    (re.compile(r"(?:重大疾病保险|重疾险)"), "ocr-insurance-critical-illness-responsibility"),
+    (re.compile(r"(?:医疗保险|医疗险)"), "ocr-insurance-medical-health-responsibility"),
+    (re.compile(r"(?:意外伤害保险|意外险)"), "ocr-insurance-accident-responsibility"),
+    (re.compile(r"(?:长期护理保险|护理保险)"), "ocr-insurance-long-term-care-responsibility"),
+    (re.compile(r"(?:定期寿险|定期人寿)"), "ocr-insurance-term-life-responsibility"),
+]
+
+UNIVERSAL_ACCOUNT_FACT_PATTERNS = {
+    "minimum_guaranteed_rate": re.compile(r"最低保证利率|保证利率"),
+    "settlement": re.compile(r"结算(?:利率|频率|方式|方法)|按月.*结算|按日.*结算"),
+    "initial_charge": re.compile(r"初始费用|初始费率"),
+    "management_or_risk_fee": re.compile(r"保单管理费|账户管理费|风险保险费|风险费"),
+    "withdrawal_or_surrender_charge": re.compile(r"(?:部分领取|退保).{0,80}(?:手续费|费用|费率)|(?:手续费|费用|费率).{0,80}(?:部分领取|退保)"),
+    "account_value_rule": re.compile(r"(?:个人账户|保单账户|万能账户)(?:价值)?|账户价值"),
+}
+
 
 def text(value):
     return str(value or "").strip()
@@ -97,20 +119,29 @@ def safe_name(value):
     return f"{compact[:60] or 'product'}-{digest}"
 
 
-def load_domain_skill_text(project_root, product):
+def resolve_domain_skill_names(product, source_text=""):
     requested = product.get("domainSkills") if isinstance(product.get("domainSkills"), list) else []
     names = []
-    sections = []
     for value in requested:
         name = text(value)
         if not name or name in names:
             continue
         if name not in ALLOWED_DOMAIN_SKILLS:
             raise ValueError(f"unsupported responsibility domain skill: {name}")
+        names.append(name)
+    identity_text = f"{text(product.get('productName'))}\n{source_text}"
+    for pattern, name in DOMAIN_SKILL_IDENTIFIERS:
+        if pattern.search(identity_text) and name not in names:
+            names.append(name)
+    return names
+
+
+def load_domain_skill_specs(project_root, names):
+    specs = []
+    for name in names:
         skill_path = project_root / ".agents" / "skills" / name / "SKILL.md"
         if not skill_path.is_file():
             raise FileNotFoundError(f"responsibility domain skill is missing: {skill_path}")
-        names.append(name)
         skill_sections = [skill_path.read_text(encoding="utf-8")]
         required_references = [skill_path.parent / "references" / "contract.md"]
         if name == "ocr-insurance-unified-responsibility-parser":
@@ -120,8 +151,152 @@ def load_domain_skill_text(project_root, product):
                 skill_sections.append(
                     f"REQUIRED_REFERENCE: {reference_path.name}\n{reference_path.read_text(encoding='utf-8')}"
                 )
-        sections.append(f"DOMAIN_SKILL: {name}\n" + "\n\n".join(skill_sections))
-    return names, "\n\n".join(sections)
+        specs.append({
+            "name": name,
+            "prompt": f"DOMAIN_SKILL: {name}\n" + "\n\n".join(skill_sections),
+        })
+    return specs
+
+
+def load_domain_skill_text(project_root, product, source_text=""):
+    names = resolve_domain_skill_names(product, source_text)
+    specs = load_domain_skill_specs(project_root, names)
+    return names, "\n\n".join(spec["prompt"] for spec in specs)
+
+
+def normalized_evidence_text(value):
+    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", text(value))).strip()
+
+
+def normalize_domain_worker_result(skill_name, value, source_text, source_digest):
+    source = value if isinstance(value, dict) else {}
+    normalized_source = normalized_evidence_text(source_text)
+    facts = []
+    for item in source.get("facts") if isinstance(source.get("facts"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        kind = text(item.get("kind"))
+        excerpt = text(item.get("sourceExcerpt"))
+        normalized_excerpt = normalized_evidence_text(excerpt)
+        if kind not in {"responsibility", "product_function", "attention"}:
+            continue
+        if not normalized_excerpt or normalized_excerpt not in normalized_source:
+            continue
+        facts.append({
+            "kind": kind,
+            "title": text(item.get("title")),
+            "sourceExcerpt": excerpt,
+        })
+    if not facts:
+        raise RuntimeError(f"domain worker returned no exact source-backed facts: {skill_name}")
+    if skill_name == "ocr-insurance-universal-account-responsibility":
+        function_text = normalized_evidence_text("\n".join(
+            item["sourceExcerpt"] for item in facts if item["kind"] == "product_function"
+        ))
+        missing = [
+            key for key, pattern in UNIVERSAL_ACCOUNT_FACT_PATTERNS.items()
+            if pattern.search(normalized_source) and not pattern.search(function_text)
+        ]
+        if missing:
+            raise RuntimeError(
+                "universal account worker omitted source-backed fields: " + ", ".join(missing)
+            )
+    return {
+        "skillName": skill_name,
+        "status": "passed",
+        "sourceDigest": source_digest,
+        "facts": facts,
+        "productFunctions": [
+            item["sourceExcerpt"] for item in facts if item["kind"] == "product_function"
+        ],
+        "importantLimits": [
+            item["sourceExcerpt"] for item in facts if item["kind"] == "attention"
+        ],
+    }
+
+
+def run_domain_skill_workers(
+    *, specs, product, source_text, source_digest, api_key, provider, base_url,
+    model, timeout, max_tokens, call_model_fn=call_model,
+):
+    if not specs:
+        return []
+
+    def run_one(spec):
+        prompt = f"""
+You are one insurance-domain worker. Apply only the DOMAIN_SKILL contract below to the exact official source.
+First confirm whether this domain is present in the source. Then extract every source-backed responsibility,
+product function, and material attention fact required by that Skill. Do not assemble the final product artifact.
+Return JSON only in this shape:
+{{"skillName":"{spec['name']}","facts":[{{"kind":"responsibility|product_function|attention","title":"","sourceExcerpt":"exact contiguous source text"}}]}}
+Every sourceExcerpt must be copied exactly from OFFICIAL_SOURCE_TEXT. For universal-account products, product_function
+facts must separately cover every available guaranteed rate, settlement method, initial charge, management/risk fee,
+partial-withdrawal or surrender charge and tier, withdrawal limit, and account-value rule. Missing source evidence
+must remain absent; never borrow a number from another product or version.
+
+Product: {text(product.get('company'))} / {text(product.get('productName'))}
+
+DOMAIN_SKILL_CONTRACT:
+{spec['prompt']}
+
+OFFICIAL_SOURCE_TEXT:
+{source_text}
+""".strip()
+        response = call_model_fn(
+            api_key,
+            model,
+            [
+                {"role": "system", "content": "You are an exact-evidence Chinese insurance domain parser. Return JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            provider=provider,
+            base_url=base_url,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            return_metadata=True,
+        )
+        if response.get("finish_reason") == "length":
+            raise RuntimeError(f"domain worker output incomplete: {spec['name']}")
+        return normalize_domain_worker_result(
+            spec["name"], extract_json(response["content"]), source_text, source_digest
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(specs))) as pool:
+        futures = {pool.submit(run_one, spec): spec["name"] for spec in specs}
+        results = []
+        for future in concurrent.futures.as_completed(futures):
+            results.append(future.result())
+    order = {spec["name"]: index for index, spec in enumerate(specs)}
+    return sorted(results, key=lambda item: order[item["skillName"]])
+
+
+def merge_domain_worker_results(artifact, worker_results):
+    merged = dict(artifact) if isinstance(artifact, dict) else {}
+    merged["domainAnalysis"] = worker_results
+    merged["productFunctions"] = list(dict.fromkeys(
+        fact
+        for worker in worker_results
+        for fact in worker.get("productFunctions", [])
+        if text(fact)
+    ))
+    domain_limits = list(dict.fromkeys([
+        *(
+            merged.get("productOverview", {}).get("importantLimits", [])
+            if isinstance(merged.get("productOverview"), dict)
+            and isinstance(merged.get("productOverview", {}).get("importantLimits"), list)
+            else []
+        ),
+        *(
+            fact
+            for worker in worker_results
+            for fact in worker.get("importantLimits", [])
+            if text(fact)
+        ),
+    ]))
+    product_overview = dict(merged.get("productOverview", {}))
+    product_overview["importantLimits"] = domain_limits
+    merged["productOverview"] = product_overview
+    return merged
 
 
 def json_line(path, value):
@@ -192,15 +367,28 @@ def load_published_source_digests(db_path):
         ).fetchone()
         if not table_exists:
             return set()
-        return {
-            text(row[0])
-            for row in connection.execute(
-                "SELECT DISTINCT source_digest FROM product_responsibility_artifacts "
-                "WHERE COALESCE(TRIM(source_digest), '') <> ''"
-            )
-        }
+        published = {}
+        for source_digest, payload_text in connection.execute(
+            "SELECT source_digest, payload FROM product_responsibility_artifacts "
+            "WHERE COALESCE(TRIM(source_digest), '') <> ''"
+        ):
+            try:
+                payload = json.loads(payload_text or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            published.setdefault(text(source_digest), set()).add(text(payload.get("pipelineVersion")))
+        return published
     finally:
         connection.close()
+
+
+def published_source_is_current(published_sources, source_digest, pipeline_version=""):
+    if source_digest not in published_sources:
+        return False
+    requested_version = text(pipeline_version)
+    if not requested_version or not isinstance(published_sources, dict):
+        return True
+    return requested_version in published_sources.get(source_digest, set())
 
 
 def download_pdf(url, target):
@@ -1025,12 +1213,6 @@ def process_product(product, *, skill_dir, project_root, skill_text, api_key, pr
         ):
             return previous
     try:
-        domain_skills, domain_skill_text = load_domain_skill_text(project_root, product)
-        (product_dir / "domain-skill-routing.json").write_text(json.dumps({
-            "productCategory": text(product.get("productCategory")),
-            "categoryLabel": text(product.get("categoryLabel")),
-            "domainSkills": domain_skills,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
         source_url = text(product.get("sourceUrl"))
         official_domain = text(product.get("officialDomain")) or parse.urlparse(source_url).netloc
         source_document = Path(product["sourceDocumentPath"]) if product.get("sourceDocumentPath") else product_dir / "official-source.pdf"
@@ -1041,7 +1223,18 @@ def process_product(product, *, skill_dir, project_root, skill_text, api_key, pr
             extract_pdf_text(source_document, source_text_path)
         source_text = source_text_path.read_text(encoding="utf-8")
         source_digest = "sha256:" + hashlib.sha256(source_document.read_bytes()).hexdigest()
-        if source_digest in published_source_digests:
+        domain_skills = resolve_domain_skill_names(product, source_text)
+        domain_skill_specs = load_domain_skill_specs(project_root, domain_skills)
+        (product_dir / "domain-skill-routing.json").write_text(json.dumps({
+            "productCategory": text(product.get("productCategory")),
+            "categoryLabel": text(product.get("categoryLabel")),
+            "domainSkills": domain_skills,
+            "detectionInputs": ["productName", "officialSourceText"],
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        requested_pipeline_version = text(product.get("pipelineVersion"))
+        if published_source_is_current(
+            published_source_digests, source_digest, requested_pipeline_version
+        ):
             result = {
                 "status": "skipped", "reason": "current_source_digest_already_published",
                 "company": text(product.get("company")), "productName": text(product.get("productName")),
@@ -1105,7 +1298,23 @@ def process_product(product, *, skill_dir, project_root, skill_text, api_key, pr
                 **{key: value for key, value in shadow_config.items() if key != "routing"},
                 routing_reasons=complexity_reasons,
             )
-        prompt_skill_text = "\n\n".join(value for value in [skill_text, domain_skill_text] if value)
+        domain_worker_results = run_domain_skill_workers(
+            specs=domain_skill_specs,
+            product=product,
+            source_text=source_text,
+            source_digest=source_digest,
+            api_key=api_key,
+            provider=provider,
+            base_url=base_url,
+            model=model,
+            timeout=max(1, request_timeout_ms / 1000),
+            max_tokens=min(max_output_tokens, 16384),
+        )
+        (product_dir / "domain-workers.json").write_text(
+            json.dumps(domain_worker_results, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        prompt_skill_text = skill_text
         prompt_candidate_text = (
             locked_inventory_source_text(locked_inventory)
             if locked_inventory
@@ -1164,6 +1373,13 @@ packet length, exact offsets, and inventory uniqueness.
 PIPELINE_SKILL:
 {prompt_skill_text}
 
+DOMAIN_SKILL_WORKER_RESULTS:
+{json.dumps(domain_worker_results, ensure_ascii=False)}
+
+The domain workers above ran independently after product-type detection. Preserve their exact source-backed facts.
+Use responsibility facts when assembling the inventory, and keep product_function facts outside responsibility counts.
+Do not delete a domain worker fact or change its number, percentage, tier, condition, or source wording.
+
 RETRIEVAL_REPORT:
 {json.dumps(retrieval_report, ensure_ascii=False)}
 
@@ -1193,7 +1409,8 @@ RETRIEVED_OFFICIAL_SOURCE_TEXT:
                 raise RuntimeError("model output incomplete: finish_reason=length")
             content = model_response["content"]
             (product_dir / f"round-{round_index + 1}-raw.txt").write_text(content, encoding="utf-8")
-            artifact = extract_json(content)
+            artifact = merge_domain_worker_results(extract_json(content), domain_worker_results)
+            artifact["pipelineVersion"] = requested_pipeline_version
             artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, indent=2), encoding="utf-8")
             canonical_path = product_dir / f"round-{round_index + 1}-canonical.json"
             canonical = subprocess.run([
@@ -1290,6 +1507,8 @@ RETRIEVED_OFFICIAL_SOURCE_TEXT:
                         if inventory_receipt else ""
                     ),
                     "provider": provider, "model": model,
+                    "domainSkills": domain_skills,
+                    "domainWorkerReceiptPath": str(product_dir / "domain-workers.json"),
                     "shadowReceiptPath": str(shadow_receipt_path) if shadow_receipt_path else "",
                     "shadowJoinedBeforeApproval": bool(shadow_thread and not shadow_thread.is_alive()),
                     "shadowComparisonPath": (
@@ -1334,6 +1553,8 @@ Gate issues:\n""" + "\n".join(final_gate_errors)
             "layoutReportPath": str(layout_report_path),
             "initialSourceMode": initial_source_mode,
             "provider": provider, "model": model,
+            "domainSkills": domain_skills,
+            "domainWorkerReceiptPath": str(product_dir / "domain-workers.json"),
             "shadowReceiptPath": str(shadow_receipt_path) if shadow_receipt_path else "",
             "shadowJoinedBeforeApproval": bool(shadow_thread and not shadow_thread.is_alive()),
             "failureClass": "validation", "failureLayer": "validation", "retryable": True,

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  buildDomainWorkerPrompt,
   buildDomainWorkerPlan,
   buildWholeDocumentProductProfile,
   mergeDomainWorkerResults,
@@ -37,7 +38,15 @@ test('whole-document profile detects every product domain before creating one wo
   assert.deepEqual(profile.domains, ['universal_life', 'endowment', 'rider']);
   const plan = buildDomainWorkerPlan(profile);
   assert.deepEqual(plan.map((worker) => worker.domain), profile.domains);
+  assert.deepEqual(plan.map((worker) => worker.skillName), [
+    'ocr-insurance-universal-account-responsibility',
+    'ocr-insurance-endowment-responsibility',
+    'ocr-insurance-unified-responsibility-parser',
+  ]);
   assert.equal(new Set(plan.map((worker) => worker.role)).size, 3);
+  const universalPrompt = buildDomainWorkerPrompt({ product, worker: plan[0] });
+  assert.match(universalPrompt, /必须执行的领域 Skill：ocr-insurance-universal-account-responsibility/u);
+  assert.match(universalPrompt, /minimum guaranteed annual interest rate/u);
 });
 
 test('domain detection scans the complete official document instead of only its opening pages', () => {
@@ -153,5 +162,6 @@ test('domain workers run independently and failed domain does not remove base re
   }, results);
   assert.deepEqual(merged.mainResponsibilities.map((item) => item.title), ['生存保险金', '身故保险金']);
   assert.match(merged.contentBlocks.find((block) => block.blockKey === 'productFunctions').content, /1\.75%/u);
+  assert.equal(merged.domainWorkers.find((worker) => worker.domain === 'universal_life').skillName, 'ocr-insurance-universal-account-responsibility');
   assert.deepEqual(merged.domainWorkerFailures, [{ domain: 'rider', errorCode: 'timeout' }]);
 });

@@ -33,6 +33,7 @@ import {
   selectBoundOfficialSourceRecords,
   wholeDocumentTextFromRecord,
 } from './product-document-domain-workers.mjs';
+import { PRODUCT_RESPONSIBILITY_PIPELINE_VERSION } from './product-responsibility-pipeline-queue.service.mjs';
 import {
   productIdentityKey,
   responsibilityCompanyIdentity,
@@ -45,7 +46,7 @@ import {
   responsibilityGenerationGovernanceDigest,
 } from './responsibility-generation-governance.service.mjs';
 
-export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v27-whole-document-domains';
+export const CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION = 'customer-summary-v28-skill-domain-workers';
 
 const DEFAULT_DEEPSEEK_BASE_URL = 'https://api.deepseek.com';
 const DEFAULT_MODEL = 'deepseek-v4-flash';
@@ -2027,6 +2028,12 @@ async function generateProductCustomerResponsibilitySummaryInternal({
           ) || sourceUrls.includes(text(row.source_url));
         })()
       ));
+      if (approvedArtifact) {
+        const artifactPayload = parseJson(approvedArtifact.payload, {});
+        if (text(artifactPayload.pipelineVersion) !== PRODUCT_RESPONSIBILITY_PIPELINE_VERSION) {
+          approvedArtifact = null;
+        }
+      }
     } catch {
       approvedArtifact = null;
     }
@@ -2515,10 +2522,11 @@ async function generateProductCustomerResponsibilitySummaryInternal({
     plannerOutput: plannerResult.planner,
     plannerError: plannerResult.plannerError,
     documentProfile,
-    domainWorkerPlan: domainWorkerPlan.map((worker) => ({ role: worker.role, domain: worker.domain })),
+    domainWorkerPlan: domainWorkerPlan.map((worker) => ({ role: worker.role, domain: worker.domain, skillName: worker.skillName })),
     domainWorkers: domainWorkerResults.map((worker) => ({
       role: worker.role,
       domain: worker.domain,
+      skillName: worker.skillName,
       status: worker.status,
       errorCode: worker.errorCode || '',
     })),

@@ -1,4 +1,10 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SKILL_ROOT = path.resolve(__dirname, '../.agents/skills');
 
 const DEFAULT_MAX_CONCURRENCY = 4;
 const DEFAULT_EVIDENCE_LIMIT = 6_000;
@@ -7,78 +13,91 @@ const DOMAIN_DEFINITIONS = [
   {
     domain: 'universal_life',
     label: '万能账户',
+    skillName: 'ocr-insurance-universal-account-responsibility',
     identity: /万能型|万能保险|万能账户/u,
     evidence: /最低保证利率|保证利率|结算利率|初始费用|保单管理费|风险保险费|保单账户价值|账户价值|部分领取|退保手续费/u,
   },
   {
     domain: 'incremental_whole_life',
     label: '增额终身寿险',
+    skillName: 'ocr-insurance-incremental-whole-life-responsibility',
     identity: /增额终身寿|增额寿/u,
     evidence: /有效保险金额|有效保额|保单年度系数|基本保险金额.{0,80}(?:递增|增长|复利)/u,
   },
   {
     domain: 'annuity',
     label: '年金保险',
+    skillName: 'ocr-insurance-annuity-responsibility',
     identity: /年金保险|养老年金|教育年金/u,
     evidence: /年金|养老金|祝寿金|生存保险金|领取日|领取方式|按年领取|按月领取/u,
   },
   {
     domain: 'endowment',
     label: '两全保险',
+    skillName: 'ocr-insurance-endowment-responsibility',
     identity: /两全保险/u,
     evidence: /满期保险金|满期生存保险金|生存保险金/u,
   },
   {
     domain: 'participating_life',
     label: '分红保险',
+    skillName: 'ocr-insurance-unified-responsibility-parser',
     identity: /分红型|分红保险/u,
     evidence: /保单红利|红利分配|累积红利|红利保险金额|红利不保证/u,
   },
   {
     domain: 'critical_illness',
     label: '重大疾病保险',
+    skillName: 'ocr-insurance-critical-illness-responsibility',
     identity: /重大疾病保险|重疾险/u,
     evidence: /重大疾病|重度疾病|中度疾病|轻度疾病|疾病分组|给付次数|间隔期|豁免保险费/u,
   },
   {
     domain: 'medical',
     label: '医疗保险',
+    skillName: 'ocr-insurance-medical-health-responsibility',
     identity: /医疗保险|医疗险/u,
     evidence: /医疗保险金|住院|门诊|免赔额|赔付比例|报销比例|医疗费用|医院范围/u,
   },
   {
     domain: 'accident',
     label: '意外伤害保险',
+    skillName: 'ocr-insurance-accident-responsibility',
     identity: /意外伤害保险|意外险/u,
     evidence: /意外身故|意外伤残|意外医疗|伤残等级|交通工具意外|航空意外/u,
   },
   {
     domain: 'long_term_care',
     label: '长期护理保险',
+    skillName: 'ocr-insurance-long-term-care-responsibility',
     identity: /长期护理保险|护理保险/u,
     evidence: /护理保险金|长期护理状态|失能状态|护理状态|给付期间/u,
   },
   {
     domain: 'term_life',
     label: '定期寿险',
+    skillName: 'ocr-insurance-term-life-responsibility',
     identity: /定期寿险|定期人寿/u,
     evidence: /身故保险金|全残保险金|保险期间/u,
   },
   {
     domain: 'ordinary_whole_life',
     label: '终身寿险',
+    skillName: 'ocr-insurance-unified-responsibility-parser',
     identity: /终身寿险|终身人寿/u,
     evidence: /身故保险金|全残保险金|终身/u,
   },
   {
     domain: 'rider',
     label: '附加险',
+    skillName: 'ocr-insurance-unified-responsibility-parser',
     identity: /附加[^\n]{0,40}(?:保险|险)/u,
     evidence: /主险|附加合同|本附加险|本附加合同/u,
   },
   {
     domain: 'group',
     label: '团体保险',
+    skillName: 'ocr-insurance-unified-responsibility-parser',
     identity: /团体[^\n]{0,40}(?:保险|险)/u,
     evidence: /团体保险|投保单位|团体成员/u,
   },
@@ -94,6 +113,14 @@ function array(value) {
 
 function unique(values) {
   return [...new Set(array(values).map(text).filter(Boolean))];
+}
+
+function domainSkillContract(skillName) {
+  const skillDir = path.join(SKILL_ROOT, text(skillName));
+  return [path.join(skillDir, 'SKILL.md'), path.join(skillDir, 'references/contract.md')]
+    .filter((filePath) => fs.existsSync(filePath))
+    .map((filePath) => fs.readFileSync(filePath, 'utf8'))
+    .join('\n\n');
 }
 
 function recordUrl(record = {}) {
@@ -297,6 +324,7 @@ export function buildDomainWorkerPlan(profile = {}) {
   return unique(profile.domains).map((domain) => ({
     role: `${domain}_domain_worker`,
     domain,
+    skillName: DOMAIN_DEFINITIONS.find((item) => item.domain === domain)?.skillName || '',
     evidencePacket: packets.get(domain) || null,
   }));
 }
@@ -305,11 +333,14 @@ export function buildDomainWorkerPrompt({ product = {}, worker = {} } = {}) {
   return [
     '你是保险产品领域解释 worker。只输出合法 JSON，不要 Markdown。',
     `领域：${worker.domain}`,
+    `必须执行的领域 Skill：${text(worker.skillName)}`,
     `产品：${text(product.company)} / ${text(product.productName)}`,
     '只能使用给定官方证据，不得新增、删除或改名保险责任。',
     '输出：{"domain":"","purposeFacts":[],"functionFacts":[],"attentionFacts":[],"sourceRefs":[]}',
     'purposeFacts 用于“产品主要做什么”；functionFacts 用于账户、领取、分红等产品功能；attentionFacts 用于限制和不确定性。',
     '若证据不足，对应数组返回空数组。不得根据产品名猜测利率、费用、责任或收益。',
+    '领域 Skill 契约：',
+    domainSkillContract(worker.skillName),
     '官方证据：',
     text(worker.evidencePacket?.evidenceText),
   ].join('\n');
@@ -326,6 +357,7 @@ function normalizeWorkerOutput(worker, value) {
   return {
     role: worker.role,
     domain: worker.domain,
+    skillName: worker.skillName,
     status: 'passed',
     purposeFacts: unique(source.purposeFacts),
     functionFacts: unique([...array(source.functionFacts), ...deterministicFunctionFacts]),
@@ -360,6 +392,7 @@ export async function runDomainEvidenceWorkers({
       else results.push({
         role: batch[index].role,
         domain: batch[index].domain,
+        skillName: batch[index].skillName,
         status: 'failed',
         errorCode: text(item.reason?.code) || 'domain_worker_failed',
       });
@@ -397,7 +430,7 @@ export function mergeDomainWorkerResults(summary = {}, workerResults = []) {
   return {
     ...summary,
     contentBlocks,
-    domainWorkers: array(workerResults).map((worker) => ({ role: worker.role, domain: worker.domain, status: worker.status, errorCode: worker.errorCode || '' })),
+    domainWorkers: array(workerResults).map((worker) => ({ role: worker.role, domain: worker.domain, skillName: worker.skillName, status: worker.status, errorCode: worker.errorCode || '' })),
     domainWorkerFailures: failed.map((worker) => ({ domain: worker.domain, errorCode: worker.errorCode || 'domain_worker_failed' })),
   };
 }

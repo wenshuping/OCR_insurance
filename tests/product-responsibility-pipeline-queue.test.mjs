@@ -101,7 +101,37 @@ test('product responsibility pipeline retries an exhausted failed job after a pi
   const completed = queue.getByProductKey('company_product:测试保险:测试医疗保险');
   assert.equal(completed.status, 'published');
   assert.equal(completed.attempts, 1);
-  assert.equal(completed.payload.pipelineVersion, 'v2-domain-skills-runtime');
+  assert.equal(completed.payload.pipelineVersion, 'v3-independent-domain-skill-workers');
+  db.close();
+});
+
+test('product responsibility pipeline republishes a completed job after a pipeline upgrade', async () => {
+  const db = new DatabaseSync(':memory:');
+  const queue = createProductResponsibilityPipelineQueue({
+    db,
+    runJob: async () => ({ status: 'published', artifactPath: '/tmp/v3-artifact.json' }),
+  });
+  db.prepare(`
+    INSERT INTO product_responsibility_pipeline_jobs
+      (product_key, company, product_name, status, attempts, artifact_path, payload, created_at, updated_at)
+    VALUES (?, ?, ?, 'published', 1, '/tmp/v2-artifact.json', ?, ?, ?)
+  `).run(
+    'company_product:测试保险:测试两全保险（万能型）',
+    '测试保险',
+    '测试两全保险（万能型）',
+    JSON.stringify({ pipelineVersion: 'v2-domain-skills-runtime' }),
+    '2026-08-06T00:00:00.000Z',
+    '2026-08-06T00:00:00.000Z',
+  );
+
+  await queue.enqueue({ company: '测试保险', productName: '测试两全保险（万能型）' });
+  await queue.drain();
+
+  const completed = queue.getByProductKey('company_product:测试保险:测试两全保险（万能型）');
+  assert.equal(completed.status, 'published');
+  assert.equal(completed.attempts, 1);
+  assert.equal(completed.artifactPath, '/tmp/v3-artifact.json');
+  assert.equal(completed.payload.pipelineVersion, 'v3-independent-domain-skill-workers');
   db.close();
 });
 

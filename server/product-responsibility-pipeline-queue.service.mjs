@@ -14,7 +14,7 @@ const PIPELINE_SCRIPT = path.join(
   PROJECT_ROOT,
   '.agents/skills/ocr-insurance-product-responsibility-pipeline/scripts/batch_deepseek_backfill.py',
 );
-const PRODUCT_RESPONSIBILITY_PIPELINE_VERSION = 'v2-domain-skills-runtime';
+export const PRODUCT_RESPONSIBILITY_PIPELINE_VERSION = 'v3-independent-domain-skill-workers';
 
 const DOMAIN_SKILL_BY_CATEGORY = {
   accident: 'ocr-insurance-accident-responsibility',
@@ -226,29 +226,32 @@ export function createProductResponsibilityPipelineQueue({
       ON CONFLICT(product_key) DO UPDATE SET
         payload = excluded.payload,
         updated_at = CASE
-          WHEN product_responsibility_pipeline_jobs.status = 'failed'
-            AND (product_responsibility_pipeline_jobs.attempts < 3
-              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+          WHEN (product_responsibility_pipeline_jobs.status = 'failed'
+              AND product_responsibility_pipeline_jobs.attempts < 3)
+            OR (product_responsibility_pipeline_jobs.status IN ('failed', 'published', 'manual_review')
+              AND COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
                 <> json_extract(excluded.payload, '$.pipelineVersion')) THEN excluded.updated_at
           ELSE product_responsibility_pipeline_jobs.updated_at
         END,
         attempts = CASE
-          WHEN product_responsibility_pipeline_jobs.status = 'failed'
+          WHEN product_responsibility_pipeline_jobs.status IN ('failed', 'published', 'manual_review')
             AND COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
               <> json_extract(excluded.payload, '$.pipelineVersion') THEN 0
           ELSE product_responsibility_pipeline_jobs.attempts
         END,
         status = CASE
-          WHEN product_responsibility_pipeline_jobs.status = 'failed'
-            AND (product_responsibility_pipeline_jobs.attempts < 3
-              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+          WHEN (product_responsibility_pipeline_jobs.status = 'failed'
+              AND product_responsibility_pipeline_jobs.attempts < 3)
+            OR (product_responsibility_pipeline_jobs.status IN ('failed', 'published', 'manual_review')
+              AND COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
                 <> json_extract(excluded.payload, '$.pipelineVersion')) THEN 'queued'
           ELSE product_responsibility_pipeline_jobs.status
         END,
         last_error = CASE
-          WHEN product_responsibility_pipeline_jobs.status = 'failed'
-            AND (product_responsibility_pipeline_jobs.attempts < 3
-              OR COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
+          WHEN (product_responsibility_pipeline_jobs.status = 'failed'
+              AND product_responsibility_pipeline_jobs.attempts < 3)
+            OR (product_responsibility_pipeline_jobs.status IN ('failed', 'published', 'manual_review')
+              AND COALESCE(json_extract(product_responsibility_pipeline_jobs.payload, '$.pipelineVersion'), '')
                 <> json_extract(excluded.payload, '$.pipelineVersion')) THEN ''
           ELSE product_responsibility_pipeline_jobs.last_error
         END
