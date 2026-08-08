@@ -1285,6 +1285,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
   sourceRecords = [],
   requireSourceDigest = false,
   responsibilityCards = null,
+  responsibilityIndicators = null,
 } = {}) {
   const normalizedCompany = text(company);
   const normalizedProductName = text(productName);
@@ -1390,6 +1391,9 @@ export function buildCustomerResponsibilitySummaryFromCards({
     productName: evidenceProductName,
     productKey: evidenceProductKey,
   });
+  const suppliedIndicators = Array.isArray(responsibilityIndicators)
+    ? responsibilityIndicators
+    : [];
   const nestedIndicators = cardsWithSourceDigests.flatMap((card) => normalizeArray(card.indicators).map((indicator) => ({
     ...indicator,
     company: text(indicator?.company) || evidenceCompany,
@@ -1414,7 +1418,7 @@ export function buildCustomerResponsibilitySummaryFromCards({
       productName: evidenceProductName,
       productKey: evidenceProductKey,
       cards: cardsWithSourceDigests,
-      indicators: [...databaseIndicators, ...nestedIndicators],
+      indicators: [...databaseIndicators, ...suppliedIndicators, ...nestedIndicators],
       artifacts: approvedArtifacts,
       sourceRecords: specialSourceRecords,
     },
@@ -2130,24 +2134,20 @@ async function generateProductCustomerResponsibilitySummaryInternal({
   });
   if (existing) {
     const cachedSummary = safeCustomerSummary(existing);
-    const special = buildSpecialProductDatabaseSummary({
-      summary: cachedSummary,
-      evidence: {
-        company,
-        productName,
-        productKey,
-        cards,
-        indicators,
-        artifacts: approvedResponsibilityArtifacts,
-        sourceRecords: alignSourceRecordsToApprovedArtifactSourceDigests(records, approvedResponsibilityArtifacts),
-      },
+    const projectedSummary = buildCustomerResponsibilitySummaryFromCards({
+      db,
+      company,
+      productName,
+      canonicalProductId,
+      sourceRecords: records,
+      requireSourceDigest: true,
+      responsibilityCards: cards,
+      responsibilityIndicators: indicators,
     });
     return {
       ok: true,
       source: 'database',
-      summary: ['universal_account', 'incremental_whole_life'].includes(special.evaluation?.category)
-        ? special.summary
-        : cachedSummary,
+      summary: projectedSummary || cachedSummary,
     };
   }
 

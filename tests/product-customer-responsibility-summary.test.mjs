@@ -749,6 +749,51 @@ test('generateProductCustomerResponsibilitySummary returns an existing database 
   assert.equal(modelCalls, 0);
 });
 
+test('existing summary is refreshed from source-pinned cards for every product category', async () => {
+  const currentSourceDigest = 'sha256:current-life-terms';
+  const currentCard = {
+    ...baseCard(),
+    sourceDigest: currentSourceDigest,
+    sourceExcerpt: '第五条 保险责任 被保险人身故或身体全残，按基本保险金额给付保险金。',
+    plainSummary: '按当前责任卡约定给付身故或身体全残保险金。',
+  };
+  const existing = {
+    company,
+    productName,
+    summaryVersion: CUSTOMER_RESPONSIBILITY_SUMMARY_VERSION,
+    status: 'ready',
+    summaryJson: {
+      company,
+      productName,
+      headline: '旧缓存摘要。',
+      mainResponsibilities: [{ title: '旧责任', plainText: '旧缓存内容。' }],
+      notices: [],
+      requiredPolicyFields: [],
+      sourceUrls: [sourceUrl],
+      contentBlocks: [],
+    },
+    sourceDigest: currentSourceDigest,
+  };
+  let modelCalls = 0;
+
+  const result = await generateProductCustomerResponsibilitySummary({
+    state: baseState(),
+    db: dbWithProductEvidence({ cards: [currentCard] }),
+    input: { company, name: productName },
+    findSummary: async () => existing,
+    generateWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {};
+    },
+  });
+
+  assert.equal(result.source, 'database');
+  assert.equal(modelCalls, 0);
+  assert.equal(result.summary.mainResponsibilities[0].title, currentCard.title);
+  assert.match(result.summary.mainResponsibilities[0].plainText, /当前责任卡/u);
+  assert.doesNotMatch(result.summary.headline, /旧缓存/u);
+});
+
 test('existing universal summary is refreshed from source-pinned database evidence', async () => {
   const universalProductName = '示例两全保险（万能型）';
   const universalSourceUrl = 'https://official.example.test/universal-terms.pdf';
