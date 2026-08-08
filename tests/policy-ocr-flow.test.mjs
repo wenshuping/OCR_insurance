@@ -5942,6 +5942,104 @@ test('customer responsibility summary generates directly from an exact policy-bo
   }
 });
 
+test('policy detail falls back to current approved product cards when its bound source cannot be extracted', async () => {
+  const db = new DatabaseSync(':memory:');
+  db.exec(`
+    CREATE TABLE policies (id INTEGER PRIMARY KEY);
+    CREATE TABLE product_responsibility_cards (
+      id TEXT PRIMARY KEY,
+      product_key TEXT NOT NULL,
+      company TEXT,
+      product_name TEXT,
+      title TEXT,
+      category TEXT,
+      source_url TEXT,
+      payload TEXT NOT NULL
+    )
+  `);
+  const currentSourceUrl = 'https://official.example.test/current-terms.pdf';
+  const boundSourceUrl = 'https://official.example.test/legacy-policy-source.pdf';
+  db.prepare(`
+    INSERT INTO product_responsibility_cards (
+      id, product_key, company, product_name, title, category, source_url, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    'card_policy_bound_fallback',
+    'company_product:测试保险:安心寿险',
+    '测试保险',
+    '安心寿险',
+    '身故保险金',
+    '人寿保障',
+    currentSourceUrl,
+    JSON.stringify({
+      id: 'card_policy_bound_fallback',
+      productKey: 'company_product:测试保险:安心寿险',
+      company: '测试保险',
+      productName: '安心寿险',
+      title: '身故保险金',
+      plainSummary: '被保险人身故时按当前审核条款给付。',
+      sourceUrl: currentSourceUrl,
+      sourceDigest: 'sha256:current-approved-terms',
+      sourceExcerpt: '第五条 保险责任 身故保险金按合同约定给付。',
+    }),
+  );
+  const state = {
+    ...createInitialState(),
+    users: [{ id: 7, mobile: '13800000007' }],
+    sessions: [{ token: 'owner-token', userId: 7 }],
+    policies: [{
+      id: 516518,
+      userId: 7,
+      guestId: '',
+      company: '测试保险',
+      name: '安心寿险',
+      responsibilities: [{ title: '身故保险金', sourceUrl: boundSourceUrl }],
+    }],
+    knowledgeRecords: [{
+      id: 516518,
+      company: '测试保险',
+      productName: '安心寿险',
+      title: '历史资料',
+      url: boundSourceUrl,
+      pageText: '产品投保说明，不含可识别的保险责任章节。',
+      official: true,
+    }],
+    insuranceIndicatorRecords: [],
+  };
+  let modelCalls = 0;
+  const app = createPolicyOcrApp({
+    state,
+    db,
+    recomputeCashflowOnStartup: false,
+    generateProductCustomerResponsibilitySummaryWithDeepSeek: async () => {
+      modelCalls += 1;
+      return {};
+    },
+  });
+  const server = await listen(app);
+
+  try {
+    const response = await jsonFetch(server.baseUrl, '/api/policy-responsibilities/customer-summary', {
+      method: 'POST',
+      headers: { authorization: 'Bearer owner-token' },
+      body: JSON.stringify({
+        policyId: 516518,
+        company: '测试保险',
+        name: '安心寿险',
+      }),
+    });
+    assert.equal(response.response.status, 200);
+    assert.equal(response.payload.ok, true);
+    assert.equal(response.payload.source, 'database');
+    assert.equal(response.payload.summary.mainResponsibilities[0].title, '身故保险金');
+    assert.match(response.payload.summary.mainResponsibilities[0].plainText, /当前审核条款/u);
+    assert.equal(modelCalls, 0);
+  } finally {
+    await server.close();
+    db.close();
+  }
+});
+
 test('customer responsibility summary uses the current policy owner pending upload without publishing it', async () => {
   const db = new DatabaseSync(':memory:');
   db.exec('CREATE TABLE policies (id INTEGER PRIMARY KEY)');

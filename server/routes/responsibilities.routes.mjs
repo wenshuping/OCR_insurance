@@ -1253,6 +1253,24 @@ export function createResponsibilityRoutes(context) {
         preferLocalKnowledgeAnswer: false,
       }),
     });
+    if (!usesPrivateSource && boundSourceIdentity && !result?.ok
+      && typeof buildCustomerResponsibilitySummaryFromCards === 'function') {
+      const fallbackSummary = buildCustomerResponsibilitySummaryFromCards({
+        db,
+        company: input.company,
+        productName: input.name,
+        canonicalProductId,
+        sourceRecords: summaryState.knowledgeRecords,
+        requireSourceDigest: true,
+      });
+      if (fallbackSummary) {
+        return {
+          ok: true,
+          source: 'database',
+          summary: fallbackSummary,
+        };
+      }
+    }
     if (usesPrivateSource && result?.ok) result.source = 'customer_upload';
     if (!usesPrivateSource && result?.source !== 'database' && result?.ok && result?.summary
       && typeof retrieveCustomerResponsibilityMaterials === 'function'
